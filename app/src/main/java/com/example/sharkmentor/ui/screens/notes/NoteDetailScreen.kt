@@ -1044,6 +1044,7 @@ fun NoteDetailScreen(
                 .weight(1f)
                 .fillMaxWidth()
         ) {
+            val editorViewportHeightDp = maxHeight
             val screenWidthPx = constraints.maxWidth.toFloat()
             val screenHeightPx = constraints.maxHeight.toFloat()
             val snapThresholdPx = with(density) { 90.dp.toPx() }
@@ -1345,52 +1346,54 @@ fun NoteDetailScreen(
         ) {
             val editorContentPadding: PaddingValues = remember(dockState, isToolbarCollapsed) {
                 when {
-                    isToolbarCollapsed -> PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 24.dp)
-                    dockState == ToolbarDockState.BOTTOM -> PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 72.dp)
-                    dockState == ToolbarDockState.TOP -> PaddingValues(start = 20.dp, end = 20.dp, top = 64.dp, bottom = 24.dp)
-                    dockState == ToolbarDockState.LEFT -> PaddingValues(start = 66.dp, end = 20.dp, top = 8.dp, bottom = 24.dp)
-                    dockState == ToolbarDockState.RIGHT -> PaddingValues(start = 20.dp, end = 66.dp, top = 8.dp, bottom = 24.dp)
-                    else -> PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 24.dp)
+                    isToolbarCollapsed -> PaddingValues(start = 0.dp, end = 0.dp, top = 8.dp, bottom = 24.dp)
+                    dockState == ToolbarDockState.BOTTOM -> PaddingValues(start = 0.dp, end = 0.dp, top = 8.dp, bottom = 72.dp)
+                    dockState == ToolbarDockState.TOP -> PaddingValues(start = 0.dp, end = 0.dp, top = 64.dp, bottom = 24.dp)
+                    dockState == ToolbarDockState.LEFT -> PaddingValues(start = 60.dp, end = 0.dp, top = 8.dp, bottom = 24.dp)
+                    dockState == ToolbarDockState.RIGHT -> PaddingValues(start = 0.dp, end = 60.dp, top = 8.dp, bottom = 24.dp)
+                    else -> PaddingValues(start = 0.dp, end = 0.dp, top = 8.dp, bottom = 24.dp)
                 }
             }
 
             LazyColumn(
                 state = noteListState,
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .widthIn(max = 840.dp)
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter),
+                modifier = Modifier.fillMaxSize(),
                 userScrollEnabled = !drawingController.isDrawingActive,
                 contentPadding = editorContentPadding
             ) {
                 item(key = "note_title_header") {
-                    BasicTextField(
-                        value = vmTitle,
-                        onValueChange = { viewModel.onTitleChanged(it) },
-                        textStyle = TextStyle(
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isLightPaper) Color(0xFF0F172A) else titleAccentColor
-                        ),
-                        cursorBrush = SolidColor(if (isLightPaper) primaryColor else titleAccentColor),
-                        modifier = Modifier.fillMaxWidth(),
-                        decorationBox = { innerTextField ->
-                            if (vmTitle.isEmpty()) {
-                                Text(
-                                    text = "Başlık",
-                                    fontSize = 24.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = noteMutedTextColor
-                                )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp)
+                    ) {
+                        BasicTextField(
+                            value = vmTitle,
+                            onValueChange = { viewModel.onTitleChanged(it) },
+                            textStyle = TextStyle(
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isLightPaper) Color(0xFF0F172A) else titleAccentColor
+                            ),
+                            cursorBrush = SolidColor(if (isLightPaper) primaryColor else titleAccentColor),
+                            modifier = Modifier.fillMaxWidth(),
+                            decorationBox = { innerTextField ->
+                                if (vmTitle.isEmpty()) {
+                                    Text(
+                                        text = "Başlık",
+                                        fontSize = 24.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = noteMutedTextColor
+                                    )
+                                }
+                                innerTextField()
                             }
-                            innerTextField()
-                        }
-                    )
+                        )
 
-                    Spacer(modifier = Modifier.height(10.dp))
-                    HorizontalDivider(color = noteTextColor.copy(alpha = 0.12f))
-                    Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
+                        HorizontalDivider(color = noteTextColor.copy(alpha = 0.12f))
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
                 }
 
                 if (localPdfFilePath != null) {
@@ -1402,6 +1405,7 @@ fun NoteDetailScreen(
                             tonalElevation = 2.dp,
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .padding(horizontal = 12.dp)
                                 .padding(bottom = 12.dp)
                                 .border(
                                     width = 1.dp,
@@ -1474,6 +1478,7 @@ fun NoteDetailScreen(
                             tonalElevation = 2.dp,
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .padding(horizontal = 12.dp)
                                 .padding(bottom = 14.dp)
                                 .border(
                                     width = 1.dp,
@@ -1601,6 +1606,7 @@ fun NoteDetailScreen(
                                 color = surfaceColor,
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .padding(horizontal = 12.dp)
                                     .padding(bottom = 12.dp)
                                     .border(
                                         width = 1.dp,
@@ -1636,11 +1642,12 @@ fun NoteDetailScreen(
                         lineHeight = 24.sp,
                         color = noteTextColor
                     )
+                    val minBodyHeight = (editorViewportHeightDp - 110.dp).coerceAtLeast(420.dp)
 
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .defaultMinSize(minHeight = 420.dp)
+                            .defaultMinSize(minHeight = minBodyHeight)
                     ) {
                         BasicTextField(
                             value = noteFieldValue,
@@ -1665,7 +1672,8 @@ fun NoteDetailScreen(
                             cursorBrush = SolidColor(primaryColor),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .defaultMinSize(minHeight = 420.dp)
+                                .defaultMinSize(minHeight = minBodyHeight)
+                                .padding(horizontal = 12.dp)
                                 .pointerInput(noteFieldValue.text) {
                                     detectTapGestures { tapOffset ->
                                         val layout = textLayoutResult ?: return@detectTapGestures
@@ -1704,7 +1712,7 @@ fun NoteDetailScreen(
                             }
                         )
 
-                        // Kalem & Çizim Stüdyosu Katmanı
+                        // Kalem & Çizim Stüdyosu Katmanı (tam ekran kenardan kenara)
                         DrawingCanvasOverlay(
                             controller = drawingController,
                             modifier = Modifier.matchParentSize(),
@@ -1715,7 +1723,9 @@ fun NoteDetailScreen(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp),
                         horizontalArrangement = Arrangement.End
                     ) {
                         Text(
