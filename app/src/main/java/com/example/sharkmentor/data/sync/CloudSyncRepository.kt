@@ -172,18 +172,24 @@ class CloudSyncRepository(private val context: Context) {
         for (session in pending) {
             try {
                 val resolvedInstId = session.institutionId.takeIf { !it.isNullOrBlank() } ?: defaultInstId
-                
+                val docId = session.cloudId?.takeIf { it.isNotBlank() } ?: session.id.toString()
+
                 val docPath = getCollectionPath(resolvedInstId, uid, "focus_sessions")
                 val docData = buildSessionDocument(session, resolvedInstId)
 
-                val docRef = if (session.cloudId != null) {
-                    fs.document("$docPath/${session.cloudId}")
-                } else {
-                    fs.collection(docPath).document()
-                }
-
+                val docRef = fs.document("$docPath/$docId")
                 docRef.set(docData, SetOptions.merge()).await()
-                syncDao.markSessionSynced(session.id, docRef.id)
+
+                try {
+                    fs.collection("students").document(uid).collection("sessions").document(docId)
+                        .set(docData, SetOptions.merge()).await()
+                } catch (_: Exception) {}
+                try {
+                    fs.collection("users").document(uid).collection("sessions").document(docId)
+                        .set(docData, SetOptions.merge()).await()
+                } catch (_: Exception) {}
+
+                syncDao.markSessionSynced(session.id, docId)
                 synced++
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to sync session id=${session.id}: ${e.message}")
