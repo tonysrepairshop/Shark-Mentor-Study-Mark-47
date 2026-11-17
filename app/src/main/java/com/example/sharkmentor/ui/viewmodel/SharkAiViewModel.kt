@@ -806,42 +806,14 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         SharkAiEngine.CONVERSATIONAL_PEER ->
                             compressedSystemPrompt
                     }
-                    if (userAiPrefs.getSelectedProvider() == AiProviderChoice.GEMINI) {
-                        val geminiAttempt = geminiCoreService.streamTextChatWithGemini(
-                            systemInstruction = textInstruction + AiRouterRepository.getDepthDirective(activePower),
-                            userPrompt = effectivePrompt,
-                            chatHistory = openAiHistory,
-                            temperature = activePower.temperature,
-                            maxTokens = if (activePower == AiModelPower.PRO) 8192 else 4096,
-                            onPartialText = onStreamChunk
-                        )
-                        if (geminiAttempt.isSuccess) {
-                            AiRouterResult(
-                                text = geminiAttempt.getOrThrow(),
-                                executedToolNotes = emptyList(),
-                                createdPlanFolderId = null,
-                                engineUsed = resolvedEngine
-                            )
-                        } else {
-                            aiRouterRepository.executeTextStream(
-                                activeEngine = resolvedEngine,
-                                prompt = effectivePrompt,
-                                systemInstruction = textInstruction,
-                                chatHistory = openAiHistory,
-                                modelPower = activePower,
-                                onPartialText = onStreamChunk
-                            ).getOrThrow()
-                        }
-                    } else {
-                        aiRouterRepository.executeTextStream(
-                            activeEngine = resolvedEngine,
-                            prompt = effectivePrompt,
-                            systemInstruction = textInstruction,
-                            chatHistory = openAiHistory,
-                            modelPower = activePower,
-                            onPartialText = onStreamChunk
-                        ).getOrThrow()
-                    }
+                    aiRouterRepository.executeTextStream(
+                        activeEngine = resolvedEngine,
+                        prompt = effectivePrompt,
+                        systemInstruction = textInstruction,
+                        chatHistory = openAiHistory,
+                        modelPower = activePower,
+                        onPartialText = onStreamChunk
+                    ).getOrThrow()
                 }
 
                 if (_activeChatSessionId.value != originatingSessionId) {

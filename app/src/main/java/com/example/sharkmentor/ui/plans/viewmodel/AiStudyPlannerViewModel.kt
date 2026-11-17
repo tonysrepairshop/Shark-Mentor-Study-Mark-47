@@ -4,8 +4,10 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.sharkmentor.BuildConfig
 import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.InstitutionScheduleEntity
@@ -18,16 +20,11 @@ import com.example.sharkmentor.data.remote.ScannedTaskDto
 import com.example.sharkmentor.data.repository.PlanRepository
 import com.example.sharkmentor.data.repository.PlanRepositoryImpl
 import com.example.sharkmentor.ui.plans.model.*
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.RequestOptions
-import com.google.ai.client.generativeai.type.content
-import com.google.ai.client.generativeai.type.generationConfig
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -162,64 +159,23 @@ class AiStudyPlannerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     private suspend fun executeWithKeyRotation(promptText: String, systemPrompt: String): String {
-        var lastException: Exception? = null
-        val keyCount = Math.max(1, ApiKeyRotator.getKeyCount())
-
-        for (attempt in 0 until keyCount) {
-            val activeKey = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-            if (activeKey.isBlank() || activeKey == "null") {
-                Log.e("GeminiError", "AI Call Failed: API Key is missing or invalid.")
-                throw IllegalStateException("Gemini API Key is missing or invalid. Check local.properties or BuildConfig.")
-            }
-            val modelName = "gemini-3.6-flash"
-            val cleanKey = activeKey.trim().replace("\"", "").replace("'", "")
-            val cleanModel = modelName.trim().removePrefix("models/").removePrefix("/")
-            val maxRetries = 3
-            var currentDelay = 1500L
-
-            for (attempt in 1..maxRetries) {
-                try {
-                    val model = GenerativeModel(
-                        modelName = cleanModel,
-                        apiKey = cleanKey,
-                        generationConfig = generationConfig {
-                            responseMimeType = "application/json"
-                            temperature = 0.3f
-                        },
-                        systemInstruction = if (systemPrompt.isNotBlank()) content { text(systemPrompt) } else null,
-                        requestOptions = RequestOptions(timeout = 60_000L)
-                    )
-                    val response = model.generateContent(promptText)
-                    val text = response.text
-                    if (!text.isNullOrBlank()) {
-                        return text
-                    }
-                } catch (e: Exception) {
-                    Log.e("GeminiError", "AI Call Failed ($modelName): ${e.javaClass.simpleName} - ${e.message}", e)
-                    lastException = Exception("AI Hatası: ${e.localizedMessage ?: "Sunucu bağlantısı kurulamadı"}")
-                    
-                    if (ApiKeyRotator.shouldRotateKey(e)) {
-                        Log.w("AiStudyPlannerViewModel", "Quota/Key limit on key. Rotating key...")
-                        break // Break inner retry loop to trigger key rotation in outer loop
-                    }
-
-                    val isUnavailable = e.message?.contains("503") == true || 
-                                        e.message?.contains("high demand", ignoreCase = true) == true ||
-                                        e.message?.contains("UNAVAILABLE", ignoreCase = true) == true
-                    
-                    if (isUnavailable && attempt < maxRetries) {
-                        Log.i("AiStudyPlannerViewModel", "Server busy (503). Retrying in ${currentDelay}ms...")
-                        delay(currentDelay)
-                        currentDelay *= 2
-                    } else if (attempt == maxRetries && isUnavailable) {
-                        lastException = Exception("Yapay zeka sunucularında anlık yoğunluk yaşanıyor (503). Lütfen birkaç saniye sonra tekrar deneyin.")
-                        throw lastException
-                    }
-                }
-            }
-            ApiKeyRotator.rotateToNextKey()
+        val result = GeminiRestClient.generateWithFailover(
+            context = getApplication(),
+            systemInstruction = systemPrompt,
+            userPrompt = promptText,
+            responseJson = true,
+            maxOutputTokens = 8192,
+            thinkingLevel = GeminiThinkingLevel.MEDIUM,
+            timeoutMs = 55_000L
+        )
+        val raw = result.getOrElse { err ->
+            throw (err as? Exception) ?: RuntimeException(err.localizedMessage ?: "Gemini API hatası", err)
+        }.text
+        val cleanJson = GeminiRestClient.extractCleanJsonString(raw)
+        if (cleanJson.isBlank()) {
+            throw IllegalStateException("Yapay zeka boş plan yanıtı döndürdü.")
         }
-        throw lastException ?: RuntimeException("Tüm API anahtarları yanıt vermedi.")
+        return cleanJson
     }
 
     fun generateWeeklyPlan(userCustomNote: String) {
@@ -241,9 +197,9 @@ class AiStudyPlannerViewModel(application: Application) : AndroidViewModel(appli
                 return@launch
             }
 
-            val primaryKey = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-            if (primaryKey.isBlank() || primaryKey == "YOUR_ACTUAL_GEMINI_API_KEY") {
-                _uiState.value = PlannerUiState.Error("Gemini API Key tanımlanmamış. Lütfen local.properties dosyanızı kontrol edin.")
+            UserAiPreferences.initialize(getApplication())
+            if (!ApiKeyRotator.hasAnyGeminiKey(getApplication())) {
+                _uiState.value = PlannerUiState.Error("Gemini API anahtarı tanımlanmamış. Ayarlardan bir anahtar ekleyin.")
                 return@launch
             }
 

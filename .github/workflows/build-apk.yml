@@ -39,13 +39,48 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
         run: |
-          cat <<EOF > local.properties
-          sdk.dir=${ANDROID_HOME}
-          GEMINI_API_KEY=${GEMINI_API_KEY}
-          GEMINI_API_KEYS=${GEMINI_API_KEYS}
-          DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-          KIMI_API_KEY=${KIMI_API_KEY}
-          EOF
+          python3 - << 'PYEOF'
+          import os, re
+
+          def clean_val(v: str) -> str:
+              return (v or "").replace("\r", "").replace("\n", "").replace('"', "").replace("'", "").replace("\\", "").strip()
+
+          sdk_dir = os.environ.get("ANDROID_HOME", "")
+          g_single = clean_val(os.environ.get("GEMINI_API_KEY", ""))
+          g_multi_raw = os.environ.get("GEMINI_API_KEYS", "") or ""
+          multi_parts = [clean_val(p) for p in re.split(r"[,;\s]+", g_multi_raw) if clean_val(p)]
+          all_gemini = []
+          for k in (multi_parts + ([g_single] if g_single else [])):
+              if k and k not in all_gemini:
+                  all_gemini.append(k)
+
+          g_multi = ",".join(all_gemini)
+          g_primary = g_single or (all_gemini[0] if all_gemini else "")
+          deepseek = clean_val(os.environ.get("DEEPSEEK_API_KEY", ""))
+          kimi = clean_val(os.environ.get("KIMI_API_KEY", ""))
+
+          lines = [
+              f"sdk.dir={sdk_dir}",
+              f"GEMINI_API_KEY={g_primary}",
+              f"GEMINI_API_KEYS={g_multi}",
+              f"DEEPSEEK_API_KEY={deepseek}",
+              f"KIMI_API_KEY={kimi}",
+          ]
+          with open("local.properties", "w", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+
+          lens = [len(k) for k in all_gemini]
+          summary = (
+              f"Secrets check -> GEMINI keys={len(all_gemini)} lens={lens}, "
+              f"DEEPSEEK configured={bool(deepseek)} (len={len(deepseek)}), "
+              f"KIMI configured={bool(kimi)} (len={len(kimi)})"
+          )
+          print(summary)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as sf:
+                  sf.write(f"### 🔐 Build Secret Injection Status\n{summary}\n")
+          PYEOF
 
       - name: Build Debug APK & Capture Diagnostics
         shell: bash

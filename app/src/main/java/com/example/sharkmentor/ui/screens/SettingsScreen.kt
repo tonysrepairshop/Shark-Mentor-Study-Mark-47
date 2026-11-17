@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -50,6 +51,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.ApiKeyRotator
 import com.example.sharkmentor.core.ai.GeminiAiFactory
+import com.example.sharkmentor.core.ai.GeminiConnectionTestResult
+import com.example.sharkmentor.core.ai.GeminiRestClient
 import com.example.sharkmentor.core.ai.PreferredPowerMode
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.data.AppThemeMode
@@ -216,6 +219,8 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
     var showGeminiKey by remember { mutableStateOf(false) }
     var showDeepSeekKey by remember { mutableStateOf(false) }
     var showKimiKey by remember { mutableStateOf(false) }
+    var isTestingConnection by remember { mutableStateOf(false) }
+    var connectionTestResult by remember { mutableStateOf<GeminiConnectionTestResult?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(
@@ -254,12 +259,18 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
 
         ApiKeyInputField(
             value = geminiKeysInput,
-            onValueChange = { geminiKeysInput = it },
+            onValueChange = {
+                geminiKeysInput = it
+                connectionTestResult = null
+            },
             label = "Gemini API Key",
             placeholder = "key1, key2",
             isVisible = showGeminiKey,
             onToggleVisibility = { showGeminiKey = !showGeminiKey },
-            onClear = { geminiKeysInput = "" }
+            onClear = {
+                geminiKeysInput = ""
+                connectionTestResult = null
+            }
         )
 
         ApiKeyInputField(
@@ -361,6 +372,75 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
             Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(6.dp))
             Text("Kaydet", fontWeight = FontWeight.Bold)
+        }
+
+        OutlinedButton(
+            onClick = {
+                if (isTestingConnection) return@OutlinedButton
+                isTestingConnection = true
+                connectionTestResult = null
+                scope.launch {
+                    val result = GeminiRestClient.testApiConnection(
+                        context = context,
+                        candidateUserKeysRaw = geminiKeysInput
+                    )
+                    connectionTestResult = result
+                    isTestingConnection = false
+                }
+            },
+            enabled = !isTestingConnection,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (isTestingConnection) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Bağlantı Test Ediliyor (${GeminiRestClient.MODEL_ID})...")
+            } else {
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Bağlantıyı Test Et", fontWeight = FontWeight.SemiBold)
+            }
+        }
+
+        connectionTestResult?.let { result ->
+            val containerColor = if (result.success) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+            } else {
+                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
+            }
+            val contentColor = if (result.success) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onErrorContainer
+            }
+            Surface(
+                color = containerColor,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = result.summary,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = contentColor
+                    )
+                    result.details.forEach { detailLine ->
+                        Text(
+                            text = "• $detailLine",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor.copy(alpha = 0.9f)
+                        )
+                    }
+                }
+            }
         }
     }
 }

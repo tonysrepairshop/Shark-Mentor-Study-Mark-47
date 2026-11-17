@@ -2,32 +2,14 @@ package com.example.sharkmentor.core.ai
 
 import android.graphics.Bitmap
 import android.util.Log
-import com.example.sharkmentor.BuildConfig
 import com.example.sharkmentor.data.local.entity.TargetPeriod
 import com.example.sharkmentor.data.local.entity.TargetType
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.RequestOptions
-import com.google.ai.client.generativeai.type.content
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 object GeminiPlanAnalyzer {
-
-    private fun createModel(modelName: String): GenerativeModel {
-        val apiKey = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-        val cleanKey = apiKey.trim().replace("\"", "").replace("'", "")
-        if (cleanKey.isBlank() || cleanKey == "null") {
-            Log.e("GeminiError", "AI Call Failed: API Key is missing or invalid.")
-            throw IllegalStateException("Gemini API Key is missing or invalid. Check local.properties or BuildConfig.")
-        }
-        val cleanModelName = modelName.trim().removePrefix("models/").removePrefix("/")
-        return GenerativeModel(
-            modelName = cleanModelName,
-            apiKey = cleanKey,
-            requestOptions = RequestOptions(timeout = 60_000L)
-        )
-    }
 
     suspend fun analyzeStudySchedule(bitmaps: List<Bitmap>): Result<ParsedScheduleResult> = withContext(Dispatchers.IO) {
         try {
@@ -56,54 +38,23 @@ object GeminiPlanAnalyzer {
                 }
             """.trimIndent()
 
-            var rawJson: String? = null
-            var lastErr: Exception? = null
-            var currentDelay = 1500L
-            val modelName = "gemini-3.6-flash"
-            val maxRetries = 3
+            val response = GeminiRestClient.generateWithFailover(
+                userPrompt = prompt,
+                bitmaps = bitmaps,
+                responseJson = true,
+                maxOutputTokens = 8192,
+                thinkingLevel = GeminiThinkingLevel.MEDIUM,
+                timeoutMs = 75_000L
+            ).getOrThrow()
 
-            for (attempt in 1..maxRetries) {
-                try {
-                    val model = createModel(modelName)
-                    val resp = model.generateContent(content {
-                        bitmaps.forEach { image(it) }
-                        text(prompt)
-                    })
-                    rawJson = resp.text
-                    if (!rawJson.isNullOrBlank()) break
-                } catch (e: Exception) {
-                    val rootCause = e.cause?.message ?: e.message
-                    Log.e("GeminiPlanAnalyzer", "Call failed on $modelName: ${e.javaClass.simpleName} | Root:$rootCause", e)
-                    lastErr = e
-                    if (ApiKeyRotator.shouldRotateKey(e)) {
-                        Log.w("GeminiPlanAnalyzer", "Quota limit reached on current key. Rotating key...")
-                        ApiKeyRotator.rotateToNextKey()
-                    }
-
-                    val isUnavailable = e.message?.contains("503") == true || 
-                                        e.message?.contains("high demand", ignoreCase = true) == true ||
-                                        e.message?.contains("UNAVAILABLE", ignoreCase = true) == true
-                    
-                    if (isUnavailable && attempt < maxRetries) {
-                        Log.i("GeminiPlanAnalyzer", "Server busy (503). Retrying in ${currentDelay}ms...")
-                        kotlinx.coroutines.delay(currentDelay)
-                        currentDelay *= 2
-                    } else if (attempt == maxRetries && isUnavailable) {
-                        lastErr = java.lang.Exception("Yapay zeka sunucularında anlık yoğunluk yaşanıyor (503). Lütfen birkaç saniye sonra tekrar deneyin.")
-                    }
-                }
+            val cleanedJson = GeminiRestClient.extractCleanJsonString(response.text)
+            if (cleanedJson.isBlank()) {
+                throw IllegalStateException("Empty AI response")
             }
 
-            if (rawJson.isNullOrBlank()) {
-                throw lastErr ?: java.lang.Exception("Empty AI response")
-            }
-            
-            // Basic cleaning in case AI includes markdown code blocks
-            val cleanedJson = rawJson.removePrefix("```json").removeSuffix("```").trim()
-            
             val jsonObject = JSONObject(cleanedJson)
             val targetsArray = jsonObject.getJSONArray("targets")
-            
+
             val parsedTargets = mutableListOf<ParsedTarget>()
             for (i in 0 until targetsArray.length()) {
                 val obj = targetsArray.getJSONObject(i)
@@ -112,7 +63,7 @@ object GeminiPlanAnalyzer {
                 for (j in 0 until tasksArray.length()) {
                     tasks.add(tasksArray.getString(j))
                 }
-                
+
                 parsedTargets.add(
                     ParsedTarget(
                         title = obj.getString("title"),
@@ -123,8 +74,10 @@ object GeminiPlanAnalyzer {
                     )
                 )
             }
-            
+
             Result.success(ParsedScheduleResult(parsedTargets))
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             Log.e("GeminiPlanAnalyzer", "Error analyzing schedule: ${e.message}", e)
             Result.failure(e)

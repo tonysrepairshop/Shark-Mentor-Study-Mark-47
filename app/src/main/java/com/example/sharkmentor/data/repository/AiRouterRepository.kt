@@ -6,9 +6,14 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
-import com.example.sharkmentor.BuildConfig
-import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
+import com.example.sharkmentor.core.ai.GeminiApiException
+import com.example.sharkmentor.core.ai.GeminiChatTurn
+import com.example.sharkmentor.core.ai.GeminiFunctionDeclaration
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.core.util.PdfBitmapConverter
 import com.example.sharkmentor.data.local.SharkMentorDatabase
@@ -19,22 +24,13 @@ import com.example.sharkmentor.data.local.entity.TargetPeriod
 import com.example.sharkmentor.data.local.entity.TargetType
 import com.example.sharkmentor.data.local.entity.TrainingFolderEntity
 import com.example.sharkmentor.data.local.entity.TrainingQuestionEntity
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.FunctionCallPart
-import com.google.ai.client.generativeai.type.FunctionDeclaration
-import com.google.ai.client.generativeai.type.GenerationConfig
-import com.google.ai.client.generativeai.type.QuotaExceededException
-import com.google.ai.client.generativeai.type.RequestOptions
-import com.google.ai.client.generativeai.type.ResponseStoppedException
-import com.google.ai.client.generativeai.type.Schema
-import com.google.ai.client.generativeai.type.Tool
-import com.google.ai.client.generativeai.type.content
-import com.google.ai.client.generativeai.type.generationConfig
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.UUID
@@ -70,13 +66,7 @@ enum class AiModelPower(
         temperature = 0.45f,
         maxOutputTokens = 8192,
         topP = 0.9f
-    );
-
-    fun toGenerationConfig(overrideMaxTokens: Int? = null): GenerationConfig = generationConfig {
-        temperature = this@AiModelPower.temperature
-        maxOutputTokens = overrideMaxTokens ?: this@AiModelPower.maxOutputTokens
-        topP = this@AiModelPower.topP
-    }
+    )
 }
 
 enum class SharkAiCapability(
@@ -273,11 +263,12 @@ class AiRouterRepository(
     private val database: SharkMentorDatabase = SharkMentorDatabase.getDatabase(context.applicationContext)
 ) {
 
+    init {
+        UserAiPreferences.initialize(context)
+    }
+
     companion object {
         const val SOLE_GEMINI_MODEL = "gemini-3.6-flash"
-        private val VISION_MODEL_TIERS = listOf(SOLE_GEMINI_MODEL)
-        private val FAST_MODEL_TIERS = listOf(SOLE_GEMINI_MODEL)
-        private val DEEP_MODEL_TIERS = listOf(SOLE_GEMINI_MODEL)
 
         const val MANDATORY_PERSONA_RULES = """
 KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
@@ -402,60 +393,78 @@ $MANDATORY_PERSONA_RULES
         database.planFolderDao()
     )
 
-    val organizeErrorBankDeclaration: FunctionDeclaration = FunctionDeclaration(
-        name = "organizeErrorBank",
-        description = "Organizes the student's Error Bank (Hata Kumbarası) by classifying untagged questions by subject/topic, creating a training folder, or saving an attached question into the error bank.",
-        parameters = listOf(
-            Schema.str(
-                name = "subject",
-                description = "Subject name such as Matematik, Fizik, Kimya, Biyoloji, Türkçe, Tarih, Coğrafya"
+    private val autonomousToolDeclarations: List<GeminiFunctionDeclaration> by lazy {
+        listOf(
+            GeminiFunctionDeclaration(
+                name = "organizeErrorBank",
+                description = "Organizes the student's Error Bank (Hata Kumbarası) by classifying untagged questions by subject/topic, creating a training folder, or saving an attached question into the error bank.",
+                parametersJsonSchema = JSONObject().apply {
+                    put("type", "OBJECT")
+                    put("properties", JSONObject().apply {
+                        put(
+                            "subject",
+                            JSONObject()
+                                .put("type", "STRING")
+                                .put("description", "Subject name such as Matematik, Fizik, Kimya, Biyoloji, Türkçe, Tarih, Coğrafya")
+                        )
+                        put(
+                            "topic",
+                            JSONObject()
+                                .put("type", "STRING")
+                                .put("description", "Sub-topic name such as Türev, İntegral, Optik, Paragraf")
+                        )
+                        put(
+                            "folderTitle",
+                            JSONObject()
+                                .put("type", "STRING")
+                                .put("description", "Title for the organized training folder")
+                        )
+                    })
+                    put("required", JSONArray().put("subject").put("topic"))
+                }
             ),
-            Schema.str(
-                name = "topic",
-                description = "Sub-topic name such as Türev, İntegral, Optik, Paragraf"
-            ),
-            Schema.str(
-                name = "folderTitle",
-                description = "Title for the organized training folder"
+            GeminiFunctionDeclaration(
+                name = "addStudyPlanItem",
+                description = "Adds a new study task or session item directly into the student's active Study Plan (Çalışma Planı).",
+                parametersJsonSchema = JSONObject().apply {
+                    put("type", "OBJECT")
+                    put("properties", JSONObject().apply {
+                        put(
+                            "subject",
+                            JSONObject()
+                                .put("type", "STRING")
+                                .put("description", "Subject name (e.g. Matematik, Fizik, Türkçe)")
+                        )
+                        put(
+                            "topic",
+                            JSONObject()
+                                .put("type", "STRING")
+                                .put("description", "Topic or study focus (e.g. Türev Uygulamaları, Paragraf Rutini)")
+                        )
+                        put(
+                            "dayOfWeek",
+                            JSONObject()
+                                .put("type", "INTEGER")
+                                .put("description", "Day of week from 1 (Monday / Pazartesi) to 7 (Sunday / Pazar)")
+                        )
+                        put(
+                            "scheduledTime",
+                            JSONObject()
+                                .put("type", "STRING")
+                                .put("description", "Time slot formatted as HH:mm - HH:mm (e.g. 16:00 - 17:30)")
+                        )
+                        put(
+                            "targetQuestions",
+                            JSONObject()
+                                .put("type", "INTEGER")
+                                .put("description", "Target number of questions to solve (minimum 20, default 30)")
+                        )
+                    })
+                    put("required", JSONArray().put("subject").put("topic").put("dayOfWeek"))
+                }
             )
-        ),
-        requiredParameters = listOf("subject", "topic")
-    )
-
-    val addStudyPlanItemDeclaration: FunctionDeclaration = FunctionDeclaration(
-        name = "addStudyPlanItem",
-        description = "Adds a new study task or session item directly into the student's active Study Plan (Çalışma Planı).",
-        parameters = listOf(
-            Schema.str(
-                name = "subject",
-                description = "Subject name (e.g. Matematik, Fizik, Türkçe)"
-            ),
-            Schema.str(
-                name = "topic",
-                description = "Topic or study focus (e.g. Türev Uygulamaları, Paragraf Rutini)"
-            ),
-            Schema.int(
-                name = "dayOfWeek",
-                description = "Day of week from 1 (Monday / Pazartesi) to 7 (Sunday / Pazar)"
-            ),
-            Schema.str(
-                name = "scheduledTime",
-                description = "Time slot formatted as HH:mm - HH:mm (e.g. 16:00 - 17:30)"
-            ),
-            Schema.int(
-                name = "targetQuestions",
-                description = "Target number of questions to solve (minimum 20, default 30)"
-            )
-        ),
-        requiredParameters = listOf("subject", "topic", "dayOfWeek")
-    )
-
-    val autonomousSharkTool: Tool = Tool(
-        functionDeclarations = listOf(
-            organizeErrorBankDeclaration,
-            addStudyPlanItemDeclaration
         )
-    )
+    }
 
     /**
      * Standalone Engine 1: `SolverEngine` (Soru Çözücü Modülü)
@@ -477,8 +486,7 @@ $MANDATORY_PERSONA_RULES
             }
         }.trim()
 
-        // Solver questions need full step-by-step math room without truncation
-        val maxTokens = 2048
+        val maxTokens = 4096
 
         return streamEnginePipeline(
             activeEngine = SharkAiEngine.SOLVER_ENGINE,
@@ -511,7 +519,7 @@ $MANDATORY_PERSONA_RULES
             }
         }.trim()
 
-        val maxTokens = 2048
+        val maxTokens = 4096
 
         return streamEnginePipeline(
             activeEngine = SharkAiEngine.TWIN_QUESTION_ENGINE,
@@ -544,7 +552,7 @@ $MANDATORY_PERSONA_RULES
             }
         }.trim()
 
-        val maxTokens = 2048
+        val maxTokens = 6144
 
         return streamEnginePipeline(
             activeEngine = SharkAiEngine.PLANNER_OR_ORGANIZER,
@@ -660,9 +668,7 @@ $MANDATORY_PERSONA_RULES
     }
 
     /**
-     * Dedicated Vision & OCR pipeline powered by Google Gemini Vision.
-     * Enforces `gemini-3.6-flash`, `temperature = 0.1f`, `tools = emptyList()`,
-     * and the 1280px high-contrast pre-processing pipeline.
+     * Dedicated Vision & OCR pipeline powered by Google Gemini Vision (`gemini-3.6-flash` REST).
      */
     suspend fun executeGeminiVision(
         prompt: String,
@@ -673,161 +679,116 @@ $MANDATORY_PERSONA_RULES
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
         val attachments = resolveMultimodalAttachment(attachmentUri)
-        val keyCount = ApiKeyRotator.getKeyCount().coerceAtLeast(1)
-        var lastException: Throwable? = null
+        val extraDecodedBitmaps = mutableListOf<Bitmap>()
 
-        val enrichedSystemInstruction = buildString {
-            append(systemInstruction.trim())
-            append(getDepthDirective(modelPower))
-        }.trim()
+        try {
+            val enrichedSystemInstruction = buildString {
+                append(systemInstruction.trim())
+                append(getDepthDirective(modelPower))
+            }.trim()
 
-        val visionConfig = generationConfig {
-            temperature = if (modelPower == AiModelPower.PRO) 0.2f else 0.1f
-            maxOutputTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096
-            topP = 0.85f
-        }
+            val visionBitmaps = mutableListOf<Bitmap>()
+            visionBitmaps.addAll(attachments.bitmaps)
 
-        for (modelName in VISION_MODEL_TIERS) {
-            val maxAttempts = (keyCount * 2).coerceIn(2, 6)
-            for (attempt in 0 until maxAttempts) {
-                val activeKey = ApiKeyRotator.getActiveKey()
-                    .ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-                    .trim()
-                    .replace("\"", "")
-                    .replace("'", "")
-
-                if (activeKey.isBlank() || activeKey == "null") {
-                    ApiKeyRotator.rotateToNextKey()
-                    continue
+            val inlineFiles = mutableListOf<Pair<String, ByteArray>>()
+            if (visionBitmaps.isEmpty() && attachments.rawBytes != null) {
+                val decoded = runCatching {
+                    BitmapFactory.decodeByteArray(attachments.rawBytes, 0, attachments.rawBytes.size)
+                }.getOrNull()
+                if (decoded != null) {
+                    extraDecodedBitmaps.add(decoded)
+                    visionBitmaps.add(decoded)
+                } else {
+                    inlineFiles.add(attachments.mimeType to attachments.rawBytes)
                 }
+            }
 
-                try {
-                    val model = GenerativeModel(
-                        modelName = SOLE_GEMINI_MODEL,
-                        apiKey = activeKey,
-                        generationConfig = visionConfig,
-                        tools = emptyList(), // Strictly tools = emptyList() for vision requests
-                        systemInstruction = if (enrichedSystemInstruction.isNotBlank()) {
-                            content { text(enrichedSystemInstruction) }
-                        } else null,
-                        requestOptions = RequestOptions(timeout = 60_000L)
+            if (visionBitmaps.isEmpty() && inlineFiles.isEmpty()) {
+                return@withContext Result.failure(IllegalStateException("Eklenen dosya veya görsel okunamadı."))
+            }
+
+            val thinkingLevel = if (modelPower == AiModelPower.PRO) {
+                GeminiThinkingLevel.MEDIUM
+            } else {
+                GeminiThinkingLevel.LOW
+            }
+            val maxTokens = if (modelPower == AiModelPower.PRO) 12288 else 6144
+
+            val geminiResult = GeminiRestClient.streamWithFailover(
+                context = context,
+                systemInstruction = enrichedSystemInstruction,
+                userPrompt = prompt.trim().ifBlank { "Eklenen görseli veya belgeyi incele." },
+                bitmaps = visionBitmaps,
+                inlineFiles = inlineFiles,
+                tools = emptyList(),
+                responseJson = false,
+                maxOutputTokens = maxTokens,
+                thinkingLevel = thinkingLevel,
+                timeoutMs = 75_000L,
+                onPartialText = onPartialText
+            )
+
+            if (geminiResult.isSuccess) {
+                val finalText = geminiResult.getOrThrow().text.trim().ifBlank {
+                    "Görsel incelendi ve çözüldü."
+                }
+                val parsedActionNotes = parseInlineActionNotes(finalText)
+                onPartialText(finalText)
+                return@withContext Result.success(
+                    AiRouterResult(
+                        text = finalText,
+                        executedToolNotes = parsedActionNotes,
+                        createdPlanFolderId = null,
+                        engineUsed = activeEngine
                     )
+                )
+            }
 
-                    val accumulatedText = StringBuilder()
-                    val inputContent = buildMultimodalInputContent(prompt, attachments)
-                    val responseFlow = model.generateContentStream(inputContent)
+            val lastException = geminiResult.exceptionOrNull()
+            if (lastException is CancellationException) throw lastException
 
+            // Seamless fallback to Kimi Vision ONLY if Kimi key is configured
+            val kimiKey = DeepSeekClient.getKimiApiKey(context)
+            if (kimiKey.isNotBlank()) {
+                val base64Img = extractBase64FromAttachment(attachments)
+                if (base64Img != null) {
+                    Log.i("SharkAiVision", "Gemini vision failed, falling back to Kimi Vision...")
                     try {
-                        responseFlow.collect { chunk ->
-                            val chunkText = runCatching { chunk.text }.getOrNull()
-                            if (!chunkText.isNullOrEmpty()) {
-                                accumulatedText.append(chunkText)
-                                onPartialText(accumulatedText.toString())
-                            }
-                        }
-                    } catch (rse: ResponseStoppedException) {
-                        Log.w("SharkAiVision", "Vision stream stopped (${rse.message}), accumulated ${accumulatedText.length} chars")
-                        if (accumulatedText.isBlank()) {
-                            throw rse
-                        }
-                    } catch (e: Exception) {
-                        if (accumulatedText.length > 50) {
-                            Log.w("SharkAiVision", "Vision stream interrupted (${e.message}), but kept ${accumulatedText.length} chars")
-                        } else {
-                            throw e
-                        }
-                    }
-
-                    val finalText = accumulatedText.toString().trim().ifBlank {
-                        "Görsel incelendi ve çözüldü."
-                    }
-
-                    val parsedActionNotes = parseInlineActionNotes(finalText)
-                    onPartialText(finalText)
-
-                    return@withContext Result.success(
-                        AiRouterResult(
-                            text = finalText,
-                            executedToolNotes = parsedActionNotes,
-                            createdPlanFolderId = null,
-                            engineUsed = activeEngine
+                        val kimiResult = DeepSeekClient.streamKimiVisionCompletion(
+                            systemPrompt = enrichedSystemInstruction,
+                            userPrompt = prompt,
+                            base64Image = base64Img,
+                            mimeType = attachments.mimeType,
+                            maxTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096,
+                            context = context,
+                            onAccumulatedChunk = onPartialText
                         )
-                    )
-                } catch (quotaEx: QuotaExceededException) {
-                    Log.w("SharkAiVision", "QuotaExceededException on Vision model $modelName (attempt ${attempt + 1}/$maxAttempts). Rotating key...", quotaEx)
-                    lastException = quotaEx
-                    ApiKeyRotator.rotateToNextKey()
-                    delay(300L * (attempt + 1))
-                } catch (e: Exception) {
-                    Log.w("SharkAiVision", "Vision error on $modelName (attempt ${attempt + 1}/$maxAttempts): ${e.javaClass.simpleName} - ${e.message}")
-                    lastException = e
-                    val msg = "${e.javaClass.simpleName} ${e.message} ${e.cause?.message}".lowercase()
-                    val is503OrOverload = msg.contains("503") ||
-                        msg.contains("overload") ||
-                        msg.contains("unavailable") ||
-                        e.javaClass.simpleName.contains("ServerException", ignoreCase = true)
-                    val isKeyOrQuota = msg.contains("429") ||
-                        msg.contains("quota") ||
-                        msg.contains("resource_exhausted") ||
-                        ApiKeyRotator.shouldRotateKey(e)
-
-                    if (is503OrOverload) {
-                        // Exponential backoff for 503 Overloaded: 500ms, 1000ms, 1500ms...
-                        val backoffMs = (500L * (attempt + 1)).coerceAtMost(2500L)
-                        Log.w("SharkAiVision", "Model $modelName returned 503/Overloaded. Rotating key and backing off for ${backoffMs}ms...")
-                        ApiKeyRotator.rotateToNextKey()
-                        delay(backoffMs)
-                        if (attempt >= 2) {
-                            break
-                        }
-                    } else if (isKeyOrQuota) {
-                        ApiKeyRotator.rotateToNextKey()
-                        delay(250L)
-                    } else if (msg.contains("404") || msg.contains("not_found") || msg.contains("no longer available") || msg.contains("not found for api version")) {
-                        break
-                    } else {
-                        ApiKeyRotator.rotateToNextKey()
-                        delay(300L)
-                    }
-                }
-            }
-        }
-
-        // Seamless fallback to Kimi Vision if Gemini Vision is unavailable or rate-limited
-        val kimiKey = DeepSeekClient.getKimiApiKey()
-        if (kimiKey.isNotBlank()) {
-            val base64Img = extractBase64FromAttachment(attachments)
-            if (base64Img != null) {
-                Log.i("SharkAiVision", "Gemini vision exhausted, falling back to Kimi Vision...")
-                try {
-                    val kimiResult = DeepSeekClient.streamKimiVisionCompletion(
-                        systemPrompt = enrichedSystemInstruction,
-                        userPrompt = prompt,
-                        base64Image = base64Img,
-                        mimeType = attachments.mimeType ?: "image/jpeg",
-                        maxTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096,
-                        onAccumulatedChunk = onPartialText
-                    )
-                    if (kimiResult.isNotBlank()) {
-                        val parsedActionNotes = parseInlineActionNotes(kimiResult)
-                        return@withContext Result.success(
-                            AiRouterResult(
-                                text = kimiResult,
-                                executedToolNotes = parsedActionNotes,
-                                createdPlanFolderId = null,
-                                engineUsed = activeEngine
+                        if (kimiResult.isNotBlank()) {
+                            val parsedActionNotes = parseInlineActionNotes(kimiResult)
+                            return@withContext Result.success(
+                                AiRouterResult(
+                                    text = kimiResult,
+                                    executedToolNotes = parsedActionNotes,
+                                    createdPlanFolderId = null,
+                                    engineUsed = activeEngine
+                                )
                             )
-                        )
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (ke: Throwable) {
+                        Log.w("SharkAiVision", "Kimi Vision fallback failed: ${ke.message}", ke)
                     }
-                } catch (ke: Throwable) {
-                    Log.w("SharkAiVision", "Kimi Vision fallback failed: ${ke.message}", ke)
                 }
             }
-        }
 
-        Result.failure(
-            lastException ?: IllegalStateException("Vision modelleri yanıt vermedi.")
-        )
+            Result.failure(
+                lastException ?: IllegalStateException("Vision modelleri yanıt vermedi.")
+            )
+        } finally {
+            attachments.bitmaps.forEach { runCatching { if (!it.isRecycled) it.recycle() } }
+            extraDecodedBitmaps.forEach { runCatching { if (!it.isRecycled) it.recycle() } }
+        }
     }
 
     /**
@@ -878,9 +839,9 @@ $MANDATORY_PERSONA_RULES
 
     /**
      * Dedicated Text/Chat streaming pipeline:
-     * - Complex autonomous action/tool generation -> `gemini-3.6-flash` primary, DeepSeek/Kimi fallback.
-     * - Long text/document context summary -> `Kimi` primary, DeepSeek -> `gemini-3.6-flash` fallback.
-     * - Peer chat, "Detaylı" (`AiModelPower.PRO`) deep topic synthesis & explanations, short-medium note summaries -> `DeepSeek` primary, `Kimi` immediate fallback, `gemini-3.6-flash` critical fallback.
+     * - Respects `UserAiPreferences.selectedAiProvider` (`AUTO`, `GEMINI`, `DEEPSEEK`, `KIMI`).
+     * - Forwards conversation `chatHistory` to Gemini as well as OpenAI-compatible providers.
+     * - Skips DeepSeek/Kimi completely when user chose `GEMINI` or when no DeepSeek/Kimi keys exist.
      */
     suspend fun executeTextStream(
         activeEngine: SharkAiEngine = SharkAiEngine.CONVERSATIONAL_PEER,
@@ -895,64 +856,128 @@ $MANDATORY_PERSONA_RULES
             append(getDepthDirective(modelPower))
         }.trim()
 
+        val selectedProvider = UserAiPreferences.getOrNull(context)?.getSelectedProvider() ?: AiProviderChoice.AUTO
+        val hasOpenAiProviderKeys = DeepSeekClient.hasAnyOpenAiProviderKey(context)
+        val geminiHistory = chatHistory.takeLast(6).map { msg ->
+            GeminiChatTurn(role = msg.role, text = msg.content)
+        }
+
         val isAutonomousActionRequest = activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER ||
             AutoIntentClassifier.isComplexAutonomousActionIntent(prompt)
 
-        if (isAutonomousActionRequest) {
-            val geminiActionAttempt = streamGeminiTextFallback(
-                activeEngine = activeEngine,
-                prompt = prompt,
-                systemInstruction = enrichedSystemInstruction,
-                modelPower = modelPower,
-                overrideMaxTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096,
-                forceInlineActionMode = true,
-                onPartialText = onPartialText
-            )
-            if (geminiActionAttempt.isSuccess) {
-                return@withContext geminiActionAttempt
+        suspend fun runOpenAiProvider(): Result<AiRouterResult> {
+            return try {
+                val temp = if (modelPower == AiModelPower.PRO) 0.4f else 0.25f
+                val maxTokens = when {
+                    isAutonomousActionRequest -> 4096
+                    modelPower == AiModelPower.PRO -> 4096
+                    else -> 2048
+                }
+                val preferKimi = DeepSeekClient.isLongContextPrompt(prompt, enrichedSystemInstruction)
+                val resultText = DeepSeekClient.streamChatCompletion(
+                    systemPrompt = enrichedSystemInstruction,
+                    userPrompt = prompt,
+                    chatHistory = chatHistory,
+                    temperature = temp,
+                    maxTokens = maxTokens,
+                    preferKimiLongContext = preferKimi,
+                    context = context,
+                    onAccumulatedChunk = onPartialText
+                )
+                val parsedActionNotes = parseInlineActionNotes(resultText)
+                Result.success(
+                    AiRouterResult(
+                        text = resultText,
+                        executedToolNotes = parsedActionNotes,
+                        createdPlanFolderId = null,
+                        engineUsed = activeEngine
+                    )
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                Result.failure(e)
             }
-            Log.w("AiRouterRepository", "Gemini autonomous action call failed, falling back to DeepSeek/Kimi...")
         }
 
-        try {
-            val temp = if (modelPower == AiModelPower.PRO) 0.4f else 0.25f
-            // Low quota consumption in Hızlı mode (1536 tokens) vs deep synthesis in Detaylı mode (4096 tokens)
-            val maxTokens = when {
-                isAutonomousActionRequest -> 4096
-                modelPower == AiModelPower.PRO -> 4096
-                else -> 1536
-            }
-            val preferKimi = DeepSeekClient.isLongContextPrompt(prompt, enrichedSystemInstruction)
-
-            val resultText = DeepSeekClient.streamChatCompletion(
-                systemPrompt = enrichedSystemInstruction,
-                userPrompt = prompt,
-                chatHistory = chatHistory,
-                temperature = temp,
-                maxTokens = maxTokens,
-                preferKimiLongContext = preferKimi,
-                onAccumulatedChunk = onPartialText
-            )
-
-            val parsedActionNotes = parseInlineActionNotes(resultText)
-
-            Result.success(
-                AiRouterResult(
-                    text = resultText,
-                    executedToolNotes = parsedActionNotes,
-                    createdPlanFolderId = null,
-                    engineUsed = activeEngine
+        when (selectedProvider) {
+            AiProviderChoice.GEMINI -> {
+                return@withContext streamGeminiTextFallback(
+                    activeEngine = activeEngine,
+                    prompt = prompt,
+                    systemInstruction = enrichedSystemInstruction,
+                    chatHistory = geminiHistory,
+                    modelPower = modelPower,
+                    overrideMaxTokens = if (modelPower == AiModelPower.PRO) 16384 else 6144,
+                    forceInlineActionMode = isAutonomousActionRequest,
+                    onPartialText = onPartialText
                 )
-            )
-        } catch (e: Exception) {
-            Log.w("AiRouterRepository", "DeepSeek/Kimi text stream failed (${e.message}), attempting Gemini (gemini-3.6-flash) critical fallback...", e)
-            streamGeminiTextFallback(
-                activeEngine = activeEngine,
-                prompt = prompt,
-                systemInstruction = enrichedSystemInstruction,
-                modelPower = modelPower,
-                onPartialText = onPartialText
-            )
+            }
+
+            AiProviderChoice.DEEPSEEK, AiProviderChoice.KIMI -> {
+                if (hasOpenAiProviderKeys) {
+                    val openAiAttempt = runOpenAiProvider()
+                    if (openAiAttempt.isSuccess) return@withContext openAiAttempt
+                    Log.w(
+                        "AiRouterRepository",
+                        "Selected provider $selectedProvider failed (${openAiAttempt.exceptionOrNull()?.message}), falling back to gemini-3.6-flash..."
+                    )
+                }
+                return@withContext streamGeminiTextFallback(
+                    activeEngine = activeEngine,
+                    prompt = prompt,
+                    systemInstruction = enrichedSystemInstruction,
+                    chatHistory = geminiHistory,
+                    modelPower = modelPower,
+                    overrideMaxTokens = if (modelPower == AiModelPower.PRO) 16384 else 6144,
+                    forceInlineActionMode = isAutonomousActionRequest,
+                    onPartialText = onPartialText
+                )
+            }
+
+            AiProviderChoice.AUTO -> {
+                if (isAutonomousActionRequest) {
+                    val geminiActionAttempt = streamGeminiTextFallback(
+                        activeEngine = activeEngine,
+                        prompt = prompt,
+                        systemInstruction = enrichedSystemInstruction,
+                        chatHistory = geminiHistory,
+                        modelPower = modelPower,
+                        overrideMaxTokens = if (modelPower == AiModelPower.PRO) 12288 else 6144,
+                        forceInlineActionMode = true,
+                        onPartialText = onPartialText
+                    )
+                    if (geminiActionAttempt.isSuccess) {
+                        return@withContext geminiActionAttempt
+                    }
+                    if (!hasOpenAiProviderKeys) {
+                        return@withContext geminiActionAttempt
+                    }
+                    Log.w("AiRouterRepository", "Gemini autonomous action call failed, falling back to DeepSeek/Kimi...")
+                    val openAiFallback = runOpenAiProvider()
+                    return@withContext if (openAiFallback.isSuccess) openAiFallback else geminiActionAttempt
+                }
+
+                if (hasOpenAiProviderKeys) {
+                    val openAiAttempt = runOpenAiProvider()
+                    if (openAiAttempt.isSuccess) {
+                        return@withContext openAiAttempt
+                    }
+                    Log.w(
+                        "AiRouterRepository",
+                        "DeepSeek/Kimi text stream failed (${openAiAttempt.exceptionOrNull()?.message}), falling back to gemini-3.6-flash..."
+                    )
+                }
+
+                return@withContext streamGeminiTextFallback(
+                    activeEngine = activeEngine,
+                    prompt = prompt,
+                    systemInstruction = enrichedSystemInstruction,
+                    chatHistory = geminiHistory,
+                    modelPower = modelPower,
+                    onPartialText = onPartialText
+                )
+            }
         }
     }
 
@@ -997,197 +1022,101 @@ $MANDATORY_PERSONA_RULES
         activeEngine: SharkAiEngine,
         prompt: String,
         systemInstruction: String,
+        chatHistory: List<GeminiChatTurn> = emptyList(),
         modelPower: AiModelPower = AiModelPower.FLASH,
         overrideMaxTokens: Int? = null,
         forceInlineActionMode: Boolean = false,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
-        val keyCount = ApiKeyRotator.getKeyCount().coerceAtLeast(1)
-        var lastException: Throwable? = null
-        val modelTiers = if (modelPower == AiModelPower.PRO) DEEP_MODEL_TIERS else FAST_MODEL_TIERS
         val shouldAttachTools = !forceInlineActionMode && activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER
+        val thinkingLevel = if (modelPower == AiModelPower.PRO) {
+            GeminiThinkingLevel.MEDIUM
+        } else {
+            GeminiThinkingLevel.LOW
+        }
+        val effectiveMaxTokens = overrideMaxTokens ?: if (modelPower == AiModelPower.PRO) 16384 else 6144
 
-        for (modelName in modelTiers) {
-            for (attempt in 0 until keyCount) {
-                val activeKey = ApiKeyRotator.getActiveKey()
-                    .ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-                    .trim()
-                    .replace("\"", "")
-                    .replace("'", "")
+        var geminiResult = GeminiRestClient.streamWithFailover(
+            context = context,
+            systemInstruction = systemInstruction,
+            userPrompt = prompt,
+            chatHistory = chatHistory,
+            tools = if (shouldAttachTools) autonomousToolDeclarations else emptyList(),
+            responseJson = false,
+            maxOutputTokens = effectiveMaxTokens,
+            thinkingLevel = thinkingLevel,
+            timeoutMs = 75_000L,
+            onPartialText = onPartialText
+        )
 
-                if (activeKey.isBlank() || activeKey == "null") {
-                    ApiKeyRotator.rotateToNextKey()
-                    continue
+        val err = geminiResult.exceptionOrNull()
+        if (err is CancellationException) throw err
+
+        if (geminiResult.isFailure && shouldAttachTools && (err as? GeminiApiException)?.httpCode == 400) {
+            Log.w("AiRouterRepository", "Tool schema returned HTTP 400; retrying without tools...")
+            geminiResult = GeminiRestClient.streamWithFailover(
+                context = context,
+                systemInstruction = systemInstruction,
+                userPrompt = prompt,
+                chatHistory = chatHistory,
+                tools = emptyList(),
+                responseJson = false,
+                maxOutputTokens = effectiveMaxTokens,
+                thinkingLevel = thinkingLevel,
+                timeoutMs = 75_000L,
+                onPartialText = onPartialText
+            )
+        }
+
+        if (geminiResult.isFailure) {
+            val finalErr = geminiResult.exceptionOrNull()
+            if (finalErr is CancellationException) throw finalErr
+            return@withContext Result.failure(
+                finalErr ?: IllegalStateException("Tüm AI modelleri ve yedek anahtarlar yanıt vermedi.")
+            )
+        }
+
+        val response = geminiResult.getOrThrow()
+        val toolNotes = mutableListOf<String>()
+        var createdFolderId: String? = null
+
+        if (response.functionCalls.isNotEmpty()) {
+            for (call in response.functionCalls) {
+                val executionResult = executeToolCall(call.name, call.args, null)
+                if (executionResult.note.isNotBlank()) {
+                    toolNotes.add(executionResult.note)
                 }
-
-                try {
-                    val model = createModel(
-                        modelName = modelName,
-                        apiKey = activeKey,
-                        systemInstruction = systemInstruction,
-                        modelPower = modelPower,
-                        overrideMaxTokens = overrideMaxTokens,
-                        enableTools = shouldAttachTools
-                    )
-
-                    val accumulatedText = StringBuilder()
-                    val collectedFunctionCalls = mutableListOf<FunctionCallPart>()
-
-                    val responseFlow = model.generateContentStream(prompt)
-
-                    try {
-                        responseFlow.collect { chunk ->
-                            val chunkText = runCatching { chunk.text }.getOrNull()
-                            if (!chunkText.isNullOrEmpty()) {
-                                accumulatedText.append(chunkText)
-                                onPartialText(accumulatedText.toString())
-                            }
-                            val calls = runCatching { chunk.functionCalls }.getOrDefault(emptyList())
-                            if (calls.isNotEmpty()) {
-                                collectedFunctionCalls.addAll(calls)
-                            }
-                        }
-                    } catch (rse: ResponseStoppedException) {
-                        Log.w("AiRouterRepository", "Gemini stream stopped (${rse.message}), keeping accumulated ${accumulatedText.length} chars")
-                        if (accumulatedText.isBlank()) {
-                            throw rse
-                        }
-                    } catch (e: Exception) {
-                        if (accumulatedText.length > 50) {
-                            Log.w("AiRouterRepository", "Gemini stream interrupted (${e.message}), but keeping ${accumulatedText.length} chars")
-                        } else {
-                            throw e
-                        }
-                    }
-
-                    val toolNotes = mutableListOf<String>()
-                    var createdFolderId: String? = null
-
-                    if (collectedFunctionCalls.isNotEmpty()) {
-                        for (call in collectedFunctionCalls) {
-                            val executionResult = executeToolCall(call, null)
-                            if (executionResult.note.isNotBlank()) {
-                                toolNotes.add(executionResult.note)
-                            }
-                            if (executionResult.planFolderId != null) {
-                                createdFolderId = executionResult.planFolderId
-                            }
-                        }
-                    }
-
-                    val finalText = buildString {
-                        val modelText = accumulatedText.toString().trim()
-                        if (modelText.isNotBlank()) {
-                            append(modelText)
-                        }
-                        if (toolNotes.isNotEmpty()) {
-                            if (isNotEmpty()) append("\n\n")
-                            append(toolNotes.joinToString("\n"))
-                        }
-                    }.ifBlank {
-                        "İşleminiz tamamlandı."
-                    }
-
-                    val inlineNotes = parseInlineActionNotes(finalText)
-                    toolNotes.addAll(inlineNotes)
-
-                    onPartialText(finalText)
-
-                    return@withContext Result.success(
-                        AiRouterResult(
-                            text = finalText,
-                            executedToolNotes = toolNotes,
-                            createdPlanFolderId = createdFolderId,
-                            engineUsed = activeEngine
-                        )
-                    )
-                } catch (quotaEx: QuotaExceededException) {
-                    Log.w(
-                        "AiRouterRepository",
-                        "QuotaExceededException (HTTP 429) on $modelName (key attempt ${attempt + 1}/$keyCount). Rotating key...",
-                        quotaEx
-                    )
-                    lastException = quotaEx
-                    ApiKeyRotator.rotateToNextKey()
-                    delay(150L)
-                } catch (e: Exception) {
-                    val fullMsg = "${e.javaClass.simpleName} ${e.message} ${e.cause?.message}".lowercase()
-                    val isQuotaOr429 = fullMsg.contains("429") ||
-                        fullMsg.contains("quota") ||
-                        fullMsg.contains("resource_exhausted") ||
-                        fullMsg.contains("rate_limit") ||
-                        ApiKeyRotator.shouldRotateKey(e)
-
-                    Log.w(
-                        "AiRouterRepository",
-                        "Stream call failed on $modelName (attempt ${attempt + 1}/$keyCount, isQuota=$isQuotaOr429): ${e.message}"
-                    )
-                    lastException = e
-
-                    if (isQuotaOr429) {
-                        ApiKeyRotator.rotateToNextKey()
-                        delay(150L)
-                    } else if (shouldAttachTools) {
-                        // Immediate tool-free streaming fallback on the same fast model
-                        val fallbackResult = runCatching {
-                            val fallbackModel = createModel(
-                                modelName = SOLE_GEMINI_MODEL,
-                                apiKey = activeKey,
-                                systemInstruction = systemInstruction,
-                                modelPower = modelPower,
-                                overrideMaxTokens = overrideMaxTokens,
-                                enableTools = false
-                            )
-                            val sb = StringBuilder()
-                            fallbackModel.generateContentStream(prompt).collect { chunk ->
-                                val t = runCatching { chunk.text }.getOrNull()
-                                if (!t.isNullOrEmpty()) {
-                                    sb.append(t)
-                                    onPartialText(sb.toString())
-                                }
-                            }
-                            sb.toString().trim()
-                        }.getOrNull()
-
-                        if (!fallbackResult.isNullOrBlank()) {
-                            return@withContext Result.success(
-                                AiRouterResult(
-                                    text = fallbackResult,
-                                    executedToolNotes = parseInlineActionNotes(fallbackResult),
-                                    engineUsed = activeEngine
-                                )
-                            )
-                        }
-                        break
-                    } else {
-                        break
-                    }
+                if (executionResult.planFolderId != null) {
+                    createdFolderId = executionResult.planFolderId
                 }
             }
         }
 
-        Result.failure(
-            lastException ?: IllegalStateException("Tüm AI modelleri ve yedek anahtarlar yanıt vermedi.")
-        )
-    }
+        val finalText = buildString {
+            val modelText = response.text.trim()
+            if (modelText.isNotBlank()) {
+                append(modelText)
+            }
+            if (toolNotes.isNotEmpty()) {
+                if (isNotEmpty()) append("\n\n")
+                append(toolNotes.joinToString("\n"))
+            }
+        }.ifBlank {
+            "İşleminiz tamamlandı."
+        }
 
-    private fun createModel(
-        modelName: String,
-        apiKey: String,
-        systemInstruction: String,
-        modelPower: AiModelPower,
-        overrideMaxTokens: Int? = null,
-        enableTools: Boolean = false
-    ): GenerativeModel {
-        return GenerativeModel(
-            modelName = SOLE_GEMINI_MODEL,
-            apiKey = apiKey,
-            generationConfig = modelPower.toGenerationConfig(overrideMaxTokens),
-            tools = if (enableTools) listOf(autonomousSharkTool) else emptyList(),
-            systemInstruction = if (systemInstruction.isNotBlank()) {
-                content { text(systemInstruction) }
-            } else null,
-            requestOptions = RequestOptions(timeout = 30_000L)
+        val inlineNotes = parseInlineActionNotes(finalText)
+        toolNotes.addAll(inlineNotes)
+
+        onPartialText(finalText)
+
+        Result.success(
+            AiRouterResult(
+                text = finalText,
+                executedToolNotes = toolNotes,
+                createdPlanFolderId = createdFolderId,
+                engineUsed = activeEngine
+            )
         )
     }
 
@@ -1232,7 +1161,7 @@ $MANDATORY_PERSONA_RULES
 
     private fun extractBase64FromAttachment(payload: MultimodalPayload): String? {
         val bmp = payload.bitmaps.firstOrNull()
-        if (bmp != null) {
+        if (bmp != null && !bmp.isRecycled) {
             val stream = ByteArrayOutputStream()
             bmp.compress(Bitmap.CompressFormat.JPEG, 85, stream)
             return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
@@ -1244,41 +1173,21 @@ $MANDATORY_PERSONA_RULES
         return null
     }
 
-    private fun buildMultimodalInputContent(
-        prompt: String,
-        attachment: MultimodalPayload
-    ) = content {
-        if (attachment.bitmaps.isNotEmpty()) {
-            attachment.bitmaps.forEach { bmp ->
-                image(bmp)
-            }
-        } else if (attachment.rawBytes != null) {
-            val decoded = runCatching {
-                BitmapFactory.decodeByteArray(attachment.rawBytes, 0, attachment.rawBytes.size)
-            }.getOrNull()
-            if (decoded != null) {
-                image(decoded)
-            } else {
-                blob(attachment.mimeType, attachment.rawBytes)
-            }
-        }
-        text(prompt)
-    }
-
     private data class ToolExecutionOutcome(
         val note: String,
         val planFolderId: String? = null
     )
 
     private suspend fun executeToolCall(
-        call: FunctionCallPart,
+        callName: String,
+        args: Map<String, String>,
         attachmentUri: Uri?
     ): ToolExecutionOutcome = withContext(Dispatchers.IO) {
-        when (call.name) {
+        when (callName) {
             "organizeErrorBank" -> {
-                val subject = call.args["subject"]?.ifBlank { "Matematik" } ?: "Matematik"
-                val topic = call.args["topic"]?.ifBlank { "Genel" } ?: "Genel"
-                val folderTitle = call.args["folderTitle"]?.takeIf { it.isNotBlank() }
+                val subject = args["subject"]?.ifBlank { "Matematik" } ?: "Matematik"
+                val topic = args["topic"]?.ifBlank { "Genel" } ?: "Genel"
+                val folderTitle = args["folderTitle"]?.takeIf { it.isNotBlank() }
                     ?: "$subject - $topic Hata Klasörü"
 
                 val folderId = UUID.randomUUID().toString()

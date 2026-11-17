@@ -1,10 +1,11 @@
 package com.example.sharkmentor.ui.zen.dopamine
 
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.sharkmentor.core.ai.AiTaskType
-import com.example.sharkmentor.core.ai.GeminiAiFactory
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.ui.zen.dopamine.model.DopamineProtocolState
 import com.example.sharkmentor.ui.zen.dopamine.model.ReflectionMessage
@@ -41,24 +42,15 @@ class DopamineProtocolViewModel : ViewModel() {
     private val _isAiThinking = MutableStateFlow(false)
     val isAiThinking: StateFlow<Boolean> = _isAiThinking.asStateFlow()
 
-    /**
-     * Gemini 3.6 Flash instance dedicated to the evening reflection companion.
-     * Uses the shared [GeminiAiFactory] so API-key rotation is handled centrally.
-     */
-    private val reflectionModel by lazy {
-        GeminiAiFactory.createModel(
-            taskType = AiTaskType.LIGHT_INTERACTION,
-            systemPrompt = """
-                Sen SharkMentor Dopamin Orucu'nun AkÅŸam Refleksiyon KoÃ§usun.
-                KiÅŸilik ve Ton:
-                - Empatik, yargÄ±lamayan, sakin ve analitik.
-                - Nasihat veya beylik sÃ¶zler verme; kullanÄ±cÄ±ya gÃ¼n iÃ§inde iradesini zorlayan tetikleyicileri
-                  (sosyal medya, erteleme, zihinsel sis) nazikÃ§e fark ettir.
-                - KullanÄ±cÄ±nÄ±n sÃ¶ylediklerini Ã¶zetle ve yarÄ±n iÃ§in tek bir odaklanma hedefi belirlemesini iste.
-                - Gizlilik Garantisi: Bu konuÅŸma tamamen ÅŸifreli ve gizlidir.
-            """.trimIndent()
-        )
-    }
+    private val reflectionSystemPrompt = """
+        Sen SharkMentor Dopamin Orucu'nun AkÅŸam Refleksiyon KoÃ§usun.
+        KiÅŸilik ve Ton:
+        - Empatik, yargÄ±lamayan, sakin ve analitik.
+        - Nasihat veya beylik sÃ¶zler verme; kullanÄ±cÄ±ya gÃ¼n iÃ§inde iradesini zorlayan tetikleyicileri
+          (sosyal medya, erteleme, zihinsel sis) nazikÃ§e fark ettir.
+        - KullanÄ±cÄ±nÄ±n sÃ¶ylediklerini Ã¶zetle ve yarÄ±n iÃ§in tek bir odaklanma hedefi belirlemesini iste.
+        - Gizlilik Garantisi: Bu konuÅŸma tamamen ÅŸifreli ve gizlidir.
+    """.trimIndent()
 
     init {
         listenToProtocolState()
@@ -223,11 +215,20 @@ class DopamineProtocolViewModel : ViewModel() {
                 val history = _reflectionMessages.value.joinToString("\n") { msg ->
                     "${if (msg.sender == "user") "Ã–ÄŸrenci" else "KoÃ§"}: ${msg.text}"
                 }
-                val response = reflectionModel.generateContent(history)
-                val reply = response.text?.trim() ?: "Seni dinliyorum, devam et."
+                val appContext = runCatching { FirebaseApp.getInstance().applicationContext }.getOrNull()
+                val reply = GeminiRestClient.generateWithFailover(
+                    context = appContext,
+                    systemInstruction = reflectionSystemPrompt,
+                    userPrompt = history,
+                    responseJson = false,
+                    maxOutputTokens = 1024,
+                    thinkingLevel = GeminiThinkingLevel.MINIMAL,
+                    timeoutMs = 45_000L
+                ).getOrThrow().text.trim().ifBlank { "Seni dinliyorum, devam et." }
                 _reflectionMessages.value = _reflectionMessages.value +
                         ReflectionMessage(sender = "ai", text = reply)
             } catch (e: Exception) {
+                Log.w("DopamineProtocolVM", "Reflection AI error: ${e.message}", e)
                 _reflectionMessages.value = _reflectionMessages.value +
                         ReflectionMessage(
                             sender = "ai",

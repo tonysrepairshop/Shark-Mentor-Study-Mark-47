@@ -7,12 +7,9 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.util.Log
-import com.example.sharkmentor.BuildConfig
-import com.example.sharkmentor.core.ai.ApiKeyRotator
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.RequestOptions
-import com.google.ai.client.generativeai.type.content
-import com.google.ai.client.generativeai.type.generationConfig
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -31,21 +28,6 @@ data class ScannedTaskDto(
 )
 
 class ScheduleScannerEngine @Inject constructor() {
-
-    private fun createVisionModel(modelName: String): GenerativeModel {
-        val key = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-        val cleanKey = key.trim().replace("\"", "").replace("'", "")
-        val cleanModel = modelName.trim().removePrefix("models/").removePrefix("/")
-        return GenerativeModel(
-            modelName = cleanModel,
-            apiKey = cleanKey,
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-                temperature = 0.1f
-            },
-            requestOptions = RequestOptions(timeout = 60_000L)
-        )
-    }
 
     private fun decodeSampledBitmapFromUri(context: Context, uri: Uri): Bitmap? {
         return try {
@@ -69,7 +51,7 @@ class ScheduleScannerEngine @Inject constructor() {
 
                 val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(tempFile.absolutePath, options)
-                
+
                 var inSampleSize = 1
                 while (options.outWidth / inSampleSize > 1600 || options.outHeight / inSampleSize > 1600) {
                     inSampleSize *= 2
@@ -117,53 +99,22 @@ class ScheduleScannerEngine @Inject constructor() {
             ]
             """.trimIndent()
 
-            var rawJson: String? = null
-            var lastErr: Exception? = null
-            var currentDelay = 1500L
-            val modelName = "gemini-3.6-flash"
-            val maxRetries = 3
+            val response = GeminiRestClient.generateWithFailover(
+                context = context,
+                userPrompt = prompt,
+                bitmaps = listOf(bitmap),
+                responseJson = true,
+                maxOutputTokens = 8192,
+                thinkingLevel = GeminiThinkingLevel.LOW,
+                timeoutMs = 75_000L
+            ).getOrThrow()
 
-            for (attempt in 1..maxRetries) {
-                try {
-                    Log.d("ScheduleScanner", "Attempt $attempt on $modelName...")
-                    val model = createVisionModel(modelName)
-                    val resp = model.generateContent(
-                        content {
-                            image(bitmap)
-                            text(prompt)
-                        }
-                    )
-                    rawJson = resp.text
-                    if (!rawJson.isNullOrBlank()) break
-                } catch (e: Exception) {
-                    val rootCause = e.cause?.message ?: e.message
-                    Log.e("ScheduleScanner", "Call failed on $modelName: ${e.javaClass.simpleName} | Root:$rootCause", e)
-                    lastErr = e
-                    
-                    if (ApiKeyRotator.shouldRotateKey(e)) {
-                        Log.w("ScheduleScanner", "Quota limit reached on current key. Rotating key...")
-                        ApiKeyRotator.rotateToNextKey()
-                    }
-
-                    val isUnavailable = e.message?.contains("503") == true || 
-                                        e.message?.contains("high demand", ignoreCase = true) == true ||
-                                        e.message?.contains("UNAVAILABLE", ignoreCase = true) == true
-                    
-                    if (isUnavailable && attempt < maxRetries) {
-                        Log.i("ScheduleScanner", "Server busy (503). Retrying in ${currentDelay}ms...")
-                        kotlinx.coroutines.delay(currentDelay)
-                        currentDelay *= 2
-                    } else if (attempt == maxRetries && isUnavailable) {
-                        lastErr = java.lang.Exception("Yapay zeka sunucularında anlık yoğunluk yaşanıyor (503). Lütfen birkaç saniye sonra tekrar deneyin.")
-                    }
-                }
+            val cleanedJson = GeminiRestClient.extractCleanJsonString(response.text)
+            if (cleanedJson.isBlank()) {
+                throw Exception("Görsel taranamadı.")
             }
 
-            if (rawJson.isNullOrBlank()) {
-                throw lastErr ?: java.lang.Exception("Görsel taranamadı.")
-            }
-
-            val jsonArray = JSONArray(rawJson)
+            val jsonArray = JSONArray(cleanedJson)
             val list = mutableListOf<ScannedTaskDto>()
 
             for (i in 0 until jsonArray.length()) {
@@ -189,9 +140,13 @@ class ScheduleScannerEngine @Inject constructor() {
             } else {
                 Result.success(list)
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             Log.e("ScheduleScanner", "AI Call failed", e)
             Result.failure(e)
+        } finally {
+            runCatching { if (!bitmap.isRecycled) bitmap.recycle() }
         }
     }
 }

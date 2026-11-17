@@ -1,14 +1,11 @@
 package com.example.sharkmentor.data.remote
 
 import android.util.Log
-import com.example.sharkmentor.BuildConfig
-import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
 import com.example.sharkmentor.data.local.dao.InstitutionScheduleDao
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
-import com.google.ai.client.generativeai.type.generationConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import com.google.ai.client.generativeai.type.RequestOptions
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import javax.inject.Inject
@@ -18,34 +15,9 @@ class SchedulePlannerEngine @Inject constructor(
     private val institutionScheduleDao: InstitutionScheduleDao? = null
 ) {
 
-    private fun createModel(modelName: String): GenerativeModel {
-        val key = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-        val cleanKey = key.trim().replace("\"", "").replace("'", "")
-        val cleanModel = modelName.trim().removePrefix("models/").removePrefix("/")
-        return GenerativeModel(
-            modelName = cleanModel,
-            apiKey = cleanKey,
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-                temperature = 0.2f
-            },
-            requestOptions = RequestOptions(timeout = 60_000L)
-        )
-    }
-
     /**
      * Builds the Turkish hard-constraint preamble from local Room institution slots.
      * Returns an empty string when no slots are stored (no-op for users without institution data).
-     *
-     * Example output:
-     *   KRİTİK KISITLAMALAR:
-     *   1. Öğrencinin kurum ders saatleri şunlardır:
-     *      - Salı 12:00-18:00 Matematik (DERSHANE)
-     *      ...
-     *   - BU SAAT ARALIKLARINDA KESİNLİKLE BİREYSEL PLAN VE GÖREV YAZMA.
-     *   - Kurumda 3 saatten fazla Matematik olduğu günlerin akşamına tekrar Matematik yazma;
-     *     hafif tekrar veya sözel/paragraf rutini ata.
-     *   - Tüm seanslar çakışmasız ve ardışık olmalıdır.
      */
     private suspend fun buildInstitutionConstraintsBlock(): String {
         val dao = institutionScheduleDao ?: return ""
@@ -64,7 +36,7 @@ class SchedulePlannerEngine @Inject constructor(
 
         val slotLines = slots.joinToString("\n") { s ->
             "   - ${dayNames[s.dayOfWeek] ?: "Gün${s.dayOfWeek}"} " +
-            "${s.startTime}-${s.endTime} ${s.subject} (${s.type})"
+                "${s.startTime}-${s.endTime} ${s.subject} (${s.type})"
         }
 
         // Identify subjects where institution hours exceed 3 h on a given day
@@ -84,7 +56,7 @@ class SchedulePlannerEngine @Inject constructor(
 
         val heavySubjectNote = if (heavySubjects.isNotEmpty()) {
             "- Kurumda 3 saatten fazla ${heavySubjects.joinToString(", ")} olduğu günlerin " +
-            "akşamına tekrar aynı dersi yazma; hafif tekrar veya sözel/paragraf rutini ata.\n"
+                "akşamına tekrar aynı dersi yazma; hafif tekrar veya sözel/paragraf rutini ata.\n"
         } else ""
 
         return """
@@ -130,51 +102,22 @@ ${heavySubjectNote}- Tüm seanslar çakışmasız ve ardışık olmalıdır.
             """.trimIndent())
             }
 
-            var rawJson: String? = null
-            var lastErr: Exception? = null
-            var currentDelay = 1500L
-            val modelName = "gemini-3.6-flash"
-            val maxRetries = 3
+            val response = GeminiRestClient.generateWithFailover(
+                systemInstruction = systemPrompt,
+                userPrompt = "ÖĞRENCİ TALEBİ / BİLGİSİ: $userPrompt",
+                responseJson = true,
+                maxOutputTokens = 8192,
+                thinkingLevel = GeminiThinkingLevel.LOW,
+                timeoutMs = 75_000L
+            ).getOrThrow()
 
-            for (attempt in 1..maxRetries) {
-                try {
-                    val model = createModel(modelName)
-                    val resp = model.generateContent(
-                        content {
-                            text("$systemPrompt\n\nÖĞRENCİ TALEBİ / BİLGİSİ: $userPrompt")
-                        }
-                    )
-                    rawJson = resp.text
-                    if (!rawJson.isNullOrBlank()) break
-                } catch (e: Exception) {
-                    val rootCause = e.cause?.message ?: e.message
-                    Log.e("SchedulePlannerEngine", "Call failed on $modelName: ${e.javaClass.simpleName} | Root:$rootCause", e)
-                    lastErr = e
-                    if (ApiKeyRotator.shouldRotateKey(e)) {
-                        Log.w("SchedulePlannerEngine", "Quota limit reached on current key. Rotating key...")
-                        ApiKeyRotator.rotateToNextKey()
-                    }
-
-                    val isUnavailable = e.message?.contains("503") == true || 
-                                        e.message?.contains("high demand", ignoreCase = true) == true ||
-                                        e.message?.contains("UNAVAILABLE", ignoreCase = true) == true
-                    
-                    if (isUnavailable && attempt < maxRetries) {
-                        Log.i("SchedulePlannerEngine", "Server busy (503). Retrying in ${currentDelay}ms...")
-                        kotlinx.coroutines.delay(currentDelay)
-                        currentDelay *= 2
-                    } else if (attempt == maxRetries && isUnavailable) {
-                        lastErr = java.lang.Exception("Yapay zeka sunucularında anlık yoğunluk yaşanıyor (503). Lütfen birkaç saniye sonra tekrar deneyin.")
-                    }
-                }
+            val cleanedJson = GeminiRestClient.extractCleanJsonString(response.text)
+            if (cleanedJson.isBlank()) {
+                throw Exception("Plan oluşturulamadı.")
             }
+            Log.d("SchedulePlannerEngine", "AI Response len=${cleanedJson.length}")
 
-            if (rawJson.isNullOrBlank()) {
-                throw lastErr ?: java.lang.Exception("Plan oluşturulamadı.")
-            }
-            Log.d("SchedulePlannerEngine", "AI Response: $rawJson")
-
-            val jsonArray = JSONArray(rawJson)
+            val jsonArray = JSONArray(cleanedJson)
             val list = mutableListOf<ScannedTaskDto>()
 
             for (i in 0 until jsonArray.length()) {
@@ -200,6 +143,8 @@ ${heavySubjectNote}- Tüm seanslar çakışmasız ve ardışık olmalıdır.
             } else {
                 Result.success(list)
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             Log.e("SchedulePlannerEngine", "Generation failed", e)
             Result.failure(e)

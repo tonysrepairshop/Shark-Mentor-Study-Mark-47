@@ -79,7 +79,11 @@ object GeminiAiFactory {
                 }
             }
         }
-        return rawKey.trim().replace("\"", "").replace("'", "")
+        return rawKey.replace("\r", "")
+            .replace("\n", "")
+            .replace("\"", "")
+            .replace("'", "")
+            .trim()
     }
 
     fun createModel(

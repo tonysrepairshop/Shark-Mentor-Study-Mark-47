@@ -7,10 +7,11 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.example.sharkmentor.BuildConfig
-import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
-import com.example.sharkmentor.core.ai.GeminiAiFactory
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.NoteStyleParser
 import com.example.sharkmentor.core.util.PaperPattern
 import com.example.sharkmentor.data.local.SharkMentorDatabase
@@ -19,12 +20,6 @@ import com.example.sharkmentor.data.repository.NoteRepository
 import com.example.sharkmentor.data.repository.NoteRepositoryImpl
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStroke
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.QuotaExceededException
-import com.google.ai.client.generativeai.type.RequestOptions
-import com.google.ai.client.generativeai.type.ResponseStoppedException
-import com.google.ai.client.generativeai.type.content
-import com.google.ai.client.generativeai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,7 +39,8 @@ import java.util.UUID
 
 @OptIn(FlowPreview::class)
 class NoteDetailViewModel(
-    private val noteRepository: NoteRepository
+    private val noteRepository: NoteRepository,
+    private val appContext: Context? = null
 ) : ViewModel() {
 
     companion object {
@@ -56,10 +52,6 @@ KESİN DAVRANIŞ KURALLARI:
 3. DÜZENLİ FORMATLAMA: Bilgileri net başlıklar (Markdown), maddeler, formüller ve vurgulu anahtar kelimeler ile sun.
 4. ÇALIŞMA KANCASI: Yanıtın en sonuna, öğrencinin konuyu pekiştirmesi için tek cümlelik doğal bir çalışma önerisi veya takip sorusu ekle.
 """
-
-        private val MODEL_TIERS = listOf(
-            "gemini-3.6-flash"
-        )
 
         private val BASE64_OR_PATH_REGEX = Regex(
             pattern = "(\\[PDF_(?:PAGE|FILE):[^\\]]+\\]|data:image/[^;]+;base64,[A-Za-z0-9+/=]+|file:///[^\\s]+|/data/user/[^\\s]+|[A-Za-z0-9+/=]{160,})"
@@ -120,6 +112,7 @@ KESİN DAVRANIŞ KURALLARI:
     private val persistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
+        appContext?.let { UserAiPreferences.initialize(it) }
         observeAutoSaveDebounce()
     }
 
@@ -324,11 +317,11 @@ KESİN DAVRANIŞ KURALLARI:
         strokes: List<DrawingStroke>
     ) {
         if (targetNoteId.isBlank()) return
-        val appContext = context.applicationContext
+        val appCtx = context.applicationContext
         val snapshot = strokes.toList()
         persistenceScope.launch {
             runCatching {
-                DrawingSerializer.saveNoteDrawing(appContext, targetNoteId, snapshot)
+                DrawingSerializer.saveNoteDrawing(appCtx, targetNoteId, snapshot)
             }.onFailure { e ->
                 Log.e("NoteDetailVM", "saveNoteDrawingImmediately failed for $targetNoteId", e)
             }
@@ -347,6 +340,9 @@ KESİN DAVRANIŞ KURALLARI:
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                val selectedProvider = UserAiPreferences.getOrNull(appContext)?.getSelectedProvider()
+                    ?: AiProviderChoice.AUTO
+
                 // Check if the note consists primarily of PDF pages without substantial typed/extracted body text
                 val textWithoutPdfHeader = cleanNoteText
                     .replace(Regex("^[^\n]+\\([0-9]+\\s*sayfa\\)", RegexOption.IGNORE_CASE), "")
@@ -372,8 +368,8 @@ KESİN DAVRANIŞ KURALLARI:
                             }
                         }.getOrNull()
                     }
+                    var visionErrorMessage: String? = null
                     if (pageBitmaps.isNotEmpty()) {
-                        val accumulated = StringBuilder()
                         try {
                             val visionSystemInstruction = """
                                 Sen bu belgedeki görselleri ve sayfaları analiz eden uzman bir çalışma asistanısın. YALNIZCA verilen sayfa görsellerindeki bilgileri baz al. Asla belgede olmayan bilgi ekleme. Eğer sorulan bilgi sayfalarda yoksa açıkça 'Bu bilgi not içinde bulunamadı.' yaz.
@@ -387,49 +383,44 @@ KESİN DAVRANIŞ KURALLARI:
                             val visionPrompt = query.trim().ifBlank {
                                 "Bu PDF belgesindeki sayfaları detaylıca incele, ana konuları özetle ve önemli noktaları maddeler halinde çıkar."
                             }
-                            val visionModel = GeminiAiFactory.createVisionModel(
-                                systemPrompt = visionSystemInstruction
-                            )
-                            val inputContent = content {
-                                pageBitmaps.forEach { image(it) }
-                                text(visionPrompt)
-                            }
-                            val responseFlow = visionModel.generateContentStream(inputContent)
-                            try {
-                                responseFlow.collect { chunk ->
-                                    val chunkText = chunk.text
-                                    if (!chunkText.isNullOrEmpty()) {
-                                        accumulated.append(chunkText)
-                                        _aiResult.value = accumulated.toString()
-                                        _isAiLoading.value = false
-                                    }
-                                }
-                            } catch (rse: ResponseStoppedException) {
-                                Log.w("NoteDetailVM", "Vision stopped by token limit: ${rse.message}")
-                            }
 
-                            if (accumulated.isNotBlank()) {
-                                _aiResult.value = accumulated.toString()
-                                _aiError.value = null
-                                _isAiLoading.value = false
-                                return@launch
-                            }
-                        } catch (e: Exception) {
-                            Log.w("NoteDetailVM", "Vision summary fallback failed: ${e.message}", e)
-                            if (accumulated.isNotBlank()) {
-                                _aiResult.value = accumulated.toString()
-                                _aiError.value = null
-                                _isAiLoading.value = false
-                                return@launch
+                            val visionResult = GeminiRestClient.streamWithFailover(
+                                context = appContext,
+                                systemInstruction = visionSystemInstruction,
+                                userPrompt = visionPrompt,
+                                bitmaps = pageBitmaps,
+                                responseJson = false,
+                                maxOutputTokens = 8192,
+                                thinkingLevel = GeminiThinkingLevel.LOW,
+                                timeoutMs = 75_000L,
+                                onPartialText = { partial ->
+                                    _aiResult.value = partial
+                                    _isAiLoading.value = false
+                                }
+                            )
+
+                            if (visionResult.isSuccess) {
+                                val text = visionResult.getOrThrow().text.trim()
+                                if (text.isNotBlank()) {
+                                    _aiResult.value = text
+                                    _aiError.value = null
+                                    _isAiLoading.value = false
+                                    return@launch
+                                }
+                            } else {
+                                val err = visionResult.exceptionOrNull()
+                                if (err is CancellationException) throw err
+                                visionErrorMessage = err?.localizedMessage
+                                Log.w("NoteDetailVM", "PDF vision failed: $visionErrorMessage")
                             }
                         } finally {
-                            pageBitmaps.forEach { runCatching { it.recycle() } }
+                            pageBitmaps.forEach { runCatching { if (!it.isRecycled) it.recycle() } }
                         }
                     }
 
-                    // If note has no actual written text and vision failed to analyze the pages, don't fallback to DeepSeek with empty placeholder text
                     if (!hasSubstantialText) {
-                        _aiError.value = "PDF sayfaları görsel olarak çözümlenemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin."
+                        _aiError.value = visionErrorMessage
+                            ?: "PDF sayfaları görsel olarak çözümlenemedi. Lütfen bağlantınızı ve API anahtarınızı kontrol edin."
                         _aiResult.value = null
                         _isAiLoading.value = false
                         return@launch
@@ -455,15 +446,20 @@ KESİN DAVRANIŞ KURALLARI:
                     $effectiveQuery
                 """.trimIndent()
 
-                // Text-only note analysis: Use DeepSeek first with Kimi fallback
-                val deepSeekKey = DeepSeekClient.getDeepSeekApiKey()
-                if (deepSeekKey.isNotBlank()) {
+                val shouldTryOpenAiFirst = when (selectedProvider) {
+                    AiProviderChoice.GEMINI -> false
+                    AiProviderChoice.DEEPSEEK, AiProviderChoice.KIMI -> DeepSeekClient.hasAnyOpenAiProviderKey(appContext)
+                    AiProviderChoice.AUTO -> DeepSeekClient.hasAnyOpenAiProviderKey(appContext)
+                }
+
+                if (shouldTryOpenAiFirst) {
                     try {
                         val streamedResult = DeepSeekClient.streamChatCompletion(
                             systemPrompt = ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
                             userPrompt = contextualPrompt,
                             temperature = 0.2f,
                             maxTokens = 4096,
+                            context = appContext,
                             onAccumulatedChunk = { partial ->
                                 _aiResult.value = partial
                                 _isAiLoading.value = false
@@ -482,87 +478,35 @@ KESİN DAVRANIŞ KURALLARI:
                     }
                 }
 
-                val noteAiGenerationConfig = generationConfig {
-                    temperature = 0.2f
-                    maxOutputTokens = 4096
-                    topP = 0.85f
-                }
-
-                var lastError: Throwable? = null
-                var responseText: String? = null
-                val keyCount = ApiKeyRotator.getKeyCount().coerceAtLeast(1)
-
-                outer@ for (modelName in MODEL_TIERS) {
-                    for (attempt in 0 until keyCount) {
-                        val activeKey = ApiKeyRotator.getActiveKey()
-                            .ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-                            .trim()
-                            .replace("\"", "")
-                            .replace("'", "")
-
-                        if (activeKey.isBlank() || activeKey == "null") {
-                            ApiKeyRotator.rotateToNextKey()
-                            continue
-                        }
-
-                        try {
-                            val model = GenerativeModel(
-                                modelName = modelName,
-                                apiKey = activeKey,
-                                generationConfig = noteAiGenerationConfig,
-                                tools = emptyList(),
-                                systemInstruction = content {
-                                    text(ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim())
-                                },
-                                requestOptions = RequestOptions(timeout = 30_000L)
-                            )
-
-                            val builder = StringBuilder()
-                            try {
-                                model.generateContentStream(contextualPrompt).collect { chunk ->
-                                    val chunkText = runCatching { chunk.text }.getOrNull()
-                                    if (!chunkText.isNullOrEmpty()) {
-                                        builder.append(chunkText)
-                                        _aiResult.value = builder.toString().trimStart()
-                                        _isAiLoading.value = false
-                                    }
-                                }
-                            } catch (rse: ResponseStoppedException) {
-                                Log.w("NoteDetailVM", "Note generation stream stopped (${rse.message}), keeping accumulated")
-                            }
-
-                            val finalStreamed = builder.toString().trim()
-                            if (finalStreamed.isNotBlank()) {
-                                responseText = finalStreamed
-                                break@outer
-                            }
-                        } catch (ce: CancellationException) {
-                            _isAiLoading.value = false
-                            return@launch
-                        } catch (e: QuotaExceededException) {
-                            Log.w("NoteDetailVM", "QuotaExceededException on $modelName, rotating key...", e)
-                            lastError = e
-                            ApiKeyRotator.rotateToNextKey()
-                        } catch (e: Throwable) {
-                            Log.w("NoteDetailVM", "AI call failed on $modelName: ${e.message}", e)
-                            lastError = e
-                            val msg = "${e.message} ${e.cause?.message}".lowercase()
-                            if (msg.contains("429") || msg.contains("quota") || msg.contains("resource_exhausted") || ApiKeyRotator.shouldRotateKey(e as? Exception ?: Exception(e))) {
-                                ApiKeyRotator.rotateToNextKey()
-                            } else {
-                                break
-                            }
-                        }
+                val geminiResult = GeminiRestClient.streamWithFailover(
+                    context = appContext,
+                    systemInstruction = ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
+                    userPrompt = contextualPrompt,
+                    responseJson = false,
+                    maxOutputTokens = 6144,
+                    thinkingLevel = GeminiThinkingLevel.LOW,
+                    timeoutMs = 60_000L,
+                    onPartialText = { partial ->
+                        _aiResult.value = partial.trimStart()
+                        _isAiLoading.value = false
                     }
-                }
+                )
 
-                if (!responseText.isNullOrBlank()) {
-                    _aiResult.value = responseText
-                    _aiError.value = null
-                    saveAiSummaryAsNewNote(responseText)
+                if (geminiResult.isSuccess) {
+                    val responseText = geminiResult.getOrThrow().text.trim()
+                    if (responseText.isNotBlank()) {
+                        _aiResult.value = responseText
+                        _aiError.value = null
+                        saveAiSummaryAsNewNote(responseText)
+                    } else {
+                        _aiResult.value = null
+                        _aiError.value = "Not analiz edilemedi."
+                    }
                 } else {
+                    val err = geminiResult.exceptionOrNull()
+                    if (err is CancellationException) throw err
                     _aiResult.value = null
-                    _aiError.value = lastError?.localizedMessage ?: "Not analiz edilemedi."
+                    _aiError.value = err?.localizedMessage ?: "Not analiz edilemedi."
                 }
             } catch (e: Throwable) {
                 if (e !is CancellationException) {
@@ -608,9 +552,10 @@ KESİN DAVRANIŞ KURALLARI:
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            val db = SharkMentorDatabase.getDatabase(context.applicationContext)
-            val repo = NoteRepositoryImpl(db.noteDao(), context.applicationContext)
-            return NoteDetailViewModel(repo) as T
+            val appCtx = context.applicationContext
+            val db = SharkMentorDatabase.getDatabase(appCtx)
+            val repo = NoteRepositoryImpl(db.noteDao(), appCtx)
+            return NoteDetailViewModel(repo, appCtx) as T
         }
     }
 }

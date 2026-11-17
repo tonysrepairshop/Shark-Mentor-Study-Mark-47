@@ -100,6 +100,9 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         }.getOrDefault("")
     }
 
+    fun hasAnyOpenAiProviderKey(context: Context? = null): Boolean =
+        getDeepSeekApiKey(context).isNotBlank() || getKimiApiKey(context).isNotBlank()
+
     fun isLongContextPrompt(userPrompt: String, systemPrompt: String = ""): Boolean {
         val lower = userPrompt.lowercase()
         val hasLongDocIntent = lower.contains("uzun metin") ||
@@ -123,7 +126,8 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         chatHistory: List<OpenAiChatMessage> = emptyList(),
         temperature: Float = 0.3f,
         maxTokens: Int = 4096,
-        preferKimiLongContext: Boolean = false
+        preferKimiLongContext: Boolean = false,
+        context: Context? = null
     ): Flow<String> = flow {
         val messages = buildList {
             add(OpenAiChatMessage(role = "system", content = systemPrompt.trim()))
@@ -133,7 +137,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         }
 
         val selectedProvider = runCatching {
-            UserAiPreferences.getOrNull()?.getSelectedProvider()
+            UserAiPreferences.getOrNull(context)?.getSelectedProvider()
         }.getOrNull() ?: AiProviderChoice.AUTO
 
         val useKimiPrimary = when (selectedProvider) {
@@ -146,7 +150,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         var lastException: Throwable? = null
 
         if (useKimiPrimary) {
-            val kimiKey = getKimiApiKey()
+            val kimiKey = getKimiApiKey(context)
             var kimiFailed = false
             if (kimiKey.isNotBlank()) {
                 val primaryKimiModel = if (userPrompt.length >= LONG_CONTEXT_CHAR_THRESHOLD) KIMI_LONG_CONTEXT_MODEL else KIMI_MODEL
@@ -193,7 +197,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             }
 
             if (kimiFailed && streamedTokensCount == 0) {
-                val deepSeekKey = getDeepSeekApiKey()
+                val deepSeekKey = getDeepSeekApiKey(context)
                 if (deepSeekKey.isNotBlank()) {
                     executeStreamingRequest(
                         url = DEEPSEEK_BASE_URL,
@@ -214,7 +218,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         }
 
         var deepSeekFailed = false
-        val deepSeekKey = getDeepSeekApiKey()
+        val deepSeekKey = getDeepSeekApiKey(context)
         if (deepSeekKey.isNotBlank()) {
             try {
                 executeStreamingRequest(
@@ -242,7 +246,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
 
         // If DeepSeek failed and NO tokens were streamed yet, fallback to Kimi immediately
         if (deepSeekFailed && streamedTokensCount == 0) {
-            val kimiKey = getKimiApiKey()
+            val kimiKey = getKimiApiKey(context)
             if (kimiKey.isNotBlank()) {
                 Log.i(TAG, "Falling back to Kimi ($KIMI_MODEL)...")
                 try {
@@ -279,6 +283,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         temperature: Float = 0.3f,
         maxTokens: Int = 2048,
         preferKimiLongContext: Boolean = false,
+        context: Context? = null,
         onAccumulatedChunk: (String) -> Unit = {}
     ): String = withContext(Dispatchers.IO) {
         val accumulated = StringBuilder()
@@ -289,7 +294,8 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
                 chatHistory = chatHistory,
                 temperature = temperature,
                 maxTokens = maxTokens,
-                preferKimiLongContext = preferKimiLongContext
+                preferKimiLongContext = preferKimiLongContext,
+                context = context
             ).collect { token ->
                 accumulated.append(token)
                 onAccumulatedChunk(accumulated.toString())
@@ -311,6 +317,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
     suspend fun summarizeTextContent(
         rawContent: String,
         isDetailed: Boolean = false,
+        context: Context? = null,
         onAccumulatedChunk: (String) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
@@ -326,6 +333,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
                 temperature = if (isDetailed) 0.35f else 0.2f,
                 maxTokens = if (isDetailed) 3072 else 1024,
                 preferKimiLongContext = isLongDocument,
+                context = context,
                 onAccumulatedChunk = onAccumulatedChunk
             )
         }
@@ -341,9 +349,10 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         mimeType: String = "image/jpeg",
         temperature: Float = 0.2f,
         maxTokens: Int = 4096,
+        context: Context? = null,
         onAccumulatedChunk: (String) -> Unit = {}
     ): String = withContext(Dispatchers.IO) {
-        val kimiKey = getKimiApiKey()
+        val kimiKey = getKimiApiKey(context)
         if (kimiKey.isBlank()) {
             throw IllegalStateException("KIMI_API_KEY is not configured.")
         }

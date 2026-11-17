@@ -172,15 +172,19 @@ class UserAiPreferences private constructor(context: Context) {
         }
 
         fun sanitizeKey(raw: String): String =
-            raw.trim().replace("\"", "").replace("'", "")
+            raw.replace("\r", "")
+                .replace("\n", "")
+                .replace("\"", "")
+                .replace("'", "")
+                .trim()
 
         fun sanitizeRawGeminiKeys(raw: String): String =
             parseGeminiKeyList(raw).joinToString(", ")
 
         fun parseGeminiKeyList(raw: String): List<String> =
-            raw.split(",", "\n", ";")
+            raw.split(",", "\n", "\r", ";", " ", "\t")
                 .map { sanitizeKey(it) }
-                .filter { it.isNotBlank() }
+                .filter { it.isNotBlank() && it != "null" }
                 .distinct()
     }
 }

@@ -8,11 +8,12 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.ErrorQuestionEntity
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -100,47 +101,51 @@ class TopicTaggingWorker(
             context: Context,
             question: ErrorQuestionEntity
         ): Pair<String, String>? = withContext(Dispatchers.IO) {
-            val apiKey = ApiKeyRotator.getActiveKey()
-                .takeIf { it.isNotBlank() && it != "null" }
-                ?: return@withContext null
-
-            val model = GenerativeModel(
-                modelName = MODEL_NAME,
-                apiKey = apiKey
-            )
+            UserAiPreferences.initialize(context)
+            if (!ApiKeyRotator.hasAnyGeminiKey(context)) {
+                return@withContext null
+            }
 
             val bitmap = ImageStorageManager.getOptimizedBitmap(
                 context,
                 question.questionImageUri
             )
 
-            val rawLine: String? = if (bitmap != null) {
-                val prompt = buildTaggingPrompt(question.subject)
-                val inputContent = content {
-                    image(bitmap)
-                    text(prompt)
+            try {
+                val prompt = if (bitmap != null && !bitmap.isRecycled) {
+                    buildTaggingPrompt(question.subject)
+                } else {
+                    buildTaggingPromptTextOnly(question.subject, question.topic)
                 }
-                val response = model.generateContent(inputContent)
-                response.text?.trim()
-                    ?.lines()
-                    ?.firstOrNull { it.isNotBlank() }
+
+                val responseResult = GeminiRestClient.generateWithFailover(
+                    context = context,
+                    userPrompt = prompt,
+                    bitmaps = if (bitmap != null && !bitmap.isRecycled) listOf(bitmap) else emptyList(),
+                    responseJson = false,
+                    maxOutputTokens = 512,
+                    thinkingLevel = GeminiThinkingLevel.MINIMAL,
+                    timeoutMs = 45_000L
+                )
+
+                val text = responseResult.getOrThrow().text
+                val rawLine = text.trim()
+                    .lines()
+                    .firstOrNull { it.isNotBlank() }
                     ?.take(100)
-            } else {
-                val prompt = buildTaggingPromptTextOnly(question.subject, question.topic)
-                val response = model.generateContent(prompt)
-                response.text?.trim()
-                    ?.lines()
-                    ?.firstOrNull { it.isNotBlank() }
-                    ?.take(100)
+
+                if (rawLine.isNullOrBlank()) return@withContext null
+
+                parseClassificationResponse(
+                    rawResponse = rawLine,
+                    currentSubject = question.subject,
+                    fallbackTopic = question.topic.ifBlank { "Genel" }
+                )
+            } finally {
+                if (bitmap != null && !bitmap.isRecycled) {
+                    runCatching { bitmap.recycle() }
+                }
             }
-
-            if (rawLine.isNullOrBlank()) return@withContext null
-
-            parseClassificationResponse(
-                rawResponse = rawLine,
-                currentSubject = question.subject,
-                fallbackTopic = question.topic.ifBlank { "Genel" }
-            )
         }
 
         private fun parseClassificationResponse(
@@ -220,12 +225,11 @@ class TopicTaggingWorker(
         val db = SharkMentorDatabase.getDatabase(applicationContext)
         val dao = db.errorQuestionDao()
 
-        val apiKey = ApiKeyRotator.getActiveKey()
-            .takeIf { it.isNotBlank() && it != "null" }
-            ?: run {
-                Log.w(TAG, "No valid Gemini API key — skipping tagging run")
-                return@withContext Result.failure()
-            }
+        UserAiPreferences.initialize(applicationContext)
+        if (!ApiKeyRotator.hasAnyGeminiKey(applicationContext)) {
+            Log.w(TAG, "No valid Gemini API key — skipping tagging run")
+            return@withContext Result.failure()
+        }
 
         val untagged = dao.getUntaggedQuestions(limit = BATCH_SIZE)
         if (untagged.isEmpty()) {

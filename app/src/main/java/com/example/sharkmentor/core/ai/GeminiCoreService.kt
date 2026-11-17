@@ -3,22 +3,12 @@ package com.example.sharkmentor.core.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import android.util.Log
 import android.webkit.MimeTypeMap
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.GenerateContentResponse
-import com.google.ai.client.generativeai.type.QuotaExceededException
-import com.google.ai.client.generativeai.type.RequestOptions
-import com.google.ai.client.generativeai.type.ResponseStoppedException
-import com.google.ai.client.generativeai.type.content
-import com.google.ai.client.generativeai.type.generationConfig
-import com.example.sharkmentor.BuildConfig
 import com.example.sharkmentor.core.model.TwinQuestionData
 import com.example.sharkmentor.core.util.ImageStorageManager
-import com.example.sharkmentor.core.analytics.SubjectMastery
+import com.example.sharkmentor.core.util.PdfBitmapConverter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -42,97 +32,13 @@ class GeminiCoreService(private val context: Context) {
     }
 
     companion object {
+        private const val MAX_INLINE_PDF_BYTES = 12 * 1024 * 1024
         const val SYSTEM_PERSONA_RULES = """
 KESİN KURALLAR:
 1. SIFIR YALAKALIK & GİRİŞ YASAĞI: "Harika bir soru!", "Çok güzel düşünmüşsün!", "Merhaba! Sana bugün nasıl yardımcı olabilirim?" gibi yapay övgüleri ve giriş cümlelerini KESİNLİKLE KULLANMA. Doğrudan konuya gir.
 2. ORANTILI UZUNLUK: Selamlamalara maksimum 1 kısa cümleyle yanıt ver. Standart açıklamaları 4-6 kısa ve net cümleyle sınırla.
 3. SOHBET KANCASI: Yanıtı "Başarılar dilerim" gibi klişelerle bitirme; öğrenciyi akışta tutan tek cümlelik doğal bir takip sorusuyla bitir.
 """
-    }
-
-    private fun sanitizeModelName(name: String): String {
-        return GeminiAiFactory.SOLE_GEMINI_MODEL
-    }
-
-    private fun resolveActiveOrFallbackKey(): String {
-        val fromRotator = ApiKeyRotator.getActiveKey(context)
-        if (fromRotator.isNotBlank() && fromRotator != "null") return fromRotator
-        val fromUser = UserAiPreferences.getInstance(context).getParsedUserGeminiKeys().firstOrNull()
-        if (!fromUser.isNullOrBlank()) return fromUser
-        return BuildConfig.GEMINI_API_KEY.trim().replace("\"", "").replace("'", "")
-    }
-
-    private fun createModel(apiKey: String, modelName: String = GeminiAiFactory.SOLE_GEMINI_MODEL): GenerativeModel {
-        val cleanKey = apiKey.trim().replace("\"", "").replace("'", "")
-        if (cleanKey.isBlank() || cleanKey == "null") {
-            Log.e("GeminiError", "AI Call Failed: API Key is missing or invalid.")
-            throw IllegalStateException("Gemini API Key is missing or invalid.")
-        }
-        val cleanModelName = sanitizeModelName(modelName)
-        return GenerativeModel(
-            modelName = cleanModelName,
-            apiKey = cleanKey,
-            generationConfig = GeminiAiFactory.FAST_PRESET_CONFIG,
-            tools = emptyList(),
-            systemInstruction = content { text(SYSTEM_PERSONA_RULES) },
-            requestOptions = RequestOptions(timeout = 30_000L)
-        )
-    }
-
-    // Failover Execution: Cycles through user & fallback Gemini keys on gemini-3.6-flash before returning failure
-    private suspend fun <T> executeWithKeyFailover(
-        action: suspend (GenerativeModel) -> T
-    ): Result<T> = withContext(Dispatchers.IO) {
-        val totalKeys = ApiKeyRotator.getKeyCount(context).coerceAtLeast(1)
-        val modelName = GeminiAiFactory.SOLE_GEMINI_MODEL
-        var lastException: Exception? = null
-        val maxRetries = 2
-        var currentDelay = 600L
-
-        for (attempt in 0 until totalKeys) {
-            val activeKey = resolveActiveOrFallbackKey()
-            if (activeKey.isBlank() || activeKey == "null") {
-                ApiKeyRotator.rotateToNextKey(context)
-                continue
-            }
-
-            for (retry in 1..maxRetries) {
-                try {
-                    val model = createModel(activeKey, modelName)
-                    val result = action(model)
-                    return@withContext Result.success(result)
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (e: Exception) {
-                    Log.e("GeminiError", "AI Call Failed ($modelName): ${e.javaClass.simpleName} - ${e.message}", e)
-                    lastException = Exception("AI Hatası: ${e.localizedMessage ?: "Sunucu bağlantısı kurulamadı"}")
-
-                    if (ApiKeyRotator.shouldRotateKey(e)) {
-                        Log.w("GeminiCoreService", "Quota/Key limit reached on current key. Rotating key...")
-                        break
-                    }
-
-                    val isUnavailable = e.message?.contains("503") == true ||
-                        e.message?.contains("high demand", ignoreCase = true) == true ||
-                        e.message?.contains("UNAVAILABLE", ignoreCase = true) == true
-
-                    if (isUnavailable && retry < maxRetries) {
-                        Log.i("GeminiCoreService", "Server busy (503). Retrying in ${currentDelay}ms...")
-                        delay(currentDelay)
-                        currentDelay *= 2
-                    } else if (retry == maxRetries && isUnavailable) {
-                        lastException = Exception("Sunucu yoğun (503). Lütfen tekrar deneyin.")
-                        break
-                    }
-                }
-            }
-
-            Log.w("GeminiCoreService", "AI Deneme ${attempt + 1}/$totalKeys başarısız. Sonraki anahtara devrediliyor...")
-            ApiKeyRotator.rotateToNextKey(context)
-            delay(400)
-        }
-
-        Result.failure(lastException ?: Exception("Mevcut API anahtarlarıyla işlem tamamlanamadı."))
     }
 
     /**
@@ -146,97 +52,86 @@ KESİN KURALLAR:
         maxTokens: Int = 4096,
         onPartialText: (String) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
-        val totalKeys = ApiKeyRotator.getKeyCount(context).coerceAtLeast(1)
-        var lastException: Exception? = null
-
-        val effectiveSystem = buildString {
-            append(systemInstruction.trim())
-            if (chatHistory.isNotEmpty() && !systemInstruction.contains("[SON SOHBET DİYALOĞU GEÇMİŞİ]")) {
-                append("\n\n[SON SOHBET GEÇMİŞİ]:\n")
-                chatHistory.takeLast(6).forEach { msg ->
-                    val label = if (msg.role == "user") "ÖĞRENCİ" else "SHARK AI"
-                    appendLine("[$label]: ${msg.content}")
-                }
-            }
-        }.trim()
-
-        val config = generationConfig {
-            this.temperature = temperature
-            this.maxOutputTokens = maxTokens
-            this.topP = 0.85f
+        val geminiTurns = chatHistory.takeLast(6).map { msg ->
+            GeminiChatTurn(role = msg.role, text = msg.content)
         }
+        val thinkingLevel = if (maxTokens >= 6000) GeminiThinkingLevel.MEDIUM else GeminiThinkingLevel.LOW
+        val effectiveMaxTokens = maxTokens.coerceAtLeast(4096)
 
-        for (attempt in 0 until totalKeys) {
-            val activeKey = resolveActiveOrFallbackKey()
-            if (activeKey.isBlank() || activeKey == "null") {
-                ApiKeyRotator.rotateToNextKey(context)
-                continue
-            }
-
-            try {
-                val model = GenerativeModel(
-                    modelName = GeminiAiFactory.SOLE_GEMINI_MODEL,
-                    apiKey = activeKey,
-                    generationConfig = config,
-                    tools = emptyList(),
-                    systemInstruction = if (effectiveSystem.isNotBlank()) content { text(effectiveSystem) } else null,
-                    requestOptions = RequestOptions(timeout = 45_000L)
-                )
-
-                val accumulated = StringBuilder()
-                try {
-                    model.generateContentStream(userPrompt).collect { chunk ->
-                        val chunkText = runCatching { chunk.text }.getOrNull()
-                        if (!chunkText.isNullOrEmpty()) {
-                            accumulated.append(chunkText)
-                            onPartialText(accumulated.toString())
-                        }
-                    }
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (rse: ResponseStoppedException) {
-                    if (accumulated.isBlank()) throw rse
-                } catch (e: Exception) {
-                    if (accumulated.length <= 40) throw e
-                }
-
-                val resultText = accumulated.toString().trim()
-                if (resultText.isNotBlank()) {
-                    onPartialText(resultText)
-                    return@withContext Result.success(resultText)
-                }
-                lastException = IllegalStateException("Boş yanıt alındı.")
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (e: Exception) {
-                Log.w("GeminiCoreService", "Gemini text chat attempt ${attempt + 1}/$totalKeys failed: ${e.message}")
-                lastException = e
-                ApiKeyRotator.rotateToNextKey(context)
-                delay(200L)
-            }
+        GeminiRestClient.streamWithFailover(
+            context = context,
+            systemInstruction = systemInstruction.trim(),
+            userPrompt = userPrompt,
+            chatHistory = geminiTurns,
+            responseJson = false,
+            maxOutputTokens = effectiveMaxTokens,
+            thinkingLevel = thinkingLevel,
+            timeoutMs = 60_000L,
+            onPartialText = onPartialText
+        ).mapCatching { response ->
+            val text = response.text.trim()
+            if (text.isBlank()) throw IllegalStateException("Boş yanıt alındı.")
+            text
+        }.also { res ->
+            res.exceptionOrNull()?.let { if (it is CancellationException) throw it }
         }
-
-        Result.failure(lastException ?: IllegalStateException("Gemini yanıt vermedi."))
     }
 
-    private suspend fun generateContentForUri(model: GenerativeModel, uriString: String, prompt: String, errorMsg: String): GenerateContentResponse {
+    private suspend fun generateTextForUri(
+        uriString: String,
+        prompt: String,
+        errorMsg: String,
+        responseJson: Boolean = false,
+        maxOutputTokens: Int = 4096,
+        thinkingLevel: GeminiThinkingLevel = GeminiThinkingLevel.LOW
+    ): String {
         val uri = Uri.parse(uriString)
         val mimeType = getMimeType(uri)
+        val isPdf = mimeType.equals("application/pdf", ignoreCase = true) ||
+            uriString.endsWith(".pdf", ignoreCase = true)
 
-        return if (mimeType == "application/pdf") {
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: throw Exception(errorMsg)
-            model.generateContent(content {
-                blob("application/pdf", bytes)
-                text(prompt)
-            })
-        } else {
-            val bitmap = ImageStorageManager.getOptimizedBitmap(context, uriString)
-                ?: throw Exception(errorMsg)
-            model.generateContent(content {
-                image(bitmap)
-                text(prompt)
-            })
+        val bitmapsToRecycle = mutableListOf<Bitmap>()
+        try {
+            var bitmaps: List<Bitmap> = emptyList()
+            var inlineFiles: List<Pair<String, ByteArray>> = emptyList()
+
+            if (isPdf) {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw Exception(errorMsg)
+                if (bytes.size <= MAX_INLINE_PDF_BYTES) {
+                    inlineFiles = listOf("application/pdf" to bytes)
+                } else {
+                    val rendered = runCatching {
+                        PdfBitmapConverter.convertPdfUriToBitmaps(context, uri, maxPages = 5)
+                    }.getOrDefault(emptyList())
+                    if (rendered.isEmpty()) throw Exception(errorMsg)
+                    bitmapsToRecycle.addAll(rendered)
+                    bitmaps = rendered
+                }
+            } else {
+                val bitmap = ImageStorageManager.getOptimizedBitmap(context, uriString)
+                    ?: throw Exception(errorMsg)
+                bitmapsToRecycle.add(bitmap)
+                bitmaps = listOf(bitmap)
+            }
+
+            val result = GeminiRestClient.generateWithFailover(
+                context = context,
+                systemInstruction = SYSTEM_PERSONA_RULES,
+                userPrompt = prompt,
+                bitmaps = bitmaps,
+                inlineFiles = inlineFiles,
+                responseJson = responseJson,
+                maxOutputTokens = maxOutputTokens,
+                thinkingLevel = thinkingLevel,
+                timeoutMs = 60_000L
+            ).getOrThrow()
+
+            val text = result.text.trim()
+            if (text.isBlank()) throw Exception("Boş yanıt alındı.")
+            return text
+        } finally {
+            bitmapsToRecycle.forEach { runCatching { if (!it.isRecycled) it.recycle() } }
         }
     }
 
@@ -247,22 +142,32 @@ KESİN KURALLAR:
     }
 
     // 1. SOCRATIC HINT GENERATOR
-    suspend fun generateSocraticHint(questionUri: String, topic: String): Result<String> {
-        return executeWithKeyFailover { model ->
+    suspend fun generateSocraticHint(questionUri: String, topic: String): Result<String> = withContext(Dispatchers.IO) {
+        try {
             val prompt = """
                 Sen Sokratik bir ders mentorusun. Konu: $topic.
                 Görseldeki veya belgedeki soru için KESİNLİKLE cevabı veya şıkkı söyleme.
                 Öğrencinin kuralı hatırlamasını sağlayacak TEK CÜMLELİK Sokratik bir yönlendirme sorusu sor. Dil: Türkçe.
             """.trimIndent()
-
-            val response = generateContentForUri(model, questionUri, prompt, "Soru belgesi okunamadı.")
-            response.text?.trim() ?: throw Exception("Boş yanıt alındı.")
+            val text = generateTextForUri(
+                uriString = questionUri,
+                prompt = prompt,
+                errorMsg = "Soru belgesi okunamadı.",
+                responseJson = false,
+                maxOutputTokens = 1024,
+                thinkingLevel = GeminiThinkingLevel.LOW
+            )
+            Result.success(text)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
     // 2. ISOMORPHIC TWIN QUESTION GENERATOR
-    suspend fun generateTwinQuestion(questionUri: String, topic: String): Result<TwinQuestionData> {
-        return executeWithKeyFailover { model ->
+    suspend fun generateTwinQuestion(questionUri: String, topic: String): Result<TwinQuestionData> = withContext(Dispatchers.IO) {
+        try {
             val prompt = """
                 Bu belgedeki soruyu incele. Konu: $topic.
                 Aynı kazanımı ölçen, sayıları ve bağlamı değiştirilmiş 1 adet İkiz (İzomorfik) çoktan seçmeli test sorusu üret.
@@ -275,8 +180,14 @@ KESİN KURALLAR:
                 }
             """.trimIndent()
 
-            val response = generateContentForUri(model, questionUri, prompt, "Soru belgesi okunamadı.")
-            val raw = response.text ?: throw Exception("Boş yanıt alındı.")
+            val raw = generateTextForUri(
+                uriString = questionUri,
+                prompt = prompt,
+                errorMsg = "Soru belgesi okunamadı.",
+                responseJson = true,
+                maxOutputTokens = 4096,
+                thinkingLevel = GeminiThinkingLevel.LOW
+            )
             val startIdx = raw.indexOf('{')
             val endIdx = raw.lastIndexOf('}')
             if (startIdx == -1 || endIdx == -1) throw Exception("JSON formatı bulunamadı.")
@@ -288,13 +199,17 @@ KESİN KURALLAR:
             val correctIdx = jsonObj.getInt("correctIndex")
             val exp = jsonObj.optString("explanation", "")
 
-            TwinQuestionData(qText, options, correctIdx, exp)
+            Result.success(TwinQuestionData(qText, options, correctIdx, exp))
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
     // 3. BULK TOPIC SCANNER (PDF/JPG)
-    suspend fun extractTopicsFromDocument(documentUri: String): Result<List<Pair<String, String>>> {
-        return executeWithKeyFailover { model ->
+    suspend fun extractTopicsFromDocument(documentUri: String): Result<List<Pair<String, String>>> = withContext(Dispatchers.IO) {
+        try {
             val prompt = """
                 Bu müfredat / konu takip belgesindeki tüm dersleri ve alt konularını tespit et.
                 SADECE şu JSON dizi formatında ver:
@@ -304,8 +219,14 @@ KESİN KURALLAR:
                 ]
             """.trimIndent()
 
-            val response = generateContentForUri(model, documentUri, prompt, "Belge okunamadı.")
-            val raw = response.text ?: throw Exception("Boş yanıt.")
+            val raw = generateTextForUri(
+                uriString = documentUri,
+                prompt = prompt,
+                errorMsg = "Belge okunamadı.",
+                responseJson = true,
+                maxOutputTokens = 4096,
+                thinkingLevel = GeminiThinkingLevel.LOW
+            )
             val start = raw.indexOf('[')
             val end = raw.lastIndexOf(']')
             if (start == -1 || end == -1) throw Exception("JSON dizisi bulunamadı.")
@@ -316,13 +237,17 @@ KESİN KURALLAR:
                 val obj = arr.getJSONObject(i)
                 list.add(obj.getString("subject") to obj.getString("topic"))
             }
-            list
+            Result.success(list)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
     // 4. STUDY PLAN PARSER (LONG/SHORT TERM) WITH TASKS
-    suspend fun parseStudyPlanWithTasks(planUri: String, isLongTerm: Boolean): Result<ParsedPlanResult> {
-        return executeWithKeyFailover { model ->
+    suspend fun parseStudyPlanWithTasks(planUri: String, isLongTerm: Boolean): Result<ParsedPlanResult> = withContext(Dispatchers.IO) {
+        try {
             val prompt = """
                 Bu ${if (isLongTerm) "Uzun Vadeli" else "Kısa Vadeli"} çalışma planını analiz et.
                 1. Genel stratejiyi özetleyen bir 'summary' metni hazırla.
@@ -342,8 +267,14 @@ KESİN KURALLAR:
                 }
             """.trimIndent()
 
-            val response = generateContentForUri(model, planUri, prompt, "Plan belgesi okunamadı.")
-            val raw = response.text ?: throw Exception("Boş yanıt.")
+            val raw = generateTextForUri(
+                uriString = planUri,
+                prompt = prompt,
+                errorMsg = "Plan belgesi okunamadı.",
+                responseJson = true,
+                maxOutputTokens = 6144,
+                thinkingLevel = GeminiThinkingLevel.LOW
+            )
             val start = raw.indexOf('{')
             val end = raw.lastIndexOf('}')
             if (start == -1 || end == -1) throw Exception("JSON formatı ayrıştırılamadı.")
@@ -352,7 +283,7 @@ KESİN KURALLAR:
             val summary = jsonObj.getString("summary")
             val tasksArr = jsonObj.getJSONArray("tasks")
             val tasks = mutableListOf<PlanTaskDto>()
-            
+
             for (i in 0 until tasksArr.length()) {
                 val item = tasksArr.getJSONObject(i)
                 tasks.add(
@@ -364,7 +295,11 @@ KESİN KURALLAR:
                     )
                 )
             }
-            ParsedPlanResult(summary, tasks)
+            Result.success(ParsedPlanResult(summary, tasks))
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
@@ -373,7 +308,7 @@ KESİN KURALLAR:
         examType: String,
         targetName: String,
         targetDetail: String
-    ): Result<String> = executeWithKeyFailover { model ->
+    ): Result<String> = withContext(Dispatchers.IO) {
         val prompt = """
             Sen SharkMentor Study'nin Akademik Sınav ve Strateji Uzmanısın.
             Öğrencinin Hedefi:
@@ -390,8 +325,17 @@ KESİN KURALLAR:
             Metni doğrudan öğrenciye hitap eden, motive edici, maddeler halinde ve 150 kelimeyi geçmeyecek netlikte Türkçe olarak yaz.
         """.trimIndent()
 
-        val response = model.generateContent(prompt)
-        response.text?.trim() ?: "Hedef analizi tamamlanamadı."
+        GeminiRestClient.generateWithFailover(
+            context = context,
+            systemInstruction = SYSTEM_PERSONA_RULES,
+            userPrompt = prompt,
+            responseJson = false,
+            maxOutputTokens = 2048,
+            thinkingLevel = GeminiThinkingLevel.LOW,
+            timeoutMs = 45_000L
+        ).map { res ->
+            res.text.trim().ifBlank { "Hedef analizi tamamlanamadı." }
+        }
     }
 
     suspend fun generateGoalProjectionAdvice(
@@ -401,7 +345,7 @@ KESİN KURALLAR:
         reflectionNote: String?,
         concreteTargetSummary: String?,
         latestMonthlyNets: String?
-    ): Result<String> = executeWithKeyFailover { model ->
+    ): Result<String> = withContext(Dispatchers.IO) {
         val prompt = """
             Sen SharkMentor Study'nin Bilişsel Mentorusun.
             Öğrenci Profili:
@@ -418,7 +362,16 @@ KESİN KURALLAR:
             Samimi, disiplinli bir mentör dili kullan. 3 cümleyi geçme.
         """.trimIndent()
 
-        val response = model.generateContent(prompt)
-        response.text?.trim() ?: "Çalışmalarını düzenli sürdürerek hedeflerine adım adım yaklaşabilirsin."
+        GeminiRestClient.generateWithFailover(
+            context = context,
+            systemInstruction = SYSTEM_PERSONA_RULES,
+            userPrompt = prompt,
+            responseJson = false,
+            maxOutputTokens = 1024,
+            thinkingLevel = GeminiThinkingLevel.MINIMAL,
+            timeoutMs = 45_000L
+        ).map { res ->
+            res.text.trim().ifBlank { "Çalışmalarını düzenli sürdürerek hedeflerine adım adım yaklaşabilirsin." }
+        }
     }
 }

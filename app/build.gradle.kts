@@ -13,14 +13,22 @@ val localPropertiesFile = rootProject.file("local.properties")
 if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
-val geminiApiKey: String = localProperties.getProperty("gemini.api.key")
-    ?: localProperties.getProperty("GEMINI_API_KEY")
-    ?: ""
-val geminiApiKeys: String = localProperties.getProperty("GEMINI_API_KEYS", "")
-val deepseekApiKey: String = (localProperties.getProperty("DEEPSEEK_API_KEY") ?: "")
-    .trim().replace("\"", "").replace("'", "")
-val kimiApiKey: String = (localProperties.getProperty("KIMI_API_KEY") ?: "")
-    .trim().replace("\"", "").replace("'", "")
+fun cleanPropValue(raw: String?): String =
+    (raw ?: "")
+        .replace("\r", "")
+        .replace("\n", "")
+        .replace("\"", "")
+        .replace("'", "")
+        .replace("\\", "")
+        .trim()
+
+val geminiApiKey: String = cleanPropValue(
+    localProperties.getProperty("gemini.api.key")
+        ?: localProperties.getProperty("GEMINI_API_KEY")
+)
+val geminiApiKeys: String = cleanPropValue(localProperties.getProperty("GEMINI_API_KEYS"))
+val deepseekApiKey: String = cleanPropValue(localProperties.getProperty("DEEPSEEK_API_KEY"))
+val kimiApiKey: String = cleanPropValue(localProperties.getProperty("KIMI_API_KEY"))
 
 android {
     namespace = "com.example.sharkmentor"
@@ -35,21 +43,26 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Inject Gemini API keys into generated BuildConfig
-        val rawList = geminiApiKeys.split(",")
-        val keysList = ArrayList<String>()
-        for (k in rawList) {
-            val cleaned = k.trim().replace("\"", "").replace("'", "")
-            if (cleaned.isNotEmpty()) {
+        // Inject Gemini API keys into generated BuildConfig (deduplicated, cleanly separated)
+        val keysList = LinkedHashSet<String>()
+        for (k in geminiApiKeys.split(",", ";", " ", "\t", "\r", "\n")) {
+            val cleaned = cleanPropValue(k)
+            if (cleaned.isNotEmpty() && !cleaned.equals("null", ignoreCase = true)) {
                 keysList.add(cleaned)
             }
         }
-        val key1 = if (keysList.isNotEmpty()) keysList[0] else geminiApiKey
-        val key2 = if (keysList.size > 1) keysList[1] else geminiApiKey
-        val key3 = if (keysList.size > 2) keysList[2] else geminiApiKey
+        if (geminiApiKey.isNotEmpty() && !geminiApiKey.equals("null", ignoreCase = true)) {
+            keysList.add(geminiApiKey)
+        }
+        val orderedKeys = keysList.toList()
+        val key1 = orderedKeys.getOrElse(0) { "" }
+        val key2 = orderedKeys.getOrElse(1) { "" }
+        val key3 = orderedKeys.getOrElse(2) { "" }
+        val joinedGeminiKeys = orderedKeys.joinToString(",")
+        val primaryGeminiKey = geminiApiKey.ifEmpty { key1 }
 
-        buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
-        buildConfigField("String", "GEMINI_API_KEYS", "\"$geminiApiKeys\"")
+        buildConfigField("String", "GEMINI_API_KEY", "\"$primaryGeminiKey\"")
+        buildConfigField("String", "GEMINI_API_KEYS", "\"$joinedGeminiKeys\"")
         buildConfigField("String", "GEMINI_API_KEY_1", "\"$key1\"")
         buildConfigField("String", "GEMINI_API_KEY_2", "\"$key2\"")
         buildConfigField("String", "GEMINI_API_KEY_3", "\"$key3\"")

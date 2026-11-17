@@ -6,6 +6,8 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -114,10 +116,11 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.sharkmentor.BuildConfig
-import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
-import com.example.sharkmentor.core.ai.GeminiAiFactory
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.data.ThemePreferences
 import com.example.sharkmentor.core.theme.ThemeManager
 import com.example.sharkmentor.core.util.DocumentTextExtractor
@@ -135,11 +138,6 @@ import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStudioBar
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
 import com.example.sharkmentor.ui.theme.SharkMentorTheme
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.RequestOptions
-import com.google.ai.client.generativeai.type.ResponseStoppedException
-import com.google.ai.client.generativeai.type.content
-import com.google.ai.client.generativeai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -941,13 +939,19 @@ fun PdfReaderScreen(
         aiResult = ""
         aiSavedAsNote = false
 
+        val mainHandler = Handler(Looper.getMainLooper())
         coroutineScope.launch(Dispatchers.IO) {
             try {
+                UserAiPreferences.initialize(context.applicationContext)
+                val selectedProvider = UserAiPreferences.getOrNull(context)?.getSelectedProvider()
+                    ?: AiProviderChoice.AUTO
+
                 val effectivePrompt = promptQuery.trim().ifBlank {
                     "Bu PDF sayfasını ve belgeyi detaylıca incele, ana konuları özetle ve önemli çalışma noktalarını maddeler halinde çıkar."
                 }
 
                 // 1. Try Vision analysis on the current visible PDF page first
+                // NOTE: Do NOT recycle currentPageBitmap — LruCache inside LazyPdfPageRenderer owns it.
                 val currentPageBitmap = lazyRenderer.renderPage(
                     pageIndex = currentPageIndex,
                     maxWidthPx = 1000,
@@ -963,47 +967,61 @@ fun PdfReaderScreen(
                     ).take(12_000)
                 }.getOrDefault("")
 
-                if (currentPageBitmap != null) {
-                    val accumulated = StringBuilder()
-                    try {
-                        val visionSystem = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim()
-                        val visionModel = GeminiAiFactory.createVisionModel(systemPrompt = visionSystem)
-                        val inputContent = content {
-                            image(currentPageBitmap)
-                            if (extractedText.length >= 60) {
-                                text("[BELGE METNİ (Yardımcı Bağlam)]:\n${extractedText.take(6000)}\n\n")
-                            }
-                            text("[AKTİF SAYFA: ${currentPageIndex + 1} / $totalPages]\n[KULLANICI İSTEĞİ]: $effectivePrompt")
+                var visionFailureMessage: String? = null
+                if (currentPageBitmap != null && !currentPageBitmap.isRecycled) {
+                    val visionSystem = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim()
+                    val visionPrompt = buildString {
+                        if (extractedText.length >= 60) {
+                            append("[BELGE METNİ (Yardımcı Bağlam)]:\n")
+                            append(extractedText.take(6000))
+                            append("\n\n")
                         }
-                        visionModel.generateContentStream(inputContent).collect { chunk ->
-                            val chunkText = chunk.text
-                            if (!chunkText.isNullOrEmpty()) {
-                                accumulated.append(chunkText)
-                                withContext(Dispatchers.Main) {
-                                    aiResult = accumulated.toString()
+                        append("[AKTİF SAYFA: ${currentPageIndex + 1} / $totalPages]\n")
+                        append("[KULLANICI İSTEĞİ]: $effectivePrompt")
+                    }
+
+                    val visionResult = GeminiRestClient.streamWithFailover(
+                        context = context,
+                        systemInstruction = visionSystem,
+                        userPrompt = visionPrompt,
+                        bitmaps = listOf(currentPageBitmap),
+                        responseJson = false,
+                        maxOutputTokens = 6144,
+                        thinkingLevel = GeminiThinkingLevel.LOW,
+                        timeoutMs = 75_000L,
+                        onPartialText = { partial ->
+                            if (partial.isNotEmpty()) {
+                                mainHandler.post {
+                                    aiResult = partial
                                     isAiLoading = false
                                 }
                             }
                         }
-                    } catch (rse: ResponseStoppedException) {
-                        Log.w("PdfReaderAI", "Vision stream stopped: ${rse.message}")
-                    } catch (e: Exception) {
-                        Log.w("PdfReaderAI", "Vision analysis fallback: ${e.message}")
-                    }
+                    )
 
-                    if (accumulated.isNotBlank()) {
-                        withContext(Dispatchers.Main) {
-                            aiResult = accumulated.toString()
-                            isAiLoading = false
+                    if (visionResult.isSuccess) {
+                        val finalVisionText = visionResult.getOrThrow().text.trim()
+                        if (finalVisionText.isNotBlank()) {
+                            withContext(Dispatchers.Main) {
+                                aiResult = finalVisionText
+                                aiError = null
+                                isAiLoading = false
+                            }
+                            return@launch
                         }
-                        return@launch
+                    } else {
+                        val err = visionResult.exceptionOrNull()
+                        if (err is CancellationException) throw err
+                        visionFailureMessage = err?.localizedMessage
+                        Log.w("PdfReaderAI", "Vision analysis fallback: $visionFailureMessage")
                     }
                 }
 
-                // 2. Fallback to text analysis via DeepSeek / Gemini 3.6 Flash
+                // 2. Fallback to text analysis via DeepSeek/Kimi (if selected & configured) or Gemini 3.6 Flash
                 if (extractedText.isBlank()) {
                     withContext(Dispatchers.Main) {
-                        aiError = "PDF sayfası analiz edilemedi. Lütfen internet bağlantınızı kontrol edin."
+                        aiError = visionFailureMessage
+                            ?: "PDF sayfası analiz edilemedi. Lütfen internet bağlantınızı ve API anahtarınızı kontrol edin."
                         isAiLoading = false
                     }
                     return@launch
@@ -1018,22 +1036,33 @@ fun PdfReaderScreen(
                     $effectivePrompt
                 """.trimIndent()
 
-                val deepSeekKey = DeepSeekClient.getDeepSeekApiKey()
-                if (deepSeekKey.isNotBlank()) {
+                val shouldTryOpenAiFirst = when (selectedProvider) {
+                    AiProviderChoice.GEMINI -> false
+                    AiProviderChoice.DEEPSEEK, AiProviderChoice.KIMI -> DeepSeekClient.hasAnyOpenAiProviderKey(context)
+                    AiProviderChoice.AUTO -> DeepSeekClient.hasAnyOpenAiProviderKey(context)
+                }
+
+                if (shouldTryOpenAiFirst) {
                     try {
                         val streamed = DeepSeekClient.streamChatCompletion(
                             systemPrompt = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
                             userPrompt = contextualPrompt,
                             temperature = 0.2f,
                             maxTokens = 4096,
+                            context = context,
                             onAccumulatedChunk = { partial ->
-                                aiResult = partial
-                                isAiLoading = false
+                                if (partial.isNotEmpty()) {
+                                    mainHandler.post {
+                                        aiResult = partial
+                                        isAiLoading = false
+                                    }
+                                }
                             }
                         )
                         if (streamed.isNotBlank()) {
                             withContext(Dispatchers.Main) {
                                 aiResult = streamed
+                                aiError = null
                                 isAiLoading = false
                             }
                             return@launch
@@ -1041,40 +1070,45 @@ fun PdfReaderScreen(
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Exception) {
-                        Log.w("PdfReaderAI", "DeepSeek fallback to Gemini: ${e.message}")
+                        Log.w("PdfReaderAI", "DeepSeek/Kimi fallback to Gemini: ${e.message}")
                     }
                 }
 
-                val activeKey = ApiKeyRotator.getActiveKey()
-                    .ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-                    .trim()
-                    .replace("\"", "")
-                    .replace("'", "")
-
-                val model = GenerativeModel(
-                    modelName = "gemini-3.6-flash",
-                    apiKey = activeKey,
-                    generationConfig = generationConfig {
-                        temperature = 0.2f
-                        maxOutputTokens = 4096
-                        topP = 0.85f
-                    },
-                    tools = emptyList(),
-                    systemInstruction = content {
-                        text(NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim())
-                    },
-                    requestOptions = RequestOptions(timeout = 30_000L)
+                val geminiTextResult = GeminiRestClient.streamWithFailover(
+                    context = context,
+                    systemInstruction = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
+                    userPrompt = contextualPrompt,
+                    responseJson = false,
+                    maxOutputTokens = 6144,
+                    thinkingLevel = GeminiThinkingLevel.LOW,
+                    timeoutMs = 75_000L,
+                    onPartialText = { partial ->
+                        if (partial.isNotEmpty()) {
+                            mainHandler.post {
+                                aiResult = partial
+                                isAiLoading = false
+                            }
+                        }
+                    }
                 )
 
-                val sb = StringBuilder()
-                model.generateContentStream(contextualPrompt).collect { chunk ->
-                    val t = runCatching { chunk.text }.getOrNull()
-                    if (!t.isNullOrEmpty()) {
-                        sb.append(t)
-                        withContext(Dispatchers.Main) {
-                            aiResult = sb.toString()
-                            isAiLoading = false
+                if (geminiTextResult.isSuccess) {
+                    val finalText = geminiTextResult.getOrThrow().text.trim()
+                    withContext(Dispatchers.Main) {
+                        if (finalText.isNotBlank()) {
+                            aiResult = finalText
+                            aiError = null
+                        } else {
+                            aiError = "AI boş yanıt döndürdü. Lütfen tekrar deneyin."
                         }
+                        isAiLoading = false
+                    }
+                } else {
+                    val err = geminiTextResult.exceptionOrNull()
+                    if (err is CancellationException) throw err
+                    withContext(Dispatchers.Main) {
+                        aiError = err?.localizedMessage ?: visionFailureMessage ?: "AI analizi sırasında hata oluştu."
+                        isAiLoading = false
                     }
                 }
             } catch (e: Throwable) {

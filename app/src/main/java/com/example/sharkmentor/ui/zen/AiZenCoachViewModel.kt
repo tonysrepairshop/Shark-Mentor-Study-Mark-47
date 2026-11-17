@@ -1,12 +1,13 @@
-﻿package com.example.sharkmentor.ui.zen
+package com.example.sharkmentor.ui.zen
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.ai.client.generativeai.GenerativeModel
-import com.example.sharkmentor.core.ai.GeminiAiFactory
-import com.example.sharkmentor.core.ai.AiTaskType
+import com.example.sharkmentor.core.ai.GeminiRestClient
+import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,28 +46,22 @@ class AiZenCoachViewModel(application: Application) : AndroidViewModel(applicati
     private var tickerJob: Job? = null
 
     // Empathetic & Grounded Zen Coach Prompt (Gemini 3.6 Flash)
-    private val generativeModel by lazy {
-        val systemPrompt = """
-            Sen SharkMentor platformunun 'Empatik Zen KoÃ§u'sun.
-            
-            MÄ°SYONUN:
-            Ã–ÄŸrenciler sÄ±nav hazÄ±rlÄ±ÄŸÄ± sÃ¼recinde yoÄŸun stres, yetersizlik hissi, tÃ¼kenmiÅŸlik ve kaygÄ± yaÅŸayabilir. Bu alan onlarÄ±n duygularÄ±nÄ± rahatÃ§a paylaÅŸÄ±p zihinsel yÃ¼klerini hafifletebileceÄŸi gÃ¼venli bir alandÄ±r.
-
-            DAVRANIÅ KURALLARI:
-            1. Asla didaktik, sorgulayÄ±cÄ± veya ders veren bir tonda olma (Sokratik sorgulama yapma).
-            2. Ã–ÄŸrencinin hislerini iÃ§tenlikle onayla ve anla ("BÃ¶yle hissetmen Ã§ok doÄŸal", "BÃ¼yÃ¼k bir emek veriyorsun ve bu aÄŸÄ±rlÄ±k normal").
-            3. Samimi, insaflÄ±, ÅŸefkatli, sakinleÅŸtirici ve umut veren bir dil kullan.
-            4. CevaplarÄ±n kÄ±sa, ferahlatÄ±cÄ± ve net olsun (Maksimum 3-4 cÃ¼mle). Uzun paragraflarla Ã¶ÄŸrenciyi yorma.
-            5. Ã–ÄŸrenciye bir nefes aldÄ±r, omzundaki yÃ¼kÃ¼ hafiflet ve masaya sakin bir zihinle dÃ¶nmesi iÃ§in nazik bir cesaret ver.
-        """.trimIndent()
+    private val zenCoachSystemPrompt = """
+        Sen SharkMentor platformunun 'Empatik Zen KoÃ§u'sun.
         
-        GeminiAiFactory.createModel(
-            taskType = AiTaskType.LIGHT_INTERACTION,
-            systemPrompt = systemPrompt
-        )
-    }
+        MÄ°SYONUN:
+        Ã–ÄŸrenciler sÄ±nav hazÄ±rlÄ±ÄŸÄ± sÃ¼recinde yoÄŸun stres, yetersizlik hissi, tÃ¼kenmiÅŸlik ve kaygÄ± yaÅŸayabilir. Bu alan onlarÄ±n duygularÄ±nÄ± rahatÃ§a paylaÅŸÄ±p zihinsel yÃ¼klerini hafifletebileceÄŸi gÃ¼venli bir alandÄ±r.
+
+        DAVRANIÅž KURALLARI:
+        1. Asla didaktik, sorgulayÄ±cÄ± veya ders veren bir tonda olma (Sokratik sorgulama yapma).
+        2. Ã–ÄŸrencinin hislerini iÃ§tenlikle onayla ve anla ("BÃ¶yle hissetmen Ã§ok doÄŸal", "BÃ¼yÃ¼k bir emek veriyorsun ve bu aÄŸÄ±rlÄ±k normal").
+        3. Samimi, insaflÄ±, ÅŸefkatli, sakinleÅŸtirici ve umut veren bir dil kullan.
+        4. CevaplarÄ±n kÄ±sa, ferahlatÄ±cÄ± ve net olsun (Maksimum 3-4 cÃ¼mle). Uzun paragraflarla Ã¶ÄŸrenciyi yorma.
+        5. Ã–ÄŸrenciye bir nefes aldÄ±r, omzundaki yÃ¼kÃ¼ hafiflet ve masaya sakin bir zihinle dÃ¶nmesi iÃ§in nazik bir cesaret ver.
+    """.trimIndent()
 
     init {
+        UserAiPreferences.initialize(application)
         checkAndStartCooldownTicker()
     }
 
@@ -105,12 +100,22 @@ class AiZenCoachViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _isLoading.value = true
             try {
-                val response = generativeModel.generateContent(questionText)
-                val aiReply = response.text ?: "Derin bir nefes al. YanÄ±ndayÄ±m, bu his geÃ§ici ve sen dÃ¼ÅŸÃ¼ndÃ¼ÄŸÃ¼nden daha gÃ¼Ã§lÃ¼sÃ¼n."
+                val result = GeminiRestClient.generateWithFailover(
+                    context = getApplication(),
+                    systemInstruction = zenCoachSystemPrompt,
+                    userPrompt = questionText.trim(),
+                    responseJson = false,
+                    maxOutputTokens = 1024,
+                    thinkingLevel = GeminiThinkingLevel.MINIMAL,
+                    timeoutMs = 45_000L
+                )
+                val aiReply = result.getOrThrow().text.takeIf { it.isNotBlank() }
+                    ?: "Derin bir nefes al. Yanındayım, bu his geçici ve sen düşündüğünden daha güçlüsün."
                 _messages.value = _messages.value + ChatMessage(text = aiReply, isUser = false)
             } catch (e: Exception) {
+                Log.w("AiZenCoachVM", "Zen Coach Gemini error: ${e.message}", e)
                 _messages.value = _messages.value + ChatMessage(
-                    text = "Åu an baÄŸlantÄ± kurulamadÄ± ama unutma: YalnÄ±z deÄŸilsin. BirkaÃ§ yudum su al ve derin bir nefesle devam et.",
+                    text = "Åžu an baÄŸlantÄ± kurulamadÄ± ama unutma: YalnÄ±z deÄŸilsin. BirkaÃ§ yudum su al ve derin bir nefesle devam et.",
                     isUser = false
                 )
             } finally {
