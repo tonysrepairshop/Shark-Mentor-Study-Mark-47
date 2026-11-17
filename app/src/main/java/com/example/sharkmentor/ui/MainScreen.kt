@@ -182,10 +182,11 @@ fun MainScreen(
             val drawerState = androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
             val scope = androidx.compose.runtime.rememberCoroutineScope()
 
+            val isNotesContext = currentDestination?.route == Screen.Notes.route || isNoteEditorOpen
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                 ModalNavigationDrawer(
                     drawerState = drawerState,
-                    gesturesEnabled = true,
+                    gesturesEnabled = drawerState.isOpen || !isNotesContext,
                     drawerContent = {
                         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                             ModalDrawerSheet(
