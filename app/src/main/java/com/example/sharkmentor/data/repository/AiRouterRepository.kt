@@ -1232,11 +1232,11 @@ $MANDATORY_PERSONA_RULES
             }
 
             "addStudyPlanItem" -> {
-                val subject = call.args["subject"]?.ifBlank { "Matematik" } ?: "Matematik"
-                val topic = call.args["topic"]?.ifBlank { "Soru Çözümü" } ?: "Soru Çözümü"
-                val dayOfWeek = call.args["dayOfWeek"]?.toIntOrNull()?.coerceIn(1, 7) ?: 1
-                val scheduledTime = call.args["scheduledTime"]?.takeIf { it.isNotBlank() } ?: "16:00 - 17:30"
-                val targetQuestions = (call.args["targetQuestions"]?.toIntOrNull() ?: 30).coerceAtLeast(20)
+                val subject = args["subject"]?.ifBlank { "Matematik" } ?: "Matematik"
+                val topic = args["topic"]?.ifBlank { "Soru Çözümü" } ?: "Soru Çözümü"
+                val dayOfWeek = args["dayOfWeek"]?.toIntOrNull()?.coerceIn(1, 7) ?: 1
+                val scheduledTime = args["scheduledTime"]?.takeIf { it.isNotBlank() } ?: "16:00 - 17:30"
+                val targetQuestions = (args["targetQuestions"]?.toIntOrNull() ?: 30).coerceAtLeast(20)
 
                 val dayName = dayOfWeekToTurkishName(dayOfWeek)
 
