@@ -1333,7 +1333,7 @@ fun PdfReaderScreen(
             }
 
             // Floating Bottom Page Indicator & Scrubber Bar
-            AnimatedVisibility(
+            androidx.compose.animation.AnimatedVisibility(
                 visible = showPageScrubber && totalPages > 1,
                 enter = fadeIn(),
                 exit = fadeOut(),

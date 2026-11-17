@@ -1703,8 +1703,8 @@ fun SharkAiScreen(
                                     ?.take(90)
                                     ?: "Henüz mesaj gönderilmedi"
                             }
-                            val formattedDate = remember(session.updatedAtEpochMs) {
-                                runCatching { dateFormatter.format(Date(session.updatedAtEpochMs)) }
+                            val formattedDate = remember(session.updatedAtMillis) {
+                                runCatching { dateFormatter.format(Date(session.updatedAtMillis)) }
                                     .getOrDefault("")
                             }
 
