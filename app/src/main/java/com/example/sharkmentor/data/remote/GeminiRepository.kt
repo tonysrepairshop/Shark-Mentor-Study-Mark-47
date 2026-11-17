@@ -25,7 +25,7 @@ class GeminiRepository @Inject constructor() {
     }
 
     private fun sanitizeModel(modelName: String): String {
-        return modelName.trim().removePrefix("models/").removePrefix("/")
+        return MODEL_NAME
     }
 
     private fun createGenerativeModel(

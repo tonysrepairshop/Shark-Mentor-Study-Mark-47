@@ -340,6 +340,38 @@ fun SharkAiScreen(
                                 }
                             }
 
+                            // "Yeni Sohbet" (New Chat) button to clear persistent session when desired
+                            if (uiState.messages.isNotEmpty()) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+                                    shape = RoundedCornerShape(16.dp),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                                    modifier = Modifier.clickable {
+                                        viewModel.startNewChat()
+                                        Toast.makeText(context, "Yeni sohbet başlatıldı", Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Add,
+                                            contentDescription = "Yeni Sohbet",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = "Yeni Sohbet",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                            }
+
                             // Sleek Segmented / Filter Chips for Model Power: Fast vs Deep (Aligned to far right)
                             Surface(
                                 shape = RoundedCornerShape(20.dp),
@@ -355,7 +387,15 @@ fun SharkAiScreen(
                                         val isSelected = modelPower == powerOption
                                         FilterChip(
                                             selected = isSelected,
-                                            onClick = { viewModel.setModelPower(powerOption) },
+                                            onClick = {
+                                                viewModel.setModelPower(powerOption)
+                                                val modeHint = if (powerOption == AiModelPower.PRO) {
+                                                    "Detaylı Mod aktif: Derin konu sentezi ve adım adım analiz"
+                                                } else {
+                                                    "Hızlı Mod aktif: Öz ve seri yanıt"
+                                                }
+                                                Toast.makeText(context, modeHint, Toast.LENGTH_SHORT).show()
+                                            },
                                             label = {
                                                 Text(
                                                     text = powerOption.label,

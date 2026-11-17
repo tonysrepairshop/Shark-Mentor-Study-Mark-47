@@ -25,8 +25,8 @@ data class OpenAiChatMessage(
 
 /**
  * High-performance, lightweight streaming HTTP client for Text/Chat requests.
- * Primary Provider: DeepSeek API (`deepseek-chat`).
- * Automatic Fallback: Kimi / Moonshot API (`moonshot-v1-8k`) if DeepSeek returns 4xx/5xx or network errors.
+ * - DeepSeek (`deepseek-chat`): Peer chat, "Detaylı" (PRO) deep topic synthesis/explanations, short-medium note summaries.
+ * - Kimi / Moonshot (`moonshot-v1-32k` / `moonshot-v1-8k`): Long text/document context summaries and immediate fallback on DeepSeek error/quota.
  */
 object DeepSeekClient {
     private const val TAG = "DeepSeekClient"
@@ -36,7 +36,10 @@ object DeepSeekClient {
 
     private const val KIMI_BASE_URL = "https://api.moonshot.cn/v1/chat/completions"
     private const val KIMI_MODEL = "moonshot-v1-8k"
+    private const val KIMI_LONG_CONTEXT_MODEL = "moonshot-v1-32k"
     private const val KIMI_VISION_MODEL = "moonshot-v1-8k-vision-preview"
+
+    private const val LONG_CONTEXT_CHAR_THRESHOLD = 4200
 
     const val DEFAULT_PEER_SYSTEM_PROMPT = """
 Sen SharkMentor'un samimi, motive edici ve gerçekçi akran mentörüsün (YKS/LGS Peer Mentor).
@@ -44,7 +47,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
 1. SIFIR YALAKALIK & GİRİŞ YASAĞI: "Harika bir soru!", "Merhaba! Sana nasıl yardımcı olabilirim?" gibi yapay kurumsal kalıpları KESİNLİKLE KULLANMA. Doğrudan konuya, stratejiye veya cevaba gir.
 2. ORANTILI UZUNLUK:
    - Kullanıcı sadece "Selam", "Nasılsın", "Merhaba" yazarsa MAKSİMUM 1 KISA CÜMLE ile cevap ver (Örn: "Selam! Bugün hangi derse odaklanıyoruz?").
-   - Standart konu anlatımı ve rehberlik açıklamalarını 4-6 net cümle ile sınırla.
+   - Standart konu anlatımı ve rehberlik açıklamalarını net, anlaşılır ve kotayı boşa harcamayacak yoğunlukta tut.
 3. SOHBET KANCASI:
    - Yanıtını klişe bitirişlerle ("Başarılar dilerim") kapatma. Öğrenciyi aksiyonda tutacak tek cümlelik doğal bir takip sorusu sor.
 """
@@ -80,16 +83,30 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         }.getOrDefault("")
     }
 
+    fun isLongContextPrompt(userPrompt: String, systemPrompt: String = ""): Boolean {
+        val lower = userPrompt.lowercase()
+        val hasLongDocIntent = lower.contains("uzun metin") ||
+            lower.contains("belge özeti") ||
+            lower.contains("doküman özeti") ||
+            lower.contains("makale özeti") ||
+            lower.contains("tüm metni özetle")
+        return userPrompt.length >= LONG_CONTEXT_CHAR_THRESHOLD ||
+            (userPrompt.length + systemPrompt.length) >= (LONG_CONTEXT_CHAR_THRESHOLD * 2) ||
+            (hasLongDocIntent && userPrompt.length >= 1200)
+    }
+
     /**
      * Streams tokens emitted incrementally as a Kotlin Flow<String>.
-     * Attempts DeepSeek first; if DeepSeek returns 4xx/5xx or connection error, seamlessly falls back to Kimi.
+     * - If `preferKimiLongContext` is true (or prompt exceeds long-context threshold), attempts Kimi (`moonshot-v1-32k` -> `moonshot-v1-8k`) first, then DeepSeek.
+     * - Otherwise attempts DeepSeek (`deepseek-chat`) first, and on any 4xx/5xx/quota/network error immediately falls back to Kimi (`moonshot-v1-8k`).
      */
     fun streamChatCompletionFlow(
         systemPrompt: String = DEFAULT_PEER_SYSTEM_PROMPT,
         userPrompt: String,
         chatHistory: List<OpenAiChatMessage> = emptyList(),
         temperature: Float = 0.3f,
-        maxTokens: Int = 4096
+        maxTokens: Int = 4096,
+        preferKimiLongContext: Boolean = false
     ): Flow<String> = flow {
         val messages = buildList {
             add(OpenAiChatMessage(role = "system", content = systemPrompt.trim()))
@@ -98,10 +115,79 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             add(OpenAiChatMessage(role = "user", content = userPrompt.trim()))
         }
 
+        val useKimiPrimary = preferKimiLongContext || isLongContextPrompt(userPrompt, systemPrompt)
         var streamedTokensCount = 0
-        var deepSeekFailed = false
         var lastException: Throwable? = null
 
+        if (useKimiPrimary) {
+            val kimiKey = getKimiApiKey()
+            var kimiFailed = false
+            if (kimiKey.isNotBlank()) {
+                val primaryKimiModel = if (userPrompt.length >= LONG_CONTEXT_CHAR_THRESHOLD) KIMI_LONG_CONTEXT_MODEL else KIMI_MODEL
+                try {
+                    executeStreamingRequest(
+                        url = KIMI_BASE_URL,
+                        apiKey = kimiKey,
+                        model = primaryKimiModel,
+                        messages = messages,
+                        temperature = temperature,
+                        maxTokens = maxTokens
+                    ) { token ->
+                        streamedTokensCount++
+                        emit(token)
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Kimi long-context ($primaryKimiModel) failed: ${e.message}", e)
+                    if (streamedTokensCount == 0 && primaryKimiModel != KIMI_MODEL) {
+                        runCatching {
+                            executeStreamingRequest(
+                                url = KIMI_BASE_URL,
+                                apiKey = kimiKey,
+                                model = KIMI_MODEL,
+                                messages = messages,
+                                temperature = temperature,
+                                maxTokens = maxTokens
+                            ) { token ->
+                                streamedTokensCount++
+                                emit(token)
+                            }
+                        }.onFailure { fallbackErr ->
+                            kimiFailed = true
+                            lastException = fallbackErr
+                        }
+                    } else {
+                        kimiFailed = true
+                        lastException = e
+                    }
+                }
+            } else {
+                kimiFailed = true
+            }
+
+            if (kimiFailed && streamedTokensCount == 0) {
+                val deepSeekKey = getDeepSeekApiKey()
+                if (deepSeekKey.isNotBlank()) {
+                    executeStreamingRequest(
+                        url = DEEPSEEK_BASE_URL,
+                        apiKey = deepSeekKey,
+                        model = DEEPSEEK_MODEL,
+                        messages = messages,
+                        temperature = temperature,
+                        maxTokens = maxTokens
+                    ) { token ->
+                        streamedTokensCount++
+                        emit(token)
+                    }
+                } else {
+                    throw lastException ?: IllegalStateException("Neither Kimi nor DeepSeek API keys are configured.")
+                }
+            }
+            return@flow
+        }
+
+        var deepSeekFailed = false
         val deepSeekKey = getDeepSeekApiKey()
         if (deepSeekKey.isNotBlank()) {
             try {
@@ -128,7 +214,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             Log.w(TAG, "DEEPSEEK_API_KEY is empty, switching to Kimi fallback.")
         }
 
-        // If DeepSeek failed and NO tokens were streamed yet, fallback to Kimi
+        // If DeepSeek failed and NO tokens were streamed yet, fallback to Kimi immediately
         if (deepSeekFailed && streamedTokensCount == 0) {
             val kimiKey = getKimiApiKey()
             if (kimiKey.isNotBlank()) {
@@ -166,6 +252,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         chatHistory: List<OpenAiChatMessage> = emptyList(),
         temperature: Float = 0.3f,
         maxTokens: Int = 2048,
+        preferKimiLongContext: Boolean = false,
         onAccumulatedChunk: (String) -> Unit = {}
     ): String = withContext(Dispatchers.IO) {
         val accumulated = StringBuilder()
@@ -175,7 +262,8 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
                 userPrompt = userPrompt,
                 chatHistory = chatHistory,
                 temperature = temperature,
-                maxTokens = maxTokens
+                maxTokens = maxTokens,
+                preferKimiLongContext = preferKimiLongContext
             ).collect { token ->
                 accumulated.append(token)
                 onAccumulatedChunk(accumulated.toString())
@@ -189,6 +277,32 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             }
         }
         accumulated.toString()
+    }
+
+    /**
+     * Summarizes short-to-medium study notes via DeepSeek or long documents via Kimi.
+     */
+    suspend fun summarizeTextContent(
+        rawContent: String,
+        isDetailed: Boolean = false,
+        onAccumulatedChunk: (String) -> Unit = {}
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val isLongDocument = rawContent.length >= LONG_CONTEXT_CHAR_THRESHOLD
+            val sysPrompt = if (isDetailed) {
+                "Sen SharkMentor Akademik Sentez Motorusun. Verilen ders notunu veya belgeyi kavramsal çerçevesi, kritik formül/kuralları ve ÖSYM/MEB sınav tuzaklarıyla adım adım derinlemesine özetle. Dil: Türkçe."
+            } else {
+                "Sen SharkMentor Hızlı Özet Motorusun. Verilen metni en kritik 4-5 vurucu madde halinde sıfır laf kalabalığıyla özetle. Dil: Türkçe."
+            }
+            streamChatCompletion(
+                systemPrompt = sysPrompt,
+                userPrompt = rawContent,
+                temperature = if (isDetailed) 0.35f else 0.2f,
+                maxTokens = if (isDetailed) 3072 else 1024,
+                preferKimiLongContext = isLongDocument,
+                onAccumulatedChunk = onAccumulatedChunk
+            )
+        }
     }
 
     /**
