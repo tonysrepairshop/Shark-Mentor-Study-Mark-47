@@ -215,3 +215,80 @@ export const onExamUpdated = functions.firestore
       );
     }
   });
+
+// ─── SHARK LEAGUE NUDGE ("DÜRTME") PUSH NOTIFICATION RULE ───────────────────
+
+/**
+ * Triggered when a student nudges a friend or study group member via `nudges/{nudgeId}`.
+ * Enforces:
+ * - Quiet hours (23:00 - 08:30 UTC+3)
+ * - 12-hour per-pair anti-spam rate limit (`senderId -> receiverId`)
+ * - Receiver global rate limit (12h window for nudges)
+ */
+export const onNudgeCreated = functions.firestore
+  .document('nudges/{nudgeId}')
+  .onCreate(async (snap, context) => {
+    const data = snap.data();
+    if (!data) return;
+
+    const senderId = (data.senderId as string | undefined)?.trim() || "";
+    const receiverId = (data.receiverId as string | undefined)?.trim() || "";
+    const senderName = (data.senderName as string | undefined)?.trim() || "Arkadaşın";
+    const groupId = (data.groupId as string | undefined)?.trim() || "GLOBAL_INDIVIDUAL";
+
+    if (!senderId || !receiverId || senderId === receiverId) {
+      console.log(`[onNudgeCreated] Invalid sender/receiver on nudge ${context.params.nudgeId}`);
+      return;
+    }
+
+    if (isQuietHours()) {
+      console.log(`[Quiet Hours] Suppressed nudge from ${senderId} to ${receiverId}`);
+      return;
+    }
+
+    // Check 12-hour per-pair (sender -> receiver) rate limit
+    const pairMetaRef = db.doc(`students/${receiverId}/meta/nudge_${senderId}`);
+    const pairMetaSnap = await pairMetaRef.get();
+    if (pairMetaSnap.exists) {
+      const lastNudgeTs = pairMetaSnap.data()?.lastNudgeTimestamp as admin.firestore.Timestamp | undefined;
+      if (lastNudgeTs) {
+        const hoursElapsed = (Date.now() - lastNudgeTs.toDate().getTime()) / (1000 * 60 * 60);
+        if (hoursElapsed < NUDGE_COOLDOWN_HOURS) {
+          console.log(`[Rate Limit] Suppressed duplicate nudge from ${senderId} to ${receiverId} (${hoursElapsed.toFixed(1)}h < 12h)`);
+          return;
+        }
+      }
+    }
+
+    const title = `🦈 ${senderName} Seni Masaya Çağırıyor!`;
+    const body = (data.message as string | undefined)?.trim() ||
+      `${senderName} seni dürttü! Kronometreni başlat ve odak yarışında geri kalma.`;
+
+    const sent = await dispatchPushNotification(
+      receiverId,
+      title,
+      body,
+      "NUDGE",
+      NUDGE_COOLDOWN_HOURS,
+      {
+        senderId,
+        senderName,
+        groupId,
+        nudgeId: context.params.nudgeId
+      }
+    );
+
+    if (sent) {
+      await pairMetaRef.set({
+        senderId,
+        senderName,
+        lastNudgeTimestamp: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      await snap.ref.set({
+        deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: "DELIVERED"
+      }, { merge: true });
+    }
+  });
+

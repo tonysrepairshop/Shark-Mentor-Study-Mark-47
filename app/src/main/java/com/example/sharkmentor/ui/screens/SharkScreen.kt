@@ -205,7 +205,7 @@ fun SharkArenaContent(
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = "Kurum içi mikro-lig — odaklanma süresi bazlı sıralama",
+                        text = "Bireysel Genel Lig, Kodlu Çalışma Grupları & Arkadaş Rekabeti",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

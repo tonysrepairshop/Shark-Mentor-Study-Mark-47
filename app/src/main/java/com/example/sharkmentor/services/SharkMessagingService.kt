@@ -37,8 +37,12 @@ class SharkMessagingService : FirebaseMessagingService() {
         try {
             if (!GoogleServicesHelper.isGooglePlayServicesAvailable(this)) return
             val currentUserId = GoogleServicesHelper.getCurrentUser(context = this)?.uid ?: return
+            val payload = mapOf(
+                "fcmToken" to token,
+                "fcmTokens" to com.google.firebase.firestore.FieldValue.arrayUnion(token)
+            )
             GoogleServicesHelper.getFirebaseFirestore(this)?.collection("students")?.document(currentUserId)
-                ?.update("fcmToken", token)
+                ?.set(payload, com.google.firebase.firestore.SetOptions.merge())
                 ?.addOnSuccessListener {
                     Log.d("FCM", "Token updated in Firestore: $token")
                 }
@@ -50,15 +54,22 @@ class SharkMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
         super.onMessageReceived(remoteMessage)
 
-        val syncType = remoteMessage.data["type"]
+        val syncType = remoteMessage.data["type"] ?: remoteMessage.data["triggerType"]
         if (syncType == "SYNC_STUDY_PLAN" || syncType == "SCHEDULE") {
             serviceScope.launch {
                 syncManager.syncRemotePlanToRoom(force = true)
             }
         }
 
-        val title = remoteMessage.notification?.title ?: remoteMessage.data["title"] ?: "SharkMentor"
-        val body = remoteMessage.notification?.body ?: remoteMessage.data["body"] ?: "Koçun yeni bir görev atadı!"
+        val defaultTitle = if (syncType == "NUDGE") "🦈 Shark Arena Dürtmesi!" else "SharkMentor"
+        val defaultBody = if (syncType == "NUDGE") {
+            "Arkadaşın seni çalışma masasına çağırıyor! Kronometreni başlat."
+        } else {
+            "Koçun yeni bir görev atadı!"
+        }
+
+        val title = remoteMessage.notification?.title ?: remoteMessage.data["title"] ?: defaultTitle
+        val body = remoteMessage.notification?.body ?: remoteMessage.data["body"] ?: defaultBody
 
         showHeadsUpNotification(title, body)
     }
