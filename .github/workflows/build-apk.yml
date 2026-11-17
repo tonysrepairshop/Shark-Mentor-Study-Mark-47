@@ -48,26 +48,28 @@ jobs:
           EOF
 
       - name: Build Debug APK & Capture Diagnostics
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x ./gradlew
           set +e
           ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
-          BUILD_EXIT=$?
+          BUILD_EXIT=${PIPESTATUS[0]}
           set -e
-          if [ $BUILD_EXIT -ne 0 ]; then
-            echo "=== COMPILER ERRORS ==="
-            grep -E "^e: |FAILURE:|What went wrong:|^\* |Exception|Error:" build.log | tail -n 120 > error_summary.txt || true
+          if [ $BUILD_EXIT -ne 0 ] || [ ! -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "=== COMPILER ERRORS (EXIT=$BUILD_EXIT) ==="
+            grep -E "^e: |FAILURE:|What went wrong:|^\* |Exception|Error:|Unresolved reference" build.log | tail -n 120 > error_summary.txt || true
+            echo "=== LAST 100 LINES ===" >> error_summary.txt
             tail -n 100 build.log >> error_summary.txt
             python3 - << 'PYEOF'
-          import json, subprocess, os
-          body = "### ❌ Build Failure Log\n```\n" + open("error_summary.txt", errors="ignore").read()[-6000:] + "\n```"
+          import subprocess, os
+          body = "### ❌ Build Diagnostic Log\n```\n" + open("error_summary.txt", errors="ignore").read()[-8000:] + "\n```"
           repo = os.environ["GITHUB_REPOSITORY"]
           sha = os.environ["GITHUB_SHA"]
           subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}/comments", "-f", f"body={body}"], check=False)
           PYEOF
-            exit $BUILD_EXIT
+            exit 1
           fi
 
       - name: Upload Debug APK Artifact
