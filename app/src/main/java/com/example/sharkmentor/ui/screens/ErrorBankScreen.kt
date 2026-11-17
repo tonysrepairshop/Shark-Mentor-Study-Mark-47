@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import android.widget.Toast
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
@@ -43,6 +44,7 @@ import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.data.local.entity.ErrorQuestionEntity
 import com.example.sharkmentor.data.local.entity.TrainingFolderEntity
 import com.example.sharkmentor.data.repository.SharkAiEngine
+import com.example.sharkmentor.data.sync.VaultBackupDialog
 import com.example.sharkmentor.ui.viewmodel.ErrorBankViewModel
 import com.example.sharkmentor.ui.viewmodel.SharkAiHandoffManager
 import com.example.sharkmentor.ui.viewmodel.SubjectFolderItem
@@ -75,6 +77,7 @@ fun ErrorBankScreen(
     val dueQuestionsCount = uiState.dueQuestionsCount
     val timerState by FocusTimerService.timerStateFlow.collectAsStateWithLifecycle()
     var showAddDialog by remember { mutableStateOf(false) }
+    var showVaultBackupDialog by remember { mutableStateOf(false) }
     var questionToReclassify by remember { mutableStateOf<ErrorQuestionEntity?>(null) }
 
     // System back press handling: Topic -> Subject -> Root
@@ -168,6 +171,14 @@ fun ErrorBankScreen(
                             finishedListener = { isRefreshing = false },
                             label = "refreshRotation"
                         )
+
+                        IconButton(onClick = { showVaultBackupDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Default.CloudSync,
+                                contentDescription = "Yedekle / Geri Yükle",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
 
                         IconButton(onClick = {
                             isRefreshing = true
@@ -564,6 +575,13 @@ fun ErrorBankScreen(
                 viewModel.addQuestion(qUri, sUri, subject, "Genel")
                 showAddDialog = false
             }
+        )
+    }
+
+    if (showVaultBackupDialog) {
+        VaultBackupDialog(
+            onDismiss = { showVaultBackupDialog = false },
+            onDataRestored = { viewModel.refreshDueQuestions() }
         )
     }
 }

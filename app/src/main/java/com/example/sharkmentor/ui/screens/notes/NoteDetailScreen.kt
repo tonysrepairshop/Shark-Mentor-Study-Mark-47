@@ -1362,10 +1362,13 @@ fun NoteDetailScreen(
                                 }
                                 TextButton(
                                     onClick = {
-                                        PdfReaderActivity.startWithLocalFile(
-                                            context = context,
-                                            pdfFilePath = safePdfPath,
-                                            title = vmTitle.ifBlank { "PDF Belgesi" }
+                                        context.startActivity(
+                                            PdfReaderActivity.createIntent(
+                                                context = context,
+                                                pdfFilePath = safePdfPath,
+                                                title = vmTitle.ifBlank { "PDF Belgesi" },
+                                                skipChooser = true
+                                            )
                                         )
                                     }
                                 ) {
@@ -1878,7 +1881,7 @@ fun NoteDetailScreen(
                     onClick = {
                         val idToDelete = vmNoteId
                         viewModel.deleteNote {
-                            if (idToDelete > 0L) {
+                            if (idToDelete.isNotBlank()) {
                                 DrawingSerializer.deleteNoteDrawing(context, idToDelete)
                             }
                             showDeleteConfirmDialog = false

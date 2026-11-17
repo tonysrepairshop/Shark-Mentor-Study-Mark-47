@@ -76,12 +76,14 @@ import com.example.sharkmentor.core.util.PdfBitmapConverter
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.NoteEntity
 import com.example.sharkmentor.data.repository.NoteRepositoryImpl
+import com.example.sharkmentor.data.sync.VaultBackupDialog
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
 import com.example.sharkmentor.ui.screens.pdf.PdfOpenChoiceDialog
 import com.example.sharkmentor.ui.screens.pdf.PdfReaderActivity
 import com.example.sharkmentor.ui.theme.NotesPalette
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.runtime.rememberCoroutineScope
@@ -129,6 +131,7 @@ fun NotesScreen(
     var editorPdfPagePaths by remember { mutableStateOf<List<String>>(emptyList()) }
     var showEditor by remember { mutableStateOf(false) }
     var pendingPickedPdf by remember { mutableStateOf<ImportedPdfFile?>(null) }
+    var showVaultBackupDialog by remember { mutableStateOf(false) }
 
     val pdfPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -172,15 +175,18 @@ fun NotesScreen(
 
     pendingPickedPdf?.let { pickedPdf ->
         PdfOpenChoiceDialog(
-            pdfTitle = pickedPdf.displayTitle,
+            title = pickedPdf.title,
             pageCount = pickedPdf.pageCount,
             onOpenAsPdfReader = {
                 val target = pickedPdf
                 pendingPickedPdf = null
-                PdfReaderActivity.startWithLocalFile(
-                    context = context,
-                    pdfFilePath = target.file.absolutePath,
-                    title = target.displayTitle
+                context.startActivity(
+                    PdfReaderActivity.createIntent(
+                        context = context,
+                        pdfFilePath = target.localFile.absolutePath,
+                        title = target.title,
+                        skipChooser = true
+                    )
                 )
             },
             onOpenAsEditableNote = {
@@ -188,18 +194,27 @@ fun NotesScreen(
                 pendingPickedPdf = null
                 coroutineScope.launch {
                     val extracted = withContext(Dispatchers.IO) {
-                        val fileUri = android.net.Uri.fromFile(target.file)
-                        DocumentTextExtractor.extractText(context, fileUri).getOrNull()?.trim().orEmpty()
+                        val fileUri = android.net.Uri.fromFile(target.localFile)
+                        DocumentTextExtractor.extractCleanText(
+                            context = context,
+                            uri = fileUri,
+                            displayName = target.displayName,
+                            mimeType = "application/pdf"
+                        ).trim()
                     }
                     val previewBmp = withContext(Dispatchers.IO) {
-                        PdfBitmapConverter.renderFirstPageFromFile(target.file, maxDimension = 1080)
+                        PdfBitmapConverter.convertPdfUriToBitmaps(
+                            context = context,
+                            pdfUri = android.net.Uri.fromFile(target.localFile),
+                            maxPages = 1
+                        ).firstOrNull()
                     }
                     selectedNoteId = null
-                    editorInitialTitle = target.displayTitle
+                    editorInitialTitle = target.title
                     editorInitialContent = extracted.ifBlank {
-                        "📄 ${target.displayTitle} (${target.pageCount} sayfa)\n\nNotlarınızı ve çizimlerinizi buraya ekleyebilirsiniz."
+                        "📄 ${target.title} (${target.pageCount} sayfa)\n\nNotlarınızı ve çizimlerinizi buraya ekleyebilirsiniz."
                     }
-                    editorIncomingUri = android.net.Uri.fromFile(target.file)
+                    editorIncomingUri = android.net.Uri.fromFile(target.localFile)
                     editorPdfPreview = previewBmp
                     editorPdfPagePaths = emptyList()
                     showEditor = true
@@ -455,9 +470,8 @@ fun NotesScreen(
                     onClick = {
                         noteToDelete?.id?.let { idStr ->
                             viewModel.deleteNote(idStr)
-                            val numericId = idStr.toLongOrNull() ?: 0L
-                            if (numericId > 0L) {
-                                DrawingSerializer.deleteNoteDrawing(context, numericId)
+                            if (idStr.isNotBlank()) {
+                                DrawingSerializer.deleteNoteDrawing(context, idStr)
                             }
                         }
                         noteToDelete = null
@@ -475,6 +489,12 @@ fun NotesScreen(
                     Text("İptal")
                 }
             }
+        )
+    }
+
+    if (showVaultBackupDialog) {
+        VaultBackupDialog(
+            onDismiss = { showVaultBackupDialog = false }
         )
     }
 }
