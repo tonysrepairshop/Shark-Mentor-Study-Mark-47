@@ -54,17 +54,18 @@ jobs:
         run: |
           chmod +x ./gradlew
           set +e
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+          ./gradlew assembleDebug --no-daemon 2>&1 | tee build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           set -e
           if [ $BUILD_EXIT -ne 0 ] || [ ! -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            echo "=== COMPILER ERRORS (EXIT=$BUILD_EXIT) ==="
-            grep -E "^e: |FAILURE:|What went wrong:|^\* |Exception|Error:|Unresolved reference" build.log | tail -n 120 > error_summary.txt || true
-            echo "=== LAST 100 LINES ===" >> error_summary.txt
-            tail -n 100 build.log >> error_summary.txt
+            echo "=== KOTLIN COMPILER ERRORS (e:) ===" > error_summary.txt
+            grep -E "e: |FAILURE:|What went wrong:|^\* |> Task .* FAILED" build.log >> error_summary.txt || true
+            echo "=== TAIL OF BUILD LOG ===" >> error_summary.txt
+            tail -n 60 build.log >> error_summary.txt
             python3 - << 'PYEOF'
           import subprocess, os
-          body = "### ❌ Build Diagnostic Log\n```\n" + open("error_summary.txt", errors="ignore").read()[-8000:] + "\n```"
+          content = open("error_summary.txt", errors="ignore").read()[:14000]
+          body = "### ❌ Build Diagnostic Log\n```\n" + content + "\n```"
           repo = os.environ["GITHUB_REPOSITORY"]
           sha = os.environ["GITHUB_SHA"]
           subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}/comments", "-f", f"body={body}"], check=False)
