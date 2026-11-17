@@ -65,16 +65,39 @@ interface ErrorQuestionDao {
     suspend fun deleteQuestion(question: ErrorQuestionEntity)
 
     /** Writes the AI-detected sub-topic tag for a single question. */
-    @Query("UPDATE error_questions SET aiTopic = :topic WHERE id = :id")
-    suspend fun updateAiTopic(id: Long, topic: String)
+    @Query("UPDATE error_questions SET aiTopic = :topic, isSynced = 0, lastModifiedMillis = :now WHERE id = :id")
+    suspend fun updateAiTopic(id: Long, topic: String, now: Long = System.currentTimeMillis())
 
     /**
-     * Returns up to [limit] questions that have an image URI but no AI topic tag yet.
+     * Updates a question's subject, topic, and AI sub-topic tag and marks it as unsynced
+     * (`isSynced = 0`) so Cloud Sync propagates the user's or AI's reclassification.
+     */
+    @Query("""
+        UPDATE error_questions
+        SET subject = :subject,
+            topic = :topic,
+            aiTopic = :aiTopic,
+            isSynced = 0,
+            lastModifiedMillis = :now
+        WHERE id = :id
+    """)
+    suspend fun updateQuestionClassification(
+        id: Long,
+        subject: String,
+        topic: String,
+        aiTopic: String?,
+        now: Long = System.currentTimeMillis()
+    )
+
+    /**
+     * Returns up to [limit] questions that have an image URI, no AI topic tag yet,
+     * and have not been manually given a custom topic by the user.
      * Used by [TopicTaggingWorker] for batch processing.
      */
     @Query("""
         SELECT * FROM error_questions
         WHERE aiTopic IS NULL
+          AND (topic = '' OR topic = 'Genel')
           AND questionImageUri != ''
         ORDER BY createdAtMillis ASC
         LIMIT :limit
