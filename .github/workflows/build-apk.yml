@@ -108,6 +108,99 @@ jobs:
             exit 1
           fi
 
+      - name: Verify APK Signing, 16KB Alignment & Manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          BUILD_TOOLS_DIR=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -n 1)
+          echo "Using build-tools: $BUILD_TOOLS_DIR"
+
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
+          AAPT2="$BUILD_TOOLS_DIR/aapt2"
+
+          APK_BYTES=$(wc -c < "$APK")
+          APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')
+
+          set +e
+          "$APKSIGNER" verify --verbose --print-certs --min-sdk-version 28 "$APK" > apksigner_out.txt 2>&1
+          APKSIGNER_EXIT=$?
+
+          "$ZIPALIGN" -c -P 16 -v 4 "$APK" > zipalign_out.txt 2>&1
+          ZIPALIGN_EXIT=$?
+          set -e
+
+          RESOURCES_INFO=$(unzip -v "$APK" | grep -E "resources\.arsc" || echo "resources.arsc not found")
+          TEST_ONLY=$( "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml | grep -E "testOnly|minSdkVersion|targetSdkVersion|versionCode|versionName" || true )
+          BADGING=$("$AAPT2" dump badging "$APK" | head -n 5 || true)
+
+          rm -rf /tmp/so_check && mkdir -p /tmp/so_check
+          unzip -q "$APK" "lib/*" -d /tmp/so_check 2>/dev/null || true
+          SO_REPORT=""
+          UNALIGNED_4KB=0
+          while IFS= read -r -d '' sofile; do
+            ALIGNS=$(readelf -lW "$sofile" 2>/dev/null | awk '$1 == "LOAD" {print $NF}' | sort -u | tr '\n' ' ')
+            REL_SO=${sofile#/tmp/so_check/}
+            if echo "$ALIGNS" | grep -qE "0x1000([^0-9a-fA-F]|$)|0x800|0x400"; then
+              SO_REPORT="${SO_REPORT}WARN_4KB: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
+              UNALIGNED_4KB=1
+            else
+              SO_REPORT="${SO_REPORT}OK: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
+            fi
+          done < <(find /tmp/so_check -name "*.so" -print0 | sort -z)
+
+          if [ -z "$SO_REPORT" ]; then
+            SO_REPORT="(No native .so libraries in APK)"
+          fi
+
+          {
+            echo "### 📦 APK Verification Report"
+            echo "- **Size:** ${APK_BYTES} bytes"
+            echo "- **SHA-256:** \`${APK_SHA256}\`"
+            echo "- **apksigner exit:** ${APKSIGNER_EXIT}"
+            echo "- **zipalign -P 16 exit:** ${ZIPALIGN_EXIT}"
+            echo "- **Unaligned 4KB .so detected:** ${UNALIGNED_4KB}"
+            echo ""
+            echo "#### apksigner verify"
+            echo '```'
+            cat apksigner_out.txt
+            echo '```'
+            echo "#### aapt2 badging & manifest flags"
+            echo '```'
+            echo "$BADGING"
+            echo "$TEST_ONLY"
+            echo "resources.arsc: $RESOURCES_INFO"
+            echo '```'
+            echo "#### Native .so ELF LOAD alignment (readelf -l)"
+            echo '```'
+            printf "%b" "$SO_REPORT"
+            echo '```'
+            echo "#### zipalign -c -P 16 tail"
+            echo '```'
+            tail -n 20 zipalign_out.txt
+            echo '```'
+          } > verify_report.md
+
+          cat verify_report.md
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat verify_report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          python3 - << 'PYEOF'
+          import subprocess, os
+          body = open("verify_report.md", errors="ignore").read()[:60000]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["GITHUB_SHA"]
+          subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}/comments", "-f", f"body={body}"], check=False)
+          PYEOF
+
+          if [ "$APKSIGNER_EXIT" -ne 0 ]; then
+            echo "apksigner verification failed!"
+            exit 1
+          fi
+
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:

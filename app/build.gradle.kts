@@ -38,10 +38,15 @@ android {
         applicationId = "com.example.sharkmentor"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+        versionCode = 10 + ciRunNumber
+        versionName = if (ciRunNumber > 0) "1.0.$ciRunNumber" else "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
 
         // Inject Gemini API keys into generated BuildConfig (deduplicated, cleanly separated)
         val keysList = LinkedHashSet<String>()
@@ -70,7 +75,25 @@ android {
         buildConfigField("String", "KIMI_API_KEY", "\"$kimiApiKey\"")
     }
 
+    signingConfigs {
+        getByName("debug") {
+            val ks = file("debug.keystore")
+            if (ks.exists()) {
+                storeFile = ks
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -92,6 +115,9 @@ android {
     }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
         resources {
             excludes += listOf(
                 "META-INF/DEPENDENCIES",
@@ -205,4 +231,6 @@ dependencies {
     // ── PDFBox Android & Offline ML Kit OCR ───────────────────────────────
     implementation(libs.pdfbox.android)
     implementation(libs.mlkit.text.recognition)
+    // Override 4KB-aligned libimage_processing_util_jni.so pulled by ML Kit 16.0.1
+    implementation("androidx.camera:camera-core:1.4.2")
 }
