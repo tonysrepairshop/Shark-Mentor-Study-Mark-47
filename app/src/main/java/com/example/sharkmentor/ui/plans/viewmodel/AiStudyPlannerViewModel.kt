@@ -1,0 +1,522 @@
+package com.example.sharkmentor.ui.plans.viewmodel
+
+import android.app.Application
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.sharkmentor.BuildConfig
+import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.util.GoogleServicesHelper
+import com.example.sharkmentor.data.local.SharkMentorDatabase
+import com.example.sharkmentor.data.local.entity.InstitutionScheduleEntity
+import com.example.sharkmentor.data.local.entity.PlanEntity
+import com.example.sharkmentor.data.local.entity.TargetEntity
+import com.example.sharkmentor.data.local.entity.TargetPeriod
+import com.example.sharkmentor.data.local.entity.TargetType
+import com.example.sharkmentor.data.remote.GeminiRepository
+import com.example.sharkmentor.data.remote.ScannedTaskDto
+import com.example.sharkmentor.data.repository.PlanRepository
+import com.example.sharkmentor.data.repository.PlanRepositoryImpl
+import com.example.sharkmentor.ui.plans.model.*
+import com.google.ai.client.generativeai.GenerativeModel
+import com.google.ai.client.generativeai.type.RequestOptions
+import com.google.ai.client.generativeai.type.content
+import com.google.ai.client.generativeai.type.generationConfig
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.gson.Gson
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
+import java.util.UUID
+
+sealed interface PlannerUiState {
+    object Idle : PlannerUiState
+    object Loading : PlannerUiState
+    data class Success(val summary: String) : PlannerUiState
+    data class Error(val message: String) : PlannerUiState
+}
+
+class AiStudyPlannerViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val firestore get() = GoogleServicesHelper.getFirebaseFirestore(getApplication())
+    private val auth get() = GoogleServicesHelper.getFirebaseAuth(getApplication())
+    private val gson = Gson()
+
+    private val database = SharkMentorDatabase.getDatabase(application)
+    private val repository = PlanRepository(database.targetDao(), database.sessionDao(), database.planFolderDao())
+
+    private val _uiState = MutableStateFlow<PlannerUiState>(PlannerUiState.Idle)
+    val uiState: StateFlow<PlannerUiState> = _uiState.asStateFlow()
+
+    private val _activePlans = MutableStateFlow<List<PlanItem>>(emptyList())
+    val activePlans: StateFlow<List<PlanItem>> = _activePlans.asStateFlow()
+
+    private val _isOrganizing = MutableStateFlow(false)
+    val isOrganizing: StateFlow<Boolean> = _isOrganizing.asStateFlow()
+
+    private var isPlanGenerationInProgress = false
+
+    init {
+        fetchActivePlans()
+    }
+
+    fun fetchActivePlans() {
+        val uid = GoogleServicesHelper.getCurrentUser(auth, getApplication())?.uid ?: return
+        firestore?.collection("students")?.document(uid)
+            ?.collection("plans")
+            ?.orderBy("dayOfWeek")
+            ?.get()
+            ?.addOnSuccessListener { snapshot ->
+                if (snapshot == null) return@addOnSuccessListener
+                val items = snapshot.documents.mapNotNull { it.toObject(PlanItem::class.java) }
+                _activePlans.value = items
+            }
+    }
+
+    fun togglePlanCompletion(planId: String, currentStatus: Boolean) {
+        val uid = GoogleServicesHelper.getCurrentUser(auth, getApplication())?.uid ?: return
+        firestore?.collection("students")?.document(uid)
+            ?.collection("plans")?.document(planId)
+            ?.update("completed", !currentStatus)
+    }
+
+    fun organizeWeeklyPlan() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_isOrganizing.value) return@launch
+            _isOrganizing.value = true
+
+            val uid = GoogleServicesHelper.getCurrentUser(auth, getApplication())?.uid ?: run {
+                _isOrganizing.value = false
+                return@launch
+            }
+            val db = firestore ?: run {
+                _isOrganizing.value = false
+                return@launch
+            }
+
+            val currentPlans = _activePlans.value
+            if (currentPlans.isEmpty()) {
+                _isOrganizing.value = false
+                return@launch
+            }
+
+            val timeSlots = listOf(
+                "09:00 - 10:30",
+                "11:00 - 12:30",
+                "14:00 - 15:30",
+                "16:30 - 18:00",
+                "19:00 - 20:30"
+            )
+
+            // Sort each day's tasks: hardest (most questions) first, then alphabetically
+            val organized: List<PlanItem> = currentPlans
+                .groupBy { it.dayOfWeek }
+                .toSortedMap()
+                .flatMap { (_, dayTasks) ->
+                    dayTasks
+                        .sortedWith(
+                            compareByDescending<PlanItem> { it.targetQuestions }
+                                .thenBy { it.subject }
+                        )
+                        .mapIndexed { index, item ->
+                            item.copy(timeSlot = timeSlots[index.coerceAtMost(timeSlots.lastIndex)])
+                        }
+                }
+
+            // 1. Instant local update
+            _activePlans.value = organized
+
+            // 2. Persist to Firestore
+            try {
+                val plansCollection = db
+                    .collection("students").document(uid)
+                    .collection("plans")
+
+                val batch = db.batch()
+
+                // Delete current week's entries
+                currentPlans.forEach { item ->
+                    batch.delete(plansCollection.document(item.id))
+                }
+
+                // Write organized entries
+                organized.forEach { item ->
+                    batch.set(plansCollection.document(item.id), item)
+                }
+
+                batch.commit().await()
+                _uiState.value = PlannerUiState.Success("✔ Plan başarıyla organize edildi!")
+            } catch (e: Exception) {
+                _uiState.value = PlannerUiState.Error("Plan organize edilirken hata: ${e.localizedMessage}")
+            } finally {
+                _isOrganizing.value = false
+            }
+        }
+    }
+
+    private suspend fun executeWithKeyRotation(promptText: String, systemPrompt: String): String {
+        var lastException: Exception? = null
+        val keyCount = Math.max(1, ApiKeyRotator.getKeyCount())
+
+        for (attempt in 0 until keyCount) {
+            val activeKey = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
+            if (activeKey.isBlank() || activeKey == "null") {
+                Log.e("GeminiError", "AI Call Failed: API Key is missing or invalid.")
+                throw IllegalStateException("Gemini API Key is missing or invalid. Check local.properties or BuildConfig.")
+            }
+            val modelName = "gemini-3.6-flash"
+            val cleanKey = activeKey.trim().replace("\"", "").replace("'", "")
+            val cleanModel = modelName.trim().removePrefix("models/").removePrefix("/")
+            val maxRetries = 3
+            var currentDelay = 1500L
+
+            for (attempt in 1..maxRetries) {
+                try {
+                    val model = GenerativeModel(
+                        modelName = cleanModel,
+                        apiKey = cleanKey,
+                        generationConfig = generationConfig {
+                            responseMimeType = "application/json"
+                            temperature = 0.3f
+                        },
+                        systemInstruction = if (systemPrompt.isNotBlank()) content { text(systemPrompt) } else null,
+                        requestOptions = RequestOptions(timeout = 60_000L)
+                    )
+                    val response = model.generateContent(promptText)
+                    val text = response.text
+                    if (!text.isNullOrBlank()) {
+                        return text
+                    }
+                } catch (e: Exception) {
+                    Log.e("GeminiError", "AI Call Failed ($modelName): ${e.javaClass.simpleName} - ${e.message}", e)
+                    lastException = Exception("AI Hatası: ${e.localizedMessage ?: "Sunucu bağlantısı kurulamadı"}")
+                    
+                    if (ApiKeyRotator.shouldRotateKey(e)) {
+                        Log.w("AiStudyPlannerViewModel", "Quota/Key limit on key. Rotating key...")
+                        break // Break inner retry loop to trigger key rotation in outer loop
+                    }
+
+                    val isUnavailable = e.message?.contains("503") == true || 
+                                        e.message?.contains("high demand", ignoreCase = true) == true ||
+                                        e.message?.contains("UNAVAILABLE", ignoreCase = true) == true
+                    
+                    if (isUnavailable && attempt < maxRetries) {
+                        Log.i("AiStudyPlannerViewModel", "Server busy (503). Retrying in ${currentDelay}ms...")
+                        delay(currentDelay)
+                        currentDelay *= 2
+                    } else if (attempt == maxRetries && isUnavailable) {
+                        lastException = Exception("Yapay zeka sunucularında anlık yoğunluk yaşanıyor (503). Lütfen birkaç saniye sonra tekrar deneyin.")
+                        throw lastException
+                    }
+                }
+            }
+            ApiKeyRotator.rotateToNextKey()
+        }
+        throw lastException ?: RuntimeException("Tüm API anahtarları yanıt vermedi.")
+    }
+
+    fun generateWeeklyPlan(userCustomNote: String) {
+        if (isPlanGenerationInProgress) {
+            Log.w("AiStudyPlanner", "Plan generation already active. Ignoring duplicate request.")
+            return
+        }
+        isPlanGenerationInProgress = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+            _uiState.value = PlannerUiState.Loading
+            val uid = GoogleServicesHelper.getCurrentUser(auth, getApplication())?.uid ?: run {
+                _uiState.value = PlannerUiState.Error("Kullanıcı oturumu bulunamadı.")
+                return@launch
+            }
+            val db = firestore ?: run {
+                _uiState.value = PlannerUiState.Error("Veritabanına erişilemedi.")
+                return@launch
+            }
+
+            val primaryKey = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
+            if (primaryKey.isBlank() || primaryKey == "YOUR_ACTUAL_GEMINI_API_KEY") {
+                _uiState.value = PlannerUiState.Error("Gemini API Key tanımlanmamış. Lütfen local.properties dosyanızı kontrol edin.")
+                return@launch
+            }
+
+            try {
+                // 1. Fetch competencies, goal, and past schedules from Firestore
+                val compDocs = db.collection("students").document(uid)
+                    .collection("competencies").get().await()
+                val allCompetencies = compDocs.documents.mapNotNull { it.toObject(TopicCompetency::class.java) }
+
+                // Optimization: Filter to top 15 weak competencies (weakest scores first) to keep token size low and latency under 4s
+                val prunedCompetencies = allCompetencies
+                    .filter { it.level <= 3 }
+                    .sortedBy { it.level }
+                    .take(15)
+
+                val goalDoc = db.collection("students").document(uid)
+                    .collection("goals").document("active").get().await()
+                val activeGoal = goalDoc.toObject(UserGoal::class.java) ?: UserGoal()
+
+                // Optimization: Limit previous plan items payload context
+                val previousPlanItems = _activePlans.value.take(15)
+
+                val scheduleDao = database.institutionScheduleDao()
+                val currentSchedules = scheduleDao.getAllSchedules()
+
+                val scheduleConstraintsPrompt = (1..7).map { dayIndex ->
+                    val dayName = getDayName(dayIndex)
+                    val classes = currentSchedules.filter { it.dayOfWeek == dayIndex }
+                    val blockedTimes = classes.map { "${it.startTime}-${it.endTime} (${it.subject})" }
+                    "GÜN $dayIndex ($dayName): ${if (blockedTimes.isEmpty()) "Serbest Gün" else blockedTimes.joinToString(", ")}"
+                }.joinToString("\n")
+
+                // 2. System Instruction for Gemini 3.6 Flash
+                val systemPrompt = """
+                    Sen SharkMentor'un kıdemli pedagojik planlama motorusun.
+                    GÖREV: Öğrencinin konu yetkinliklerine, hedef tarihine ve önceki hafta verilerine dayanarak 7 günlük (Pazartesi-Pazar) operasyonel çalışma planı hazırla.
+
+                    ÖĞRENCİNİN KİLİTLİ OKUL/DERS SAATLERİ:
+                    $scheduleConstraintsPrompt
+
+                    KESİN TALİMATLAR:
+                    1. Yukarıdaki ders saatlerine ASLA çalışma görevi, etüt veya soru hedefi YAZMA.
+                    2. Eğer okul 13:00'te bitiyorsa, 13:30 - 17:00 aralığını ve akşam saatlerini değerlendir.
+                    3. Görevleri sadece öğrencinin TAMAMEN BOŞ olduğu saat pencerelerine yerleştir.
+
+                    EK KURALLAR (Anti-Clone ve Verimlilik):
+                    - KLON PLAN YASAKTIR: Öğrencinin 'previousPlanItems' listesini analiz et. Eğer bir konu geçen hafta planlanmış ve 'isCompleted=true' olarak bitirilmişse, bu konuyu ana odak bloğu yapma. Sadece hafta sonuna kısa tarama/branş denemesi ekle.
+                    - TAMAMLANMAYANLARI TELAFİ ET: Geçen hafta planda olup 'isCompleted=false' kalan veya yetkinliği hala seviye 1-2 olan konuları bu hafta farklı bir stratejiyle ('Konu Anlatımı' yerine 'Soru Kampı & Video Çözüm') tekrar planla.
+                    - MÜFREDAT SENKRONİZASYONU: O gün okulda görülen branşların tekrarını ve soru çözümünü aynı günün boş saatlerine (özellikle öğleden sonra ve akşam) öncelikli olarak yerleştir.
+                    - Her çalışma bloğunda öğrencinin seviyesine uygun net konu başlığı ve minimum 30 soru hedefi belirtilmelidir.
+
+                    ÇIKTI FORMATI:
+                    Yalnızca belirtilen JSON şemasında çıktı ver. Fazlalık metin ekleme.
+                    JSON Şeması:
+                    {
+                      "weeklyFocusSummary": "Bu haftaki stratejik yönelim özeti",
+                      "schedule": [
+                        {
+                          "dayOfWeek": 1,
+                          "timeSlot": "17:00 - 18:30",
+                          "subject": "Matematik",
+                          "topic": "Türev",
+                          "targetQuestions": 40,
+                          "focusStrategy": "Konu Pekiştirme ve Hata Çözümü"
+                        }
+                      ]
+                    }
+                """.trimIndent()
+
+                // 3. Prepare payload context with pruned items
+                val promptPayload = mapOf(
+                    "userGoal" to activeGoal,
+                    "competencies" to prunedCompetencies,
+                    "previousPlanItems" to previousPlanItems.map {
+                        mapOf(
+                            "subject" to it.subject,
+                            "topic" to it.topic,
+                            "isCompleted" to it.isCompleted
+                        )
+                    },
+                    "institutionSchedules" to currentSchedules.map {
+                        mapOf(
+                            "dayOfWeek" to it.dayOfWeek,
+                            "startTime" to it.startTime,
+                            "endTime" to it.endTime,
+                            "subject" to it.subject
+                        )
+                    },
+                    "studentNote" to userCustomNote
+                )
+
+                // 4. Enforce 60-Second Network & Execution Timeout with Multi-Key Rotation
+                val jsonString = withTimeout(60_000L) {
+                    executeWithKeyRotation(gson.toJson(promptPayload), systemPrompt)
+                }
+                val parsedResponse = gson.fromJson(jsonString, AiWeeklyPlanResponse::class.java)
+
+                // Programmatic Validation for time collisions
+                val validatedSchedule = parsedResponse.schedule.map { task ->
+                    var adjustedTimeSlot = task.timeSlot
+                    val dayClasses = currentSchedules.filter { it.dayOfWeek == task.dayOfWeek }
+                    val parts = adjustedTimeSlot.split(" - ")
+                    if (parts.size == 2) {
+                        val taskStart = parts[0].replace(":", "").toIntOrNull() ?: 0
+                        val taskEnd = parts[1].replace(":", "").toIntOrNull() ?: 0
+                        
+                        val hasCollision = dayClasses.any { cls ->
+                            val clsStart = cls.startTime.replace(":", "").toIntOrNull() ?: 0
+                            val clsEnd = cls.endTime.replace(":", "").toIntOrNull() ?: 0
+                            Math.max(taskStart, clsStart) < Math.min(taskEnd, clsEnd)
+                        }
+                        
+                        if (hasCollision) {
+                            val availableSlots = calculateAvailableStudySlots(dayClasses)
+                            adjustedTimeSlot = availableSlots.firstOrNull() ?: "21:00 - 22:30"
+                        }
+                    }
+                    task.copy(timeSlot = adjustedTimeSlot)
+                }
+
+                // 5. PRIMARY PERSISTENCE: Save generated items into Room Database for instant UI rendering
+                val tasksToSave = validatedSchedule.map { raw ->
+                    val safeQuestions = if (raw.targetQuestions > 0) raw.targetQuestions else 30
+                    val targetEntity = TargetEntity(
+                        title = "${raw.subject} (${raw.timeSlot})",
+                        description = "${raw.topic} - ${raw.focusStrategy}",
+                        type = TargetType.SHORT_TERM,
+                        period = TargetPeriod.DAILY,
+                        deadlineMillis = System.currentTimeMillis() + (raw.dayOfWeek - 1) * 86_400_000L,
+                        targetQuestions = safeQuestions,
+                        priority = "HIGH",
+                        category = raw.subject
+                    )
+                    Pair(targetEntity, listOf("${raw.topic} - ${raw.focusStrategy} ($safeQuestions Soru)"))
+                }
+                
+                // Route through PlanRepository's Ai-Planner root folder logic
+                repository.saveAiGeneratedPlan(tasksToSave, forceNewFolder = false)
+
+                // Save directly into PlanFolder & PlanEntity tables for the 2-level Plan Workspace
+                val planDao = database.planDao()
+                val planRepoImpl = PlanRepositoryImpl(planDao)
+                val scannedTasks = validatedSchedule.map { raw ->
+                    val safeDay = when {
+                        raw.dayOfWeek in 1..7 -> raw.dayOfWeek
+                        raw.dayOfWeek == 0 -> 1
+                        else -> ((raw.dayOfWeek % 7) + 1).coerceIn(1, 7)
+                    }
+                    val timeStr = raw.timeSlot.ifBlank { "08:30 - 09:30" }
+                    val safeQuestions = if (raw.targetQuestions > 0) raw.targetQuestions else 30
+
+                    ScannedTaskDto(
+                        dayOfWeek = safeDay,
+                        scheduledTime = timeStr,
+                        subject = raw.subject,
+                        topic = raw.topic,
+                        targetQuestions = safeQuestions
+                    )
+                }
+                planRepoImpl.saveAiPlannerSchedule(scannedTasks)
+
+                // 6. SECONDARY PERSISTENCE: Save to Firestore
+                val batch = db.batch()
+                val plansCollection = db.collection("students").document(uid).collection("plans")
+
+                // Clear outdated active Firestore plans
+                _activePlans.value.forEach { item ->
+                    batch.delete(plansCollection.document(item.id))
+                }
+
+                // Insert newly minted intelligent items into Firestore
+                validatedSchedule.forEach { raw ->
+                    val newId = UUID.randomUUID().toString()
+                    val entity = PlanItem(
+                        id = newId,
+                        dayOfWeek = raw.dayOfWeek,
+                        timeSlot = raw.timeSlot,
+                        subject = raw.subject,
+                        topic = raw.topic,
+                        targetQuestions = raw.targetQuestions,
+                        focusStrategy = raw.focusStrategy,
+                        isCompleted = false
+                    )
+                    batch.set(plansCollection.document(newId), entity)
+                }
+                batch.commit().await()
+
+                _uiState.value = PlannerUiState.Success(parsedResponse.weeklyFocusSummary)
+
+            } catch (e: Exception) {
+                val userMessage = when {
+                    e is TimeoutCancellationException -> {
+                        "Yapay zeka yanıt süresi aşıldı (60s). Lütfen tekrar deneyin."
+                    }
+                    e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
+                    e.message?.contains("unregistered callers", ignoreCase = true) == true -> {
+                        "API erişim yetkisi reddedildi. Lütfen Gemini API anahtarınızı ve internet bağlantınızı doğrulayın."
+                    }
+                    e.message?.contains("MissingFieldException", ignoreCase = true) == true -> {
+                        "Yapay zeka sunucusu ile iletişim kurulurken bir doğrulama hatası oluştu."
+                    }
+                    else -> e.localizedMessage ?: "Plan oluşturulurken bilinmeyen bir hata oluştu."
+                }
+                _uiState.value = PlannerUiState.Error(userMessage)
+            } // Closes inner try-catch
+
+            } finally {
+                isPlanGenerationInProgress = false
+            } // Closes outer try-finally
+        } // Closes launch
+    } // Closes generateWeeklyPlan
+
+    private fun getDayName(dayOfWeek: Int): String {
+        return when (dayOfWeek) {
+            1 -> "Pazartesi"
+            2 -> "Salı"
+            3 -> "Çarşamba"
+            4 -> "Perşembe"
+            5 -> "Cuma"
+            6 -> "Cumartesi"
+            7 -> "Pazar"
+            else -> "Bilinmiyor"
+        }
+    }
+
+    private fun calculateAvailableStudySlots(
+        classes: List<InstitutionScheduleEntity>,
+        dayStartTime: String = "08:30",
+        dayEndTime: String = "22:30"
+    ): List<String> {
+        if (classes.isEmpty()) {
+            return listOf("09:00 - 12:30 (Sabah Etüdü)", "13:30 - 17:00 (Öğleden Sonra)", "18:30 - 21:00 (Akşam Tekrarı)")
+        }
+
+        val sorted = classes.sortedBy { it.startTime }
+        val freeSlots = mutableListOf<String>()
+
+        // Check gap before first class
+        val firstClassStart = sorted.first().startTime
+        if (getMinutesBetween(dayStartTime, firstClassStart) >= 60) {
+            freeSlots.add("$dayStartTime -$firstClassStart (Sabah Hazırlık & Paragraf)")
+        }
+
+        // Dismissal gap calculation
+        val lastClassEnd = sorted.maxOf { it.endTime }
+        
+        // Add 30-45 minutes buffer after school for transit/lunch
+        val effectiveStudyStart = when {
+            lastClassEnd <= "13:00" -> "13:30"
+            lastClassEnd <= "15:30" -> "16:00"
+            else -> lastClassEnd
+        }
+
+        if (effectiveStudyStart < "17:00") {
+            freeSlots.add("$effectiveStudyStart - 15:30 (Öğleden Sonra 1. Blok)")
+            freeSlots.add("15:45 - 17:00 (Öğleden Sonra 2. Blok)")
+            freeSlots.add("18:30 - 20:30 (Akşam Pekiştirme & Soru)")
+            freeSlots.add("20:45 - 22:30 (Gece Kapanış & Deneme Analizi)")
+        } else {
+            freeSlots.add("$effectiveStudyStart - 20:30 (Akşam Etüdü)")
+            freeSlots.add("20:45 - 22:30 (Gece Kapanış)")
+        }
+
+        return freeSlots
+    }
+
+    private fun getMinutesBetween(start: String, end: String): Int {
+        return try {
+            val (h1, m1) = start.split(":").map { it.toInt() }
+            val (h2, m2) = end.split(":").map { it.toInt() }
+            (h2 * 60 + m2) - (h1 * 60 + m1)
+        } catch (e: Exception) {
+            0
+        }
+    }
+}

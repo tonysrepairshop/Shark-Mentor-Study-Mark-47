@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ── Foreground service permissions (Android 9 / 14 compliance) ───── -->
+    <!--
+        FOREGROUND_SERVICE       : base permission, required since API 28
+        FOREGROUND_SERVICE_SPECIAL_USE : required for specialUse type on API 34+
+        POST_NOTIFICATIONS       : required to show the ongoing notification on API 33+
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    
+    <!-- Permission for App Lockers/Blockers to query all installed user apps on Android 11+ -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- Fallback query declaration for launchable apps & Google Play Services -->
+    <queries>
+        <package android:name="com.google.android.gms" />
+        <package android:name="com.google.android.gsf" />
+        <package android:name="com.android.vending" />
+        <intent>
+            <action android:name="com.google.android.gms.common.service.START" />
+        </intent>
+        <intent>
+            <action android:name="com.google.android.gms.auth.service.START" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+    
+    <!-- Alarm Permissions -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <!--
+        VIBRATE: used by FocusTimerService to alert the user on presence checks,
+        session completions, and break transitions. Normal permission — no runtime
+        grant required.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!--
+        WAKE_LOCK: Acquired by FocusTimerService as a PARTIAL_WAKE_LOCK to keep the CPU
+        alive while a timer is running. Without this, Android Doze mode can freeze the
+        ticker coroutine when the screen is off, causing the countdown to stop and lose sync.
+        Normal permission — no runtime grant required.
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
+        PACKAGE_USAGE_STATS: Required for Phase 6 App Blocker Foundation.
+        Allows UsageStatsHelper to check which app is in the foreground so the
+        blocker service can interrupt blacklisted apps during focus sessions.
+        This is a "privileged" permission — must be granted manually by the user
+        via Settings > Apps > Special app access > Usage access.
+        No runtime dialog is shown; the app guides the user to system settings.
+    -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- INTERNET: Required for Gemini API calls -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    
+    <!-- CAMERA: Required for Error Bank photo capture -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <application
+        android:name=".SharkMentorApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SharkMentor"
+        tools:targetApi="31">
+
+        <!-- Boot Receiver -->
+        <receiver
+            android:name=".core.service.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ── Main launcher activity ──────────────────────────────────── -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:enabled="true"
+            android:launchMode="singleTop"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.SharkMentor"
+            android:windowSoftInputMode="adjustResize">
+
+            <!-- Standard Main App Launcher -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Android System "Open With" (VIEW) for .txt, .pdf, .docx -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+            </intent-filter>
+
+            <!-- Android System "Share" (SEND) for .txt, .pdf, .docx -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".core.blocker.BlockOverlayActivity"
+            android:exported="false"
+            android:theme="@style/Theme.SharkMentor" />
+
+        <!-- Lockdown Overlay Activity -->
+        <activity
+            android:name=".ui.screens.dopamine.DopamineLockOverlayActivity"
+            android:theme="@style/Theme.SharkMentor"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"/>
+
+        <!-- ── Focus Timer Foreground Service ──────────────────────────── -->
+        <!--
+            foregroundServiceType="specialUse" is required for API 34+ when the
+            service type does not fit any predefined category (camera, microphone,
+            location, etc.).  A <property> tag with the subtype justification must
+            accompany it for Play Store review compliance.
+        -->
+        <service
+            android:name="com.example.sharkmentor.core.service.FocusTimerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+
+            <!-- Play Store: human-readable justification for specialUse subtype -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="SharkMentor runs a focus timer in the foreground so the countdown continues when the user leaves the app." />
+        </service>
+
+        <!-- ── Zen Ambient Audio Foreground Service ─────────────────────── -->
+        <service
+            android:name=".core.service.ZenAudioService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <service
+            android:name=".service.blocker.StrictAppBlockerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="SharkMentor runs an app blocker in the foreground to prevent distractions during active focus sessions." />
+        </service>
+
+        <!-- ── Accessibility-based App Blocker (Android 11+ compliant) ──── -->
+        <service
+            android:name=".service.blocker.SharkBlockerAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- ── FileProvider for Camera Capture ─────────────────────────── -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- ── Reflection Notification Receiver ────────────────────────── -->
+        <receiver
+            android:name=".core.notification.ReflectionAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".service.notification.DeskActionReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".widget.DeskWidgetReceiver"
+            android:exported="true"
+            android:label="Masa Odak Paneli">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/desk_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".core.widget.SharkMentorWidgetReceiver"
+            android:exported="true"
+            android:label="SharkMentor Panel">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/shark_mentor_widget_info" />
+        </receiver>
+
+        <activity
+            android:name="com.canhub.cropper.CropImageActivity"
+            android:theme="@style/Base.Theme.AppCompat" />
+
+        <receiver
+            android:name="com.example.sharkmentor.ui.widget.FocusTimerWidgetReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/focus_widget_info" />
+        </receiver>
+
+        <service
+            android:name=".services.SharkMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

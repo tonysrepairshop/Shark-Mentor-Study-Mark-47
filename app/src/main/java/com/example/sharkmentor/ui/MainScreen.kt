@@ -1,0 +1,585 @@
+package com.example.sharkmentor.ui
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.StickyNote2
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.example.sharkmentor.core.data.ThemePalette
+import com.example.sharkmentor.core.data.ThemePreferences
+import com.example.sharkmentor.core.theme.ThemeManager
+import com.example.sharkmentor.core.util.GoogleServicesHelper
+import com.example.sharkmentor.ui.components.ControlPanelContent
+import com.example.sharkmentor.ui.navigation.Screen
+import com.example.sharkmentor.ui.onboarding.OnboardingScreen
+import com.example.sharkmentor.ui.reflection.DailyReflectionDialog
+import com.example.sharkmentor.ui.screens.CountdownSettingsScreen
+import com.example.sharkmentor.ui.screens.SharkScreen
+import com.example.sharkmentor.ui.screens.DetailedAnalyticsScreen
+import com.example.sharkmentor.ui.screens.ErrorBankScreen
+import com.example.sharkmentor.ui.screens.ErrorTrainingScreen
+import com.example.sharkmentor.ui.screens.HistoryScreen
+import com.example.sharkmentor.ui.screens.HomeScreen
+import com.example.sharkmentor.ui.screens.LoginScreen
+import com.example.sharkmentor.ui.screens.PlansScreen
+import com.example.sharkmentor.ui.screens.ProfileScreen
+import com.example.sharkmentor.ui.screens.SharkLeagueScreen
+import com.example.sharkmentor.ui.screens.StudentCoachChatScreen
+import com.example.sharkmentor.ui.screens.notes.NotesScreen
+import com.example.sharkmentor.ui.theme.SharkMentorTheme
+import com.example.sharkmentor.ui.viewmodel.ErrorBankViewModel
+import com.example.sharkmentor.ui.zen.AiZenCoachScreen
+import com.example.sharkmentor.ui.zen.ZenRoomScreen
+import kotlinx.coroutines.launch
+
+
+/**
+ * Root composable. Collects [ThemePreferences] flows so the theme and palette
+ * respond instantly without restarting the Activity.
+ */
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+fun MainScreen(
+    openReflectionDialog: Boolean = false,
+    importedNote: com.example.sharkmentor.ImportedNotePayload? = null,
+    onImportedNoteConsumed: () -> Unit = {},
+    viewModel: com.example.sharkmentor.ui.viewmodel.MainViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+) {
+    // ── Live theme state from ThemePreferences (SharedPreferences-backed) ──
+    val themePrefs = ThemePreferences.instance
+    val themeMode by themePrefs.themeMode.collectAsStateWithLifecycle()
+    val currentPalette by themePrefs.palette.collectAsStateWithLifecycle()
+    val isZenModePref by themePrefs.isZenMode.collectAsStateWithLifecycle()
+    val isZenMinimalist by ThemeManager.isZenMinimalist.collectAsStateWithLifecycle()
+    val isZenMode = isZenModePref || isZenMinimalist
+
+    val navController       = rememberNavController()
+    var showSplash by rememberSaveable { mutableStateOf(importedNote == null) }
+    var showReflectionDialog by rememberSaveable { mutableStateOf(openReflectionDialog) }
+    var pendingImportedNote by remember { mutableStateOf(importedNote) }
+    var isNoteEditorOpen by rememberSaveable { mutableStateOf(false) }
+
+    androidx.compose.runtime.LaunchedEffect(importedNote) {
+        if (importedNote != null) {
+            pendingImportedNote = importedNote
+            showSplash = false
+            navController.navigate(Screen.Notes.route) {
+                launchSingleTop = true
+            }
+        }
+    }
+
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentDestination = navBackStackEntry?.destination
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val countdownText = uiState.targetCountdownText
+
+    // Wrap the entire scaffold in SharkMentorTheme so palette switches are instant
+    SharkMentorTheme(themeMode = themeMode, palette = currentPalette, isZenMode = isZenMode) {
+        if (showSplash) {
+            com.example.sharkmentor.ui.splash.SplashScreen(onTimeout = { showSplash = false })
+        } else {
+            val drawerState = androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                ModalNavigationDrawer(
+                    drawerState = drawerState,
+                    gesturesEnabled = true,
+                    drawerContent = {
+                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            ModalDrawerSheet(
+                                modifier = Modifier.fillMaxWidth(0.82f),
+                                drawerContainerColor = MaterialTheme.colorScheme.surface
+                            ) {
+                                ControlPanelContent(
+                                    themeMode       = themeMode,
+                                    onThemeToggle   = { themePrefs.setThemeMode(it) },
+                                    currentPalette  = currentPalette,
+                                    onPaletteChange = { themePrefs.setPalette(it) },
+                                    onDismiss       = { scope.launch { drawerState.close() } },
+                                    currentRoute    = currentDestination?.route,
+                                    onNavigate      = { route ->
+                                        scope.launch { drawerState.close() }
+                                        if (currentDestination?.route != route) {
+                                            navController.navigate(route) { launchSingleTop = true }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                ) {
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background),
+                        ) {
+                            Scaffold(
+                                modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars),
+                                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                                containerColor = MaterialTheme.colorScheme.background,
+                                topBar = {
+                                    if (currentDestination?.route != Screen.Login.route && !isNoteEditorOpen) {
+                                        SharkMentorTopBar(
+                                            countdown = countdownText, 
+                                            isCampus = uiState.isCampus,
+                                            onCountdownClick = {
+                                                navController.navigate("countdown_settings") {
+                                                    launchSingleTop = true
+                                                }
+                                            },
+                                            onMenuClick = { scope.launch { drawerState.open() } }
+                                        )
+                                    }
+                                },
+                                bottomBar = {
+                                    val errorBankViewModel: ErrorBankViewModel = viewModel()
+                                    val dueQuestionsCount by errorBankViewModel.dueQuestionsCount.collectAsStateWithLifecycle(initialValue = 0)
+                                    val isImeOpen = WindowInsets.isImeVisible
+                                    val primaryTabRoutes = remember { setOf("home", "plans", "notes_screen", "resources", "analytics", "error_bank") }
+                                    val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !isNoteEditorOpen
+
+                                    AnimatedVisibility(
+                                        visible = shouldShowBottomBar,
+                                        enter = slideInVertically(initialOffsetY = { it }),
+                                        exit = slideOutVertically(targetOffsetY = { it })
+                                    ) {
+                                        SharkMentorBottomBar(
+                                            currentDestination = currentDestination,
+                                            onTabSelected = { screen ->
+                                                navController.navigate(screen.route) {
+                                                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                                    launchSingleTop = true
+                                                    restoreState    = true
+                                                }
+                                            },
+                                            dueQuestionsCount = dueQuestionsCount
+                                        )
+                                    }
+                                },
+                            ) { innerPadding ->
+                                val isImeOpen = WindowInsets.isImeVisible
+                                val primaryTabRoutes = remember { setOf("home", "plans", "notes_screen", "resources", "analytics", "error_bank") }
+                                val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !isNoteEditorOpen
+                                val shouldShowTopBar = (currentDestination?.route != Screen.Login.route) && !isNoteEditorOpen
+                                val effectiveTopPadding = if (shouldShowTopBar) innerPadding.calculateTopPadding() else 0.dp
+                                val effectiveBottomPadding = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
+
+                                NavHost(
+                                    navController    = navController,
+                                    startDestination = Screen.Focus.route,
+                                    modifier         = Modifier
+                                        .fillMaxSize()
+                                        .padding(
+                                            top = effectiveTopPadding,
+                                            bottom = effectiveBottomPadding
+                                        ),
+                                    enterTransition  = { fadeIn() },
+                                    exitTransition   = { fadeOut() },
+                                ) {
+                        composable(Screen.Focus.route)      { HomeScreen() }
+                        composable(Screen.Dashboard.route)     { PlansScreen(onNavigateToSchedule = { navController.navigate(Screen.Schedule.route) { launchSingleTop = true } }) }
+                        composable(Screen.Resources.route) {
+                            var isTopicOpen by androidx.compose.runtime.remember { mutableStateOf(false) }
+                            var isResOpen by androidx.compose.runtime.remember { mutableStateOf(false) }
+                            com.example.sharkmentor.ui.screens.GoalsScreen(
+                                currentModule = com.example.sharkmentor.ui.screens.NavModule.LIBRARY,
+                                isAddTopicDialogOpen = isTopicOpen,
+                                onCloseTopicDialog = { isTopicOpen = false },
+                                isAddResourceDialogOpen = isResOpen,
+                                onCloseResourceDialog = { isResOpen = false }
+                            )
+                        }
+                        composable(Screen.Shark.route)     { 
+                            SharkScreen(
+                                onNavigateToDetailed = { navController.navigate(Screen.DetailedAnalytics.route) { launchSingleTop = true } },
+                                onNavigateToLeague   = { navController.navigate(Screen.SharkLeague.route) { launchSingleTop = true } },
+                                onNavigateToPlans    = { target ->
+                                    when (target) {
+                                        "targets" -> navController.navigate(Screen.Resources.route) { launchSingleTop = true }
+                                        "study_desk" -> navController.navigate(Screen.Focus.route) { launchSingleTop = true }
+                                        "plans" -> navController.navigate(Screen.Dashboard.route) { launchSingleTop = true }
+                                        else -> navController.navigate(Screen.Dashboard.route) { launchSingleTop = true }
+                                    }
+                                }
+                            ) 
+                        }
+                        composable(Screen.DetailedAnalytics.route) { DetailedAnalyticsScreen(onBackClick = { navController.popBackStack() }) }
+                        composable(Screen.History.route)   { HistoryScreen(onBackClick = { navController.popBackStack() }) }
+                        composable(Screen.CoachNotes.route) { com.example.sharkmentor.ui.screens.CoachNotesScreen(onBackClick = { navController.popBackStack() }) }
+                        composable(Screen.CoachChat.route)  { StudentCoachChatScreen(onBackClick = { navController.popBackStack() }) }
+                        composable(Screen.SharkLeague.route) { SharkLeagueScreen(onBackClick = { navController.popBackStack() }) }
+                        composable(Screen.InstitutionInfo.route) {
+                            com.example.sharkmentor.ui.screens.InstitutionInfoScreen(
+                                onBackClick      = { navController.popBackStack() },
+                                onNavigateToChat = { navController.navigate(Screen.CoachChat.route) { launchSingleTop = true } },
+                                onNavigateToSchedule = { navController.navigate(Screen.Schedule.route) { launchSingleTop = true } }
+                            )
+                        }
+                        composable(Screen.Schedule.route) {
+                            com.example.sharkmentor.ui.screens.ScheduleScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable(Screen.Notes.route) {
+                            NotesScreen(
+                                onBackClick = { navController.popBackStack() },
+                                importedNote = pendingImportedNote,
+                                onImportedNoteConsumed = {
+                                    pendingImportedNote = null
+                                    onImportedNoteConsumed()
+                                },
+                                onEditorStateChanged = { isNoteEditorOpen = it }
+                            )
+                        }
+                        composable(Screen.ErrorBank.route) { 
+                            ErrorBankScreen(
+                                onStartTraining = { route -> navController.navigate(route) },
+                                onNavigateToSharkAi = {
+                                    navController.navigate(Screen.Shark.route) {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            ) 
+                        }
+                        composable(
+                            route = "${Screen.ErrorTraining.route}?subject={subject}&topic={topic}&folderId={folderId}",
+                            arguments = listOf(
+                                androidx.navigation.navArgument("subject") {
+                                    type = androidx.navigation.NavType.StringType
+                                    nullable = true
+                                    defaultValue = null
+                                },
+                                androidx.navigation.navArgument("topic") {
+                                    type = androidx.navigation.NavType.StringType
+                                    nullable = true
+                                    defaultValue = null
+                                },
+                                androidx.navigation.navArgument("folderId") {
+                                    type = androidx.navigation.NavType.StringType
+                                    nullable = true
+                                    defaultValue = null
+                                }
+                            )
+                        ) {
+                            ErrorTrainingScreen(onNavigateBack = { navController.popBackStack() })
+                        }
+                        composable("settings") {
+                            com.example.sharkmentor.ui.screens.SettingsScreen(
+                                onBackClick = { navController.popBackStack() },
+                                onOpenAppBlocker = { navController.navigate("app_blocker") },
+                                onOpenAnalysis = { navController.navigate("analysis") },
+                                onOpenHistory = { navController.navigate("history") },
+                                onOpenZenRoom = { navController.navigate("zen_room") },
+                                onOpenCountdownSettings = { navController.navigate("countdown_settings") },
+                                onAccountDeleted = {
+                                    navController.navigate(Screen.Login.route) {
+                                        popUpTo(0) { inclusive = true }
+                                    }
+                                }
+                            )
+                        }
+                        composable("zen_room") {
+                            ZenRoomScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable("ai_zen_coach") {
+                            AiZenCoachScreen()
+                        }
+                        composable("countdown_settings") {
+                            CountdownSettingsScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable("statistics") {
+                            DetailedAnalyticsScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable("app_blocker") {
+                            com.example.sharkmentor.ui.screens.AppBlockerScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable("history") {
+                            HistoryScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable("analysis") {
+                            DetailedAnalyticsScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable(Screen.Profile.route) {
+                            ProfileScreen(
+                                onBackClick = { navController.popBackStack() },
+                                onLogoutClick = {
+                                    GoogleServicesHelper.signOut()
+                                    navController.navigate(Screen.Login.route) {
+                                        popUpTo(0) { inclusive = true }
+                                    }
+                                },
+                                onLoginClick = {
+                                    navController.navigate(Screen.Login.route)
+                                }
+                            )
+                        }
+                        composable(Screen.Login.route) {
+                            LoginScreen(
+                                onLoginSuccess = {
+                                    navController.navigate(Screen.Focus.route) {
+                                        popUpTo(0) { inclusive = true }
+                                        launchSingleTop = true
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (showReflectionDialog) {
+                    DailyReflectionDialog(
+                        onDismiss = { showReflectionDialog = false },
+                        onSubmit = { score, note, monthlyNet ->
+                            viewModel.saveDailyReflection(score, note, monthlyNet)
+                            showReflectionDialog = false
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+}
+}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Top App Bar
+// ─────────────────────────────────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SharkMentorTopBar(
+    countdown: String,
+    isCampus: Boolean,
+    onCountdownClick: () -> Unit = {},
+    onMenuClick: () -> Unit
+) {
+    TopAppBar(
+        title = {
+            SharkMentorBranding(countdown = countdown, isCampus = isCampus)
+        },
+        actions = {
+            // Task 6.2: Restored Target Exam Countdown Widget (YKS remaining days pill)
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                modifier = Modifier
+                    .padding(end = 4.dp)
+                    .clickable { onCountdownClick() }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Event,
+                        contentDescription = "Hedef Sınav Geri Sayım",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = countdown,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            IconButton(onClick = onMenuClick, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Default.Menu,
+                    contentDescription = "Menü",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            actionIconContentColor = MaterialTheme.colorScheme.onSurface
+        ),
+    )
+}
+
+@Composable
+private fun SharkMentorBranding(countdown: String, isCampus: Boolean) {
+    // Task 6.2: Left-aligned block with IntrinsicSize.Max and centered S T U D Y subtitle underneath
+    Row(
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.width(IntrinsicSize.Max),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "SharkMentor",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = if (isCampus) "C A M P U S" else "S T U D Y",
+                fontSize = 9.sp,
+                letterSpacing = 3.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+            )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bottom Navigation Bar
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun SharkMentorBottomBar(currentDestination: androidx.navigation.NavDestination?, onTabSelected: (Screen) -> Unit, dueQuestionsCount: Int = 0) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface),
+        contentAlignment = Alignment.Center
+    ) {
+        NavigationBar(
+            containerColor = MaterialTheme.colorScheme.surface,
+            tonalElevation = 0.dp,
+            modifier = Modifier
+                .widthIn(max = 680.dp)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+        ) {
+            Screen.bottomBarItems.forEach { screen ->
+                @Suppress("SENSELESS_COMPARISON")
+                if (screen != null && screen.icon != null) {
+                    val isSelected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                    NavigationBarItem(
+                        selected = isSelected,
+                        onClick  = { onTabSelected(screen) },
+                        icon     = {
+                            BadgedBox(badge = {
+                                if (screen == Screen.ErrorBank && dueQuestionsCount > 0) {
+                                    Badge(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .offset(x = (-2).dp, y = 2.dp),
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }) {
+                                Icon(screen.icon, contentDescription = screen.label, modifier = Modifier.size(24.dp))
+                            }
+                        },
+                        label           = { Text(screen.label, fontSize = 10.sp) },
+                        alwaysShowLabel = true,
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor   = MaterialTheme.colorScheme.onPrimary,
+                            selectedTextColor   = MaterialTheme.colorScheme.primary,
+                            indicatorColor      = MaterialTheme.colorScheme.primary,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preview
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Preview(showBackground = true, showSystemUi = true)
+@Composable
+private fun MainScreenPreview() {
+    SharkMentorTheme(palette = ThemePalette.SOOTY) {
+        // Preview uses theme defaults; ThemePreferences is not available in preview
+    }
+}
+

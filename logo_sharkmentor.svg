@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+    <!-- Dark Mode Background -->
+    <rect width="500" height="500" fill="#0B132B" rx="80" />
+    
+    <defs>
+        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="8" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+        </filter>
+        <linearGradient id="leftGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#00EBFF"/>
+            <stop offset="100%" stop-color="#00A8FF"/>
+        </linearGradient>
+        <linearGradient id="rightGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#00A8FF"/>
+            <stop offset="100%" stop-color="#0055AA"/>
+        </linearGradient>
+    </defs>
+    
+    <!-- Abstract Fin / Open Book / Compass -->
+    <g filter="url(#glow)">
+        <!-- Left Side (Leading Edge / Page 1) -->
+        <path d="M 293,95 L 168,270 L 253,235 Z" fill="url(#leftGrad)" />
+        
+        <!-- Right Side (Trailing Edge / Page 2) -->
+        <path d="M 303,95 L 263,235 L 333,270 Z" fill="url(#rightGrad)" />
+    </g>
+    
+    <!-- Typography -->
+    <text x="250" y="370" font-family="'Montserrat', 'Inter', sans-serif" font-weight="800" font-size="64" fill="#00EBFF" text-anchor="middle" letter-spacing="6">SHARK</text>
+    <text x="250" y="420" font-family="'Montserrat', 'Inter', sans-serif" font-weight="300" font-size="22" fill="#E0E6ED" text-anchor="middle" letter-spacing="10">MENTOR STUDY</text>
+</svg>

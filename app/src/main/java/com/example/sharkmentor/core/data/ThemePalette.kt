@@ -1,0 +1,20 @@
+package com.example.sharkmentor.core.data
+
+/**
+ * Available natural color palettes for SharkMentor's dynamic theme engine.
+ */
+enum class ThemePalette(
+    val title: String,
+    val bgHex: Long,
+    val primaryHex: Long,
+    val desc: String
+) {
+    SOOTY("Sooty", 0xFF121214, 0xFF8E8EA0, "Minimalist Kömür"),
+    COFFEE("Coffee", 0xFF1C1816, 0xFFD4A373, "Sıcak Espresso & Latte"),
+    OCEAN("Ocean", 0xFF0B1B2B, 0xFF2EC4B6, "Derin Deniz Turkuazı"),
+    RAINY("Rainy", 0xFF181D26, 0xFF6B8EAD, "Yağmurlu Fırtına Grisi"),
+    FOREST("Forest", 0xFF0D1912, 0xFF387A56, "Sakin Çam Ormanı"),
+    DREAMS("Dreams", 0xFF1A1318, 0xFFF472B6, "Dingin Gül Kurusu"),
+    SAKURA("Sakura", 0xFF1E1517, 0xFFFDA4AF, "Japon Kiraz Çiçeği"),
+    AUTUMN("Autumn", 0xFF181310, 0xFFEA580C, "Kiremit Sonbahar")
+}

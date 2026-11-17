@@ -1,0 +1,158 @@
+<resources>
+    <string name="app_name">S.M. Study</string>
+    <!-- Navigation Tabs -->
+    <string name="tab_home">Ana Sayfa</string>
+    <string name="tab_plans">Planlarım</string>
+    <string name="tab_analytics">Analiz</string>
+    <string name="tab_history">Geçmiş</string>
+
+    <!-- Timer Modes -->
+    <string name="mode_deep_focus">90 Dk Blok Odak</string>
+    <string name="mode_pomodoro">Pomodoro</string>
+    <string name="mode_stopwatch">Kronometre</string>
+    <string name="mode_break">Mola</string>
+
+    <!-- Buttons -->
+    <string name="btn_start">BAŞLAT</string>
+    <string name="btn_pause">DURAKLAT</string>
+    <string name="btn_stop">DURDUR</string>
+    <string name="btn_reset">SIFIRLA</string>
+    <string name="btn_resume">DEVAM ET</string>
+    <string name="btn_complete">Tamamla</string>
+    <string name="btn_save">Kaydet</string>
+    <string name="btn_cancel">İptal</string>
+    <string name="btn_apply">Uygula</string>
+    <string name="btn_skip_session">Atla (seansı sıfırla)</string>
+    <string name="btn_here_iam">Buradayım</string>
+    <string name="btn_open_settings">Ayarları Aç</string>
+    <string name="btn_not_now">Şimdi Değil</string>
+    <string name="btn_start_break">MOLAYI BAŞLAT</string>
+
+    <!-- Dialogs: Break -->
+    <string name="dialog_break_title">Mola Önerisi</string>
+    <string name="dialog_break_msg">Zihinsel toparlanma ve maksimum odak için mola vermeniz önerilir. Yine de yeni seans başlatılsın mı?</string>
+    <string name="dialog_break_start_session">Seansı Başlat</string>
+    <string name="dialog_break_continue">Molaya Devam Et</string>
+
+    <!-- Dialogs: App Blocker -->
+    <string name="blocker_title">Uygulama Engelleyici</string>
+    <string name="blocker_overlay_msg">Odak Seansı Devam Ediyor!\nMasana Dön</string>
+    <string name="blocker_overlay_btn">SharkMentor\'a Dön</string>
+    
+    <!-- Analytics / Score -->
+    <string name="score_daily_title">Günlük Odak Skoru</string>
+    <string name="metric_screen_time">Seans Ekran Süresi</string>
+    <string name="metric_phone_lifts">Telefon Kaldırma</string>
+    <string name="metric_focus_time">Haftalık Toplam</string>
+    
+    <!-- Nudges & Service -->
+    <string name="nudge_msg_1">Masanın başına dön, hedefine odaklan.</string>
+    <string name="nudge_msg_2">Ritim dengeli, odaklanmayı sürdür.</string>
+    <string name="nudge_msg_3">Derin odak sürecindesin, telefonu bırakıp devam et.</string>
+    <string name="nudge_msg_4">Hedefine bir adım daha yaklaşıyorsun, çalışmaya devam.</string>
+
+    <string name="service_title_break">SharkMentor — Mola</string>
+    <string name="service_title_focus">SharkMentor Odak</string>
+
+    <!-- Theme Settings -->
+    <string name="theme_settings_title">Tema ve Görünüm</string>
+    
+    <!-- HomeScreen -->
+    <string name="home_status_today">Bugünün Durumu</string>
+    <string name="home_score_desc">Skor: Süre, Görev, Telefon ve Ekran disiplini içerir</string>
+    <string name="home_break_active">Mola Sürüyor</string>
+    <string name="home_break_active_btn">Mola Devam Ediyor…</string>
+    <string name="home_break_need_confirm">Yeni seans başlatmak için onay gerekir</string>
+    <string name="home_break_duration">Mola Süresi:</string>
+    <string name="home_pomodoro_duration">Pomodoro Süresi</string>
+    <string name="home_session_count">Seans: %1$d/%2$d</string>
+    <string name="home_presence_title">90 Dk Varlık Kontrolü</string>
+    <string name="home_presence_msg">Devam etmek için onaylayın — %1$s kaldı</string>
+    
+    <!-- PlansScreen -->
+    <string name="plans_title">Planlarım</string>
+    <string name="plans_long_term">Uzun Vadeli</string>
+    <string name="plans_short_term">Kısa Vadeli</string>
+    <string name="plans_add_new">Yeni Plan Ekle</string>
+    <string name="plans_empty">%1$s Planlar</string>
+    <string name="plans_empty_desc">Henüz kayıtlı bir çalışma planınız yok.\nSağ alttaki \'+/AI\' butonunu kullanarak PDF veya fotoğraf üzerinden anında plan oluşturabilirsiniz.</string>
+    <string name="plans_ai_import_title">Yapay Zeka ile İçe Aktar</string>
+    <string name="plans_ai_import_desc">Çalışma programınızın fotoğrafını yükleyin, otomatik planlayalım.</string>
+    <string name="plans_add_title">Başlık</string>
+    <string name="plans_tasks">Görevler</string>
+    <string name="plans_new_task_hint">Yeni görev...</string>
+
+    <!-- Control Panel -->
+    <string name="panel_title">Kontrol Paneli</string>
+    <string name="panel_target_date">Hedef Tarih Ayarla</string>
+    <string name="panel_app_blocker">Uygulama Kısıtlama\nAyarları</string>
+    <string name="panel_language">Uygulama Dili</string>
+    <string name="panel_mode">Mod</string>
+    <string name="panel_mode_dark">Karanlık</string>
+    <string name="panel_mode_light">Aydınlık</string>
+    <string name="panel_palette">Renk Paleti</string>
+
+    <string name="panel_btn_ok">Tamam</string>
+
+    <!-- History -->
+    <string name="history_title">Geçmiş</string>
+    <string name="history_empty">Henüz geçmiş oturum yok.</string>
+
+    <!-- Analytics Screen extras -->
+    <string name="analytics_title">Analiz</string>
+    <string name="analytics_weekly_total">Haftalık\nToplam</string>
+    <string name="analytics_this_week">bu hafta</string>
+    <string name="analytics_daily_avg">Günlük\nOrtalama</string>
+    <string name="analytics_daily_avg_unit">günlük ort.</string>
+    <string name="analytics_session_screen_time">Seans Ekran Süresi</string>
+    <string name="analytics_during_focus">odak sırasında</string>
+    <string name="analytics_phone_lifts">Telefon Kaldırma</string>
+    <string name="analytics_total_violations">toplam ihlal</string>
+    <string name="analytics_weekly_dist">Haftalık Dağılım</string>
+    <string name="analytics_weekly_chart">Haftalık Dağılım (Dk)</string>
+    <string name="analytics_mode_dist">Mod Dağılımı</string>
+    <string name="analytics_mode_breakdown">Mod Dağılımı (Tüm Zamanlar)</string>
+    <string name="analytics_no_data">Henüz veri yok</string>
+
+    <!-- Service Nudges and Status -->
+    <string name="service_alert_presence_title">90 Dk Varlık Kontrolü</string>
+    <string name="service_alert_presence_msg">Burada mısın? 10 dk içinde onaylamazsan kronometre duraklatılacak.</string>
+    <string name="service_alert_break_ready_title">2 Seans Tamamlandı</string>
+    <string name="service_alert_break_ready_msg">Mola başlıyor. Derin nefes al, geri dön.</string>
+    <string name="service_alert_break_done_title">Mola Bitti</string>
+    <string name="service_alert_break_done_msg">Dinlendin mi? Yeni bir odak seansına hazır ol.</string>
+
+    <!-- Plan Creation & AI Import Dialogs -->
+    <string name="plan_import_success_title">Plan Başarıyla Oluşturuldu</string>
+    <string name="plan_import_success_desc">Ders hedefleriniz, haftalık dağılım ve görev maddeleri çıkarıldı.</string>
+    <string name="plan_summary_header">Plan Özeti ve Strateji</string>
+    <string name="plan_tasks_header">Planlanan Görevler ve Kazanımlar</string>
+    <string name="plan_confirm_save_btn">Planı Kaydet ve Başla</string>
+    <string name="plan_cancel_btn">Vazgeç</string>
+
+    <!-- Plan Cards & Task Items -->
+    <string name="plan_progress_format">%1$d / %2$d Görev Tamamlandı (%%%3$d)</string>
+    <string name="plan_task_completed">Tamamlandı</string>
+    <string name="plan_task_pending">Bekliyor</string>
+    <string name="plan_estimated_time_format">Tahmini Süre: %1$d dk</string>
+    <string name="plan_all_completed_congrats">Bu plandaki tüm görevler başarıyla tamamlandı.</string>
+    <string name="plan_empty_state">Henüz kayıtlı bir çalışma planınız yok.\nSağ alttaki \'+/AI\' butonunu kullanarak PDF veya fotoğraf üzerinden anında plan oluşturabilirsiniz.</string>
+
+    <string name="widget_description">SharkMentor günlük çalışma süresi, ustalık puanı ve hızlı odaklanma paneli.</string>
+
+    <!-- Training & AI Solver -->
+    <string name="progress_completed_format">Hedef Tamamlanma: %%%d</string>
+    <string name="socratic_hint_title">Sokratik Düşünme İpucu</string>
+    <string name="ai_solution_title">Yapay Zekâ Soru Çözümü</string>
+    <string name="twin_question_locked">Tam çözüm görüntülendiği için benzer soru oluşturma devre dışı bırakıldı.</string>
+    <string name="question_failed_badge">Yapılamadı</string>
+
+    <!-- Accessibility Service -->
+    <string name="accessibility_blocker_desc">SharkMentor Odak Kalkanı, çalışma seanslarında dikkat dağıtıcı uygulamaları anında kilitlemek için bu izne ihtiyaç duyar.</string>
+
+    <!-- Twin Question Generation -->
+    <string name="twin_question_success">Benzer soru başarıyla oluşturuldu ve kütüphanenize eklendi.</string>
+    <string name="twin_question_generating">Benzer soru yapay zekâ tarafından hazırlanıyor...</string>
+    <string name="twin_question_locked_notice">Tam yapay zekâ çözümü incelendiği için bu soruya ait benzer soru üretimi devre dışıdır.</string>
+    <string name="twin_question_error">Benzer soru oluşturulamadı. Lütfen bağlantınızı kontrol edin.</string>
+</resources>

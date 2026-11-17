@@ -1,0 +1,449 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: students/{studentId}
+    // Document ID: Firebase Auth UID of the student
+    // Fields:
+    //   - id: string (optional) - student UID
+    //   - name / displayName: string (optional) - student name
+    //   - email: string (optional) - student email
+    //   - coachId / assignedCoachId: string (optional) - UID of assigned coach
+    //   - coachCode / institutionCode: string (optional) - institution or coach pairing code
+    //   - lastActiveAt / updatedAt: timestamp (optional)
+    //   - activeStudyPlan: map (optional) - active weekly study plan
+    //   - customScheduleData: map (optional) - coach assigned schedule
+    //
+    // Subcollections under students/{studentId}:
+    //   - /resources/{resourceId}: Resources tracked for the student
+    //   - /goals/{goalId}: Specific goals assigned to or created by student
+    //   - /targets/{targetId}: Targets tracked for the student
+    //   - /topics/{topicId}: Subject topics tracked for the student
+    //   - /focus_sessions/{sessionId}: Study focus sessions recorded by student
+    //   - /questions/{questionId}: Error notebook questions recorded by student
+    //   - /messages/{messageId}: Chat messages between student and assigned coach
+    //   - /sessions/{sessionId}: Session logs created by student
+    //   - /plans/{planId}: Study plans scoped to student
+    //   - /competencies/{competencyId}: Subject competencies
+    //   - /meta/{metaId}: Metadata (e.g. dopamine protocol)
+    //   - /trialExams/{examId}, /exams/{examId}: Trial exam net results
+    //   - /{allSubcollections=**}: All personal and synced subcollections
+    //
+    // Top-Level Collections:
+    //   - plans/{planId}: Study plans containing studentId, tasks, status
+    //   - plan_folders/{folderId}: Study plan folders
+    //   - targets/{targetId}: Targets containing studentId, title, deadline
+    //   - resources/{resourceId}: Educational resources containing studentId
+    //   - topics/{topicId}: Subject topics containing studentId, masteryLevel
+    //   - coaches/{coachId}: Coach public profiles and assigned students
+    //   - coach_codes/{code}: Coach onboarding codes
+    //   - institutions/{institutionCode}: Institution data, weekly league, students
+    //   - institution_codes/{code}: Institution pairing codes
+    //   - users/{userId}: User profile and offline sync items (notes, schedules, plans, training, etc.)
+    //   - hedeflerim/...: Legacy target, resource, and topic paths
+    //   - pairingCodes/{codeId}: Pairing codes
+    //   - meetings/{meetingId}: Video / audio meeting records
+    //   - notifications/{notificationId}: Push / in-app notifications
+    //
+    // ===============================================================
+
+    // ─── Helper Functions ──────────────────────────────────────────
+
+    /** Returns true if the caller is authenticated */
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    /** Returns true if the caller owns this student document */
+    function isStudent(studentId) {
+      return isAuthenticated() && request.auth.uid == studentId;
+    }
+
+    /** Returns true if data has coachId or assignedCoachId matching caller */
+    function isDocCoach(data) {
+      return isAuthenticated() && data != null && (
+        (('coachId' in data) && request.auth.uid == data.coachId) ||
+        (('assignedCoachId' in data) && request.auth.uid == data.assignedCoachId)
+      );
+    }
+
+    /** Returns true if caller is assigned coach recorded in student's doc */
+    function isAssignedCoachForStudent(studentId) {
+      return isAuthenticated() &&
+        studentId != null &&
+        exists(/databases/$(database)/documents/students/$(studentId)) &&
+        isDocCoach(get(/databases/$(database)/documents/students/$(studentId)).data);
+    }
+
+    // ─── Students Collection ───────────────────────────────────────
+    //
+    // Read:   student themselves OR assigned coach
+    // List:   authenticated (supports coach queries by assignedCoachId / institutionCode)
+    // Create: student for their own doc OR assigned coach
+    // Update: student updating their own doc OR assigned coach
+    // Delete: student OR assigned coach
+    //
+    match /students/{studentId} {
+      allow get: if isAuthenticated() && (
+        request.auth.uid == studentId ||
+        (resource != null && isDocCoach(resource.data)) ||
+        isAssignedCoachForStudent(studentId)
+      );
+
+      allow list: if isAuthenticated();
+
+      allow create: if isAuthenticated() && (
+        request.auth.uid == studentId ||
+        (request.resource != null && isDocCoach(request.resource.data))
+      );
+
+      allow update: if isAuthenticated() && (
+        request.auth.uid == studentId ||
+        (resource != null && isDocCoach(resource.data)) ||
+        isAssignedCoachForStudent(studentId)
+      );
+
+      allow delete: if isAuthenticated() && (
+        request.auth.uid == studentId ||
+        (resource != null && isDocCoach(resource.data))
+      );
+
+      // ── Subcollections Catch-All Wildcard ─────────────────────────
+      // Ensures complete access for student owner and assigned coach
+      // to all subcollections (resources, goals, targets, topics, questions, etc.)
+      match /{allSubcollections=**} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      // ── Resources subcollection ──────────────────────────────────
+      match /resources/{resourceId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      // ── Topics subcollection ─────────────────────────────────────
+      match /topics/{topicId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      // ── Goals subcollection ──────────────────────────────────────
+      match /goals/{goalId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      // ── Targets subcollection ────────────────────────────────────
+      match /targets/{targetId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      // ── Focus Sessions subcollection ─────────────────────────────
+      match /focus_sessions/{sessionId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      // ── Questions (Error Notebook) subcollection ─────────────────
+      match /questions/{questionId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      // ── Messages subcollection ───────────────────────────────────
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+
+        allow create: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+
+        allow update: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+
+        allow delete: if false;
+      }
+
+      // ── Sessions subcollection ───────────────────────────────────
+      match /sessions/{sessionId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      // ── Additional Student Subcollections ────────────────────────
+      match /plans/{planId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      match /competencies/{competencyId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      match /meta/{metaId} {
+        allow read, write: if isAuthenticated() && request.auth.uid == studentId;
+      }
+
+      match /trialExams/{examId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      match /exams/{examId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+    }
+
+    // ─── Top-Level Plans Collection ────────────────────────────────
+    // Read: authenticated student owner OR assigned coach
+    // List: authenticated (client queries where("studentId", "==", uid))
+    // Create/Update/Delete: authenticated student owner OR assigned coach
+    match /plans/{planId} {
+      allow list: if isAuthenticated();
+      allow get: if isAuthenticated() && (
+        resource == null ||
+        !('studentId' in resource.data) ||
+        resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(resource.data.studentId)
+      );
+
+      allow create: if isAuthenticated() && (
+        !('studentId' in request.resource.data) ||
+        request.resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(request.resource.data.studentId)
+      );
+
+      allow update, delete: if isAuthenticated() && (
+        resource == null ||
+        !('studentId' in resource.data) ||
+        resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(resource.data.studentId)
+      );
+    }
+
+    // ─── Top-Level Plan Folders Collection ─────────────────────────
+    match /plan_folders/{folderId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // ─── Top-Level Targets Collection ──────────────────────────────
+    // Read: authenticated user where resource.data.studentId == request.auth.uid
+    // List: authenticated (client queries where("studentId", "==", uid))
+    // Create/Update/Delete: authenticated student owner OR assigned coach
+    match /targets/{targetId} {
+      allow list: if isAuthenticated();
+      allow get: if isAuthenticated() && (
+        resource == null ||
+        !('studentId' in resource.data) ||
+        resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(resource.data.studentId)
+      );
+
+      allow create: if isAuthenticated() && (
+        !('studentId' in request.resource.data) ||
+        request.resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(request.resource.data.studentId)
+      );
+
+      allow update, delete: if isAuthenticated() && (
+        resource == null ||
+        !('studentId' in resource.data) ||
+        resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(resource.data.studentId)
+      );
+    }
+
+    // ─── Top-Level Resources Collection ────────────────────────────
+    // Read: authenticated user where resource.data.studentId == request.auth.uid
+    // List: authenticated (client queries where("studentId", "==", uid))
+    // Create/Update/Delete: authenticated student owner OR assigned coach
+    match /resources/{resourceId} {
+      allow list: if isAuthenticated();
+      allow get: if isAuthenticated() && (
+        resource == null ||
+        !('studentId' in resource.data) ||
+        resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(resource.data.studentId)
+      );
+
+      allow create: if isAuthenticated() && (
+        !('studentId' in request.resource.data) ||
+        request.resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(request.resource.data.studentId)
+      );
+
+      allow update, delete: if isAuthenticated() && (
+        resource == null ||
+        !('studentId' in resource.data) ||
+        resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(resource.data.studentId)
+      );
+    }
+
+    // ─── Top-Level Topics Collection ───────────────────────────────
+    // Read: authenticated user where resource.data.studentId == request.auth.uid
+    // List: authenticated (client queries where("studentId", "==", uid))
+    // Create/Update/Delete: authenticated student owner OR assigned coach
+    match /topics/{topicId} {
+      allow list: if isAuthenticated();
+      allow get: if isAuthenticated() && (
+        resource == null ||
+        !('studentId' in resource.data) ||
+        resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(resource.data.studentId)
+      );
+
+      allow create: if isAuthenticated() && (
+        !('studentId' in request.resource.data) ||
+        request.resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(request.resource.data.studentId)
+      );
+
+      allow update, delete: if isAuthenticated() && (
+        resource == null ||
+        !('studentId' in resource.data) ||
+        resource.data.studentId == request.auth.uid ||
+        isAssignedCoachForStudent(resource.data.studentId)
+      );
+    }
+
+    // ─── Coaches Collection ────────────────────────────────────────
+    // Any authenticated user can read coach profile for pairing.
+    // Only the coach themselves can write their own document.
+    match /coaches/{coachId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == coachId;
+
+      match /students/{studentId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == coachId ||
+          request.auth.uid == studentId
+        );
+      }
+
+      match /studentGroups/{groupId} {
+        allow read, write: if isAuthenticated() && request.auth.uid == coachId;
+      }
+
+      match /{allSubcollections=**} {
+        allow read, write: if isAuthenticated() && request.auth.uid == coachId;
+      }
+    }
+
+    // ─── Institutions / Shark League ───────────────────────────────
+    // Any authenticated user can READ the league.
+    // Students can only WRITE their own entry.
+    match /institutions/{institutionCode} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Institution docs managed server-side only
+
+      match /weeklyLeague/{studentId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated() && request.auth.uid == studentId;
+      }
+
+      match /students/{studentId}/{allSubcollections=**} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == studentId ||
+          isAssignedCoachForStudent(studentId)
+        );
+      }
+
+      match /coaches/{coachId}/students/{studentId} {
+        allow read, write: if isAuthenticated() && (
+          request.auth.uid == coachId ||
+          request.auth.uid == studentId
+        );
+      }
+
+      match /coaches/{coachId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated() && request.auth.uid == coachId;
+      }
+    }
+
+    // ─── Users Collection (App Sync / Local State) ─────────────────
+    match /users/{userId} {
+      allow get: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        (resource != null && 'coachCode' in resource.data) ||
+        (resource != null && 'role' in resource.data && resource.data.role == 'coach')
+      );
+      allow list: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+
+      match /{allSubcollections=**} {
+        allow read, write: if isAuthenticated() && request.auth.uid == userId;
+      }
+    }
+
+    // ─── Legacy & Supporting Collections ───────────────────────────
+    match /hedeflerim/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /institution_codes/{code} {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+
+    match /coach_codes/{code} {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+
+    match /meetings/{meetingId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /notifications/{notificationId} {
+      allow read, write: if isAuthenticated();
+      match /{allSubcollections=**} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    match /pairingCodes/{codeId} {
+      allow read, write: if isAuthenticated();
+    }
+
+  }
+}
