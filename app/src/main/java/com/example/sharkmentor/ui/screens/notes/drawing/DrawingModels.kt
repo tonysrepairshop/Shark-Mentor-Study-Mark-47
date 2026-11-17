@@ -374,7 +374,7 @@ class DrawingController(
         stylusOnlyMode = !stylusOnlyMode
     }
 
-    fun setStylusOnlyMode(enabled: Boolean) {
+    fun updateStylusOnlyMode(enabled: Boolean) {
         stylusOnlyMode = enabled
     }
 
