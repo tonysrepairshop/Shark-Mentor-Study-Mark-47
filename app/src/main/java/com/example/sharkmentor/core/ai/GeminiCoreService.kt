@@ -45,12 +45,7 @@ KESİN KURALLAR:
     }
 
     private fun sanitizeModelName(name: String): String {
-        val raw = name.trim().removePrefix("models/").removePrefix("/")
-        return if (raw.contains("preview", ignoreCase = true) || raw.contains("exp", ignoreCase = true) || raw.isBlank()) {
-            "gemini-3.6-flash"
-        } else {
-            raw
-        }
+        return GeminiAiFactory.SOLE_GEMINI_MODEL
     }
 
     private fun createModel(apiKey: String, modelName: String = GeminiRepository.ACTIVE_MODEL_NAME): GenerativeModel {

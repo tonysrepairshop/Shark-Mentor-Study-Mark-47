@@ -12,6 +12,15 @@ interface SessionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSession(session: FocusSessionEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSession(session: FocusSessionEntity): Long
+
+    @Query("SELECT * FROM focus_sessions WHERE id = :id LIMIT 1")
+    suspend fun getSessionById(id: Long): FocusSessionEntity?
+
+    @Query("SELECT * FROM focus_sessions WHERE cloudId = :cloudId LIMIT 1")
+    suspend fun getSessionByCloudId(cloudId: String): FocusSessionEntity?
+
     @Query("SELECT COALESCE(SUM(durationSeconds) / 60, 0) FROM focus_sessions WHERE completedAt >= :sinceMillis")
     fun getFocusTotalSince(sinceMillis: Long): Flow<Int>
 

@@ -28,12 +28,14 @@ import com.example.sharkmentor.SharkMentorApplication
 import com.example.sharkmentor.core.blocker.BlockerPreferences
 import com.example.sharkmentor.core.blocker.UsageStatsHelper
 import com.example.sharkmentor.core.sensor.AfkSensorManager
+import com.example.sharkmentor.core.timer.FocusSessionRecorder
 import com.example.sharkmentor.core.timer.TimerMode
 import com.example.sharkmentor.core.timer.TimerPhase
 import com.example.sharkmentor.core.timer.TimerState
 import com.example.sharkmentor.core.timer.DndManager
 import com.example.sharkmentor.core.util.AppIconManager
 import com.example.sharkmentor.core.util.GoogleServicesHelper
+import com.example.sharkmentor.core.widget.WidgetUpdateManager
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -114,6 +116,14 @@ class FocusTimerService : Service() {
     /** Phone lift count at the last AFK collector emission — used to detect increases. */
     private var previousLiftCount: Int = 0
 
+    private fun currentScreenOnMillis(): Long {
+        return if (lastScreenOnTimestamp > 0L) {
+            totalScreenOnMillis + (System.currentTimeMillis() - lastScreenOnTimestamp).coerceAtLeast(0L)
+        } else {
+            totalScreenOnMillis
+        }
+    }
+
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     override fun onCreate() {
@@ -122,6 +132,12 @@ class FocusTimerService : Service() {
         createNotificationChannels()
         afkSensor = AfkSensorManager(applicationContext as Application)
         dndManager = DndManager(applicationContext)
+
+        // Recover any unfinalized session from a previous crash/process death without double-counting
+        FocusSessionRecorder.recoverOrphanedSessionIfNeeded(
+            context = applicationContext,
+            isTimerCurrentlyActive = _timerStateFlow.value.timerPhase != TimerPhase.IDLE
+        )
 
         serviceScope.launch {
             var previousPhase = TimerPhase.IDLE
@@ -133,6 +149,9 @@ class FocusTimerService : Service() {
                     dndManager.enableDeepFocusDnd()
                 } else if (!isFocusing && wasFocusing) {
                     dndManager.disableDnd()
+                }
+                if (state.timerPhase != previousPhase) {
+                    WidgetUpdateManager.updateAllWidgets(applicationContext)
                 }
                 previousPhase = state.timerPhase
             }
@@ -171,6 +190,17 @@ class FocusTimerService : Service() {
     }
 
     override fun onDestroy() {
+        val current = _timerStateFlow.value
+        if (current.timerPhase != TimerPhase.IDLE && current.currentMode != TimerMode.BREAK) {
+            FocusSessionRecorder.finalizeSession(
+                context = applicationContext,
+                elapsedMillis = current.timeElapsedMillis,
+                modeName = current.currentMode.displayName,
+                subjectName = activeSubjectName,
+                phoneLiftCount = current.phoneLiftCount,
+                screenOnMillis = currentScreenOnMillis()
+            )
+        }
         updatePresenceInFirestore(false)
         SessionManager.setTimerRunning(false) // Service killed — always clear the flag
         tickerJob?.cancel()
@@ -190,6 +220,7 @@ class FocusTimerService : Service() {
 
     // ── Live Presence Sync ──────────────────────────────────────────────────
     private var activeSubjectName: String = "Genel"
+    private var activeSessionUuid: String? = null
 
     private fun updatePresenceInFirestore(isStudying: Boolean, subject: String = activeSubjectName) {
         try {
@@ -227,6 +258,15 @@ class FocusTimerService : Service() {
 
     private fun handleStart(mode: TimerMode, intentPomodoro: Int?, intentBreak: Int?, subject: String = "Genel") {
         activeSubjectName = subject
+        if (mode != TimerMode.BREAK) {
+            activeSessionUuid = FocusSessionRecorder.startSession(
+                context = applicationContext,
+                modeName = mode.displayName,
+                subjectName = activeSubjectName
+            )
+        } else {
+            activeSessionUuid = null
+        }
         updatePresenceInFirestore(true, activeSubjectName)
         val current = _timerStateFlow.value
 
@@ -320,6 +360,16 @@ class FocusTimerService : Service() {
 
         val now     = SystemClock.elapsedRealtime()
         val elapsed = current.pausedAccumulatedMillis + (now - current.startTimestampElapsed)
+        if (current.currentMode != TimerMode.BREAK) {
+            FocusSessionRecorder.onPauseCheckpoint(
+                context = applicationContext,
+                elapsedMillis = elapsed,
+                modeName = current.currentMode.displayName,
+                subjectName = activeSubjectName,
+                phoneLiftCount = current.phoneLiftCount,
+                screenOnMillis = currentScreenOnMillis()
+            )
+        }
         val paused  = current.copy(
             timerPhase              = TimerPhase.PAUSED,
             timeElapsedMillis       = elapsed,
@@ -367,7 +417,7 @@ class FocusTimerService : Service() {
             totalScreenOnMillis += System.currentTimeMillis() - lastScreenOnTimestamp
             lastScreenOnTimestamp = 0L
         }
-        if (current.timeElapsedMillis >= 60_000L) {
+        if (current.currentMode != TimerMode.BREAK) {
             saveSessionToRoom(current.currentMode.displayName, current.timeElapsedMillis, current.phoneLiftCount, totalScreenOnMillis)
         }
         _timerStateFlow.value = TimerState(
@@ -398,7 +448,7 @@ class FocusTimerService : Service() {
             totalScreenOnMillis += System.currentTimeMillis() - lastScreenOnTimestamp
             lastScreenOnTimestamp = 0L
         }
-        if (current.timeElapsedMillis >= 60_000L) {
+        if (current.currentMode != TimerMode.BREAK) {
             saveSessionToRoom(current.currentMode.displayName, current.timeElapsedMillis, current.phoneLiftCount, totalScreenOnMillis)
         }
         val mode = current.currentMode
@@ -486,6 +536,17 @@ class FocusTimerService : Service() {
             else -> current.timeElapsedMillis + TICK_MS
         }
 
+        if (current.timerPhase == TimerPhase.FOCUSING && current.currentMode != TimerMode.BREAK) {
+            FocusSessionRecorder.onTick(
+                context = applicationContext,
+                elapsedMillis = newElapsed,
+                modeName = current.currentMode.displayName,
+                subjectName = activeSubjectName,
+                phoneLiftCount = current.phoneLiftCount,
+                screenOnMillis = currentScreenOnMillis()
+            )
+        }
+
         val newState: TimerState = when (current.timerPhase) {
             TimerPhase.FOCUSING -> when (current.currentMode) {
                 TimerMode.STOPWATCH -> handleStopwatchTick(current, newElapsed) ?: return
@@ -527,6 +588,14 @@ class FocusTimerService : Service() {
                 watchdogJob?.cancel()
                 afkSensor.stop()
                 releaseWakeLock()
+                FocusSessionRecorder.onPauseCheckpoint(
+                    context = applicationContext,
+                    elapsedMillis = newElapsed,
+                    modeName = current.currentMode.displayName,
+                    subjectName = activeSubjectName,
+                    phoneLiftCount = current.phoneLiftCount,
+                    screenOnMillis = currentScreenOnMillis()
+                )
                 val autoPaused = updatedElapsed.copy(
                     timerPhase                   = TimerPhase.PAUSED,
                     pausedAccumulatedMillis      = newElapsed,
@@ -670,32 +739,14 @@ class FocusTimerService : Service() {
     }
 
     private fun saveSessionToRoom(modeName: String, durationMillis: Long, phoneLiftCount: Int, screenOnMillis: Long) {
-        val durationSeconds = durationMillis / 1000L
-        val screenOnMinutes = (screenOnMillis  / 60_000L).toInt()
-        if (durationSeconds <= 0) return
-
-        val afkScore = (10.0f - (phoneLiftCount * 2.0f)).coerceAtLeast(0.0f)
-        val context = this@FocusTimerService
-        val institutionId = com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(context).institutionId
-        
-        // Push immediately to Firestore
-        syncFocusSessionToFirestore(durationSeconds, modeName, "Genel")
-
-        serviceScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            com.example.sharkmentor.data.local.SharkMentorDatabase.getDatabase(context).sessionDao().insertSession(
-                com.example.sharkmentor.data.local.entity.FocusSessionEntity(
-                    modeName        = modeName,
-                    durationSeconds = durationSeconds,
-                    afkScore        = afkScore,
-                    phoneLiftCount  = phoneLiftCount,
-                    screenOnMinutes = screenOnMinutes,
-                    institutionId   = institutionId,
-                    isSynced        = false
-                )
-            )
-            android.util.Log.d("SharkMentorSync", "Triggering sync for saveSessionToRoom")
-            com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
-        }
+        FocusSessionRecorder.finalizeSession(
+            context = applicationContext,
+            elapsedMillis = durationMillis,
+            modeName = modeName,
+            subjectName = activeSubjectName,
+            phoneLiftCount = phoneLiftCount,
+            screenOnMillis = screenOnMillis
+        )
     }
 
     // ── Notifications ─────────────────────────────────────────────────────────
@@ -926,6 +977,24 @@ class FocusTimerService : Service() {
             val m = (totalSec % 3_600L) / 60L
             val s = totalSec % 60L
             return if (h > 0L) "%02d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+        }
+
+        /**
+         * Helper for external tools (e.g., PACE, KEEP, PDF Reader) to record focus duration
+         * into Room and Firestore without double-counting.
+         */
+        fun recordExternalFocusSession(
+            context: Context,
+            toolName: String,
+            durationSeconds: Long,
+            subjectName: String = "Genel"
+        ) {
+            FocusSessionRecorder.recordExternalToolSessionAsync(
+                context = context,
+                toolName = toolName,
+                durationSeconds = durationSeconds,
+                subjectName = subjectName
+            )
         }
     }
 }

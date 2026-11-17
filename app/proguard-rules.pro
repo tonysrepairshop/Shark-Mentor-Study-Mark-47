@@ -29,4 +29,19 @@
 -keep class androidx.core.app.CoreComponentFactory { *; }
 -keep public class * extends android.app.AppComponentFactory
 
+# Preserve Glance AppWidget receivers and ActionCallback implementations
+-keep class * extends androidx.glance.appwidget.action.ActionCallback {
+    public <init>(...);
+}
+-keep class * extends androidx.glance.appwidget.GlanceAppWidgetReceiver {
+    public <init>(...);
+}
+
+# Preserve WebView @JavascriptInterface bridges
+-keepattributes JavascriptInterface
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keep class com.example.sharkmentor.ui.screens.pacekeep.PaceKeepBridge { *; }
+
 # Allow obfuscation of the rest

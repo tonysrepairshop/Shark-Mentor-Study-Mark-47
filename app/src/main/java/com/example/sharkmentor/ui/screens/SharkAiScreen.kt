@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
@@ -72,9 +73,13 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SelfImprovement
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.History
 import androidx.core.content.FileProvider
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.material.icons.filled.TrackChanges
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
@@ -127,6 +132,7 @@ import com.example.sharkmentor.data.repository.AiModelPower
 import com.example.sharkmentor.data.repository.SharkAiEngine
 import com.example.sharkmentor.ui.aichat.ActionChip
 import com.example.sharkmentor.ui.aichat.AiPersona
+import com.example.sharkmentor.ui.aichat.PersistedChatSession
 import com.example.sharkmentor.ui.aichat.PersonalizedGreetingHeader
 import com.example.sharkmentor.ui.aichat.getFlashCardsForPersona
 import com.example.sharkmentor.ui.aichat.isPersonaAvailable
@@ -155,6 +161,8 @@ fun SharkAiScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val chatSessions by viewModel.chatSessions.collectAsStateWithLifecycle()
+    val activeChatSessionId by viewModel.activeChatSessionId.collectAsStateWithLifecycle()
     val inputText by viewModel.inputText.collectAsStateWithLifecycle()
     val selectedAttachmentUri by viewModel.selectedAttachmentUri.collectAsStateWithLifecycle()
     val attachmentPreview by viewModel.attachmentPreview.collectAsStateWithLifecycle()
@@ -171,6 +179,7 @@ fun SharkAiScreen(
 
     var showPersonaSheet by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
+    var showChatHistorySheet by rememberSaveable { mutableStateOf(false) }
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     fun createTempPictureUri(ctx: Context): Uri {
@@ -340,6 +349,63 @@ fun SharkAiScreen(
                                 }
                             }
 
+                            // "Sohbetler" (Chat History / Session Selector) button
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+                                shape = RoundedCornerShape(16.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                                modifier = Modifier.clickable { showChatHistorySheet = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.History,
+                                        contentDescription = "Sohbet Geçmişi",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "Sohbetler (${chatSessions.size})",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+
+                            // "Yeni Sohbet" (New Chat) button
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(16.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                                modifier = Modifier.clickable {
+                                    viewModel.startNewChat()
+                                    Toast.makeText(context, "Yeni sohbet hazır", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Yeni Sohbet",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "Yeni",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
                             // Sleek Segmented / Filter Chips for Model Power: Fast vs Deep (Aligned to far right)
                             Surface(
                                 shape = RoundedCornerShape(20.dp),
@@ -355,7 +421,15 @@ fun SharkAiScreen(
                                         val isSelected = modelPower == powerOption
                                         FilterChip(
                                             selected = isSelected,
-                                            onClick = { viewModel.setModelPower(powerOption) },
+                                            onClick = {
+                                                viewModel.setModelPower(powerOption)
+                                                val modeHint = if (powerOption == AiModelPower.PRO) {
+                                                    "Detaylı Mod aktif: Derin konu sentezi ve adım adım analiz"
+                                                } else {
+                                                    "Hızlı Mod aktif: Öz ve seri yanıt"
+                                                }
+                                                Toast.makeText(context, modeHint, Toast.LENGTH_SHORT).show()
+                                            },
                                             label = {
                                                 Text(
                                                     text = powerOption.label,
@@ -1540,6 +1614,239 @@ fun SharkAiScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showChatHistorySheet) {
+            val dateFormatter = remember {
+                SimpleDateFormat("dd MMM HH:mm", Locale("tr", "TR"))
+            }
+            ModalBottomSheet(
+                onDismissRequest = { showChatHistorySheet = false },
+                containerColor = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
+                        .padding(bottom = 32.dp, top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Sohbet Geçmişi",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "${chatSessions.size} kayıtlı oturum • Seçin, yeni açın veya silin",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                viewModel.startNewChat()
+                                showChatHistorySheet = false
+                                Toast.makeText(context, "Yeni sohbet başlatıldı", Toast.LENGTH_SHORT).show()
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Yeni Sohbet",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Yeni Sohbet",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(chatSessions, key = { it.id }) { session ->
+                            val isSelected = session.id == activeChatSessionId
+                            val nonSystemMessages = remember(session.messages) {
+                                session.messages.filter { it.sender != "system" }
+                            }
+                            val lastMessagePreview = remember(nonSystemMessages) {
+                                nonSystemMessages.lastOrNull()?.text
+                                    ?.replace(Regex("\\s+"), " ")
+                                    ?.trim()
+                                    ?.take(90)
+                                    ?: "Henüz mesaj gönderilmedi"
+                            }
+                            val formattedDate = remember(session.updatedAtEpochMs) {
+                                runCatching { dateFormatter.format(Date(session.updatedAtEpochMs)) }
+                                    .getOrDefault("")
+                            }
+
+                            Surface(
+                                onClick = {
+                                    viewModel.selectChatSession(session.id)
+                                    showChatHistorySheet = false
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                },
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+                                    }
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (isSelected) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.surface
+                                                }
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = session.currentPersona.iconRes,
+                                            contentDescription = session.currentPersona.title,
+                                            tint = if (isSelected) {
+                                                MaterialTheme.colorScheme.onPrimary
+                                            } else {
+                                                MaterialTheme.colorScheme.primary
+                                            },
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = session.title.ifBlank { "Yeni Sohbet" },
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            )
+                                            if (isSelected) {
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    shape = RoundedCornerShape(8.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "Aktif",
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onPrimary,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        Text(
+                                            text = lastMessagePreview,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = session.currentPersona.title,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.secondary,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            Text(
+                                                text = "${nonSystemMessages.size} mesaj",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (formattedDate.isNotBlank()) {
+                                                Text(
+                                                    text = "• $formattedDate",
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            viewModel.deleteChatSession(session.id)
+                                            Toast.makeText(context, "Sohbet silindi", Toast.LENGTH_SHORT).show()
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteOutline,
+                                            contentDescription = "Sohbeti Sil",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

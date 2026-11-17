@@ -70,10 +70,27 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.sharkmentor.ImportedNotePayload
+import com.example.sharkmentor.core.util.DocumentTextExtractor
+import com.example.sharkmentor.core.util.ImportedPdfFile
+import com.example.sharkmentor.core.util.PdfBitmapConverter
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.NoteEntity
 import com.example.sharkmentor.data.repository.NoteRepositoryImpl
+import com.example.sharkmentor.data.sync.VaultBackupDialog
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
+import com.example.sharkmentor.ui.screens.pdf.PdfOpenChoiceDialog
+import com.example.sharkmentor.ui.screens.pdf.PdfReaderActivity
 import com.example.sharkmentor.ui.theme.NotesPalette
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,6 +102,7 @@ fun NotesScreen(
     onEditorStateChanged: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val bgColor = androidx.compose.material3.MaterialTheme.colorScheme.background
     val cardColor = androidx.compose.material3.MaterialTheme.colorScheme.surface
     val textColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurface
@@ -112,6 +130,25 @@ fun NotesScreen(
     var editorPdfPreview by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var editorPdfPagePaths by remember { mutableStateOf<List<String>>(emptyList()) }
     var showEditor by remember { mutableStateOf(false) }
+    var pendingPickedPdf by remember { mutableStateOf<ImportedPdfFile?>(null) }
+    var showVaultBackupDialog by remember { mutableStateOf(false) }
+
+    val pdfPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                val copied = withContext(Dispatchers.IO) {
+                    PdfBitmapConverter.copyUriToPrivatePdfsDir(context, uri)
+                }
+                if (copied != null) {
+                    pendingPickedPdf = copied
+                } else {
+                    Toast.makeText(context, "PDF dosyası açılamadı.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     LaunchedEffect(showEditor) {
         onEditorStateChanged(showEditor)
@@ -134,6 +171,59 @@ fun NotesScreen(
             showEditor = true
             onImportedNoteConsumed()
         }
+    }
+
+    pendingPickedPdf?.let { pickedPdf ->
+        PdfOpenChoiceDialog(
+            title = pickedPdf.title,
+            pageCount = pickedPdf.pageCount,
+            onOpenAsPdfReader = {
+                val target = pickedPdf
+                pendingPickedPdf = null
+                context.startActivity(
+                    PdfReaderActivity.createIntent(
+                        context = context,
+                        pdfFilePath = target.localFile.absolutePath,
+                        title = target.title,
+                        skipChooser = true
+                    )
+                )
+            },
+            onOpenAsEditableNote = {
+                val target = pickedPdf
+                pendingPickedPdf = null
+                coroutineScope.launch {
+                    val extracted = withContext(Dispatchers.IO) {
+                        val fileUri = android.net.Uri.fromFile(target.localFile)
+                        DocumentTextExtractor.extractCleanText(
+                            context = context,
+                            uri = fileUri,
+                            displayName = target.displayName,
+                            mimeType = "application/pdf"
+                        ).trim()
+                    }
+                    val previewBmp = withContext(Dispatchers.IO) {
+                        PdfBitmapConverter.convertPdfUriToBitmaps(
+                            context = context,
+                            pdfUri = android.net.Uri.fromFile(target.localFile),
+                            maxPages = 1
+                        ).firstOrNull()
+                    }
+                    selectedNoteId = null
+                    editorInitialTitle = target.title
+                    editorInitialContent = extracted.ifBlank {
+                        "📄 ${target.title} (${target.pageCount} sayfa)\n\nNotlarınızı ve çizimlerinizi buraya ekleyebilirsiniz."
+                    }
+                    editorIncomingUri = android.net.Uri.fromFile(target.localFile)
+                    editorPdfPreview = previewBmp
+                    editorPdfPagePaths = emptyList()
+                    showEditor = true
+                }
+            },
+            onDismiss = {
+                pendingPickedPdf = null
+            }
+        )
     }
 
     if (showEditor) {
@@ -239,7 +329,7 @@ fun NotesScreen(
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = if (searchQuery.isNotBlank()) "Farklı bir arama terimi deneyebilirsiniz." else "Aşağıdaki + butonuna dokunarak yeni bir not oluşturabilirsiniz.",
+                                text = if (searchQuery.isNotBlank()) "Farklı bir arama terimi deneyebilirsiniz." else "Aşağıdaki + butonuna dokunarak yeni bir not oluşturabilir veya PDF simgesiyle PDF açabilirsiniz.",
                                 style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                                 color = textMutedColor,
                                 textAlign = TextAlign.Center
@@ -324,23 +414,41 @@ fun NotesScreen(
                 }
             }
 
-            FloatingActionButton(
-                onClick = {
-                    selectedNoteId = null
-                    editorInitialTitle = ""
-                    editorInitialContent = ""
-                    editorIncomingUri = null
-                    editorPdfPreview = null
-                    editorPdfPagePaths = emptyList()
-                    showEditor = true
-                },
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(24.dp),
-                containerColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
-                contentColor = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Yeni Not")
+                SmallFloatingActionButton(
+                    onClick = {
+                        pdfPickerLauncher.launch(arrayOf("application/pdf"))
+                    },
+                    containerColor = Color(0xFFEF4444),
+                    contentColor = Color.White
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PictureAsPdf,
+                        contentDescription = "PDF Aç / İçe Aktar"
+                    )
+                }
+
+                FloatingActionButton(
+                    onClick = {
+                        selectedNoteId = null
+                        editorInitialTitle = ""
+                        editorInitialContent = ""
+                        editorIncomingUri = null
+                        editorPdfPreview = null
+                        editorPdfPagePaths = emptyList()
+                        showEditor = true
+                    },
+                    containerColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                    contentColor = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Yeni Not")
+                }
             }
         }
     }
@@ -360,7 +468,12 @@ fun NotesScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        noteToDelete?.id?.let { viewModel.deleteNote(it) }
+                        noteToDelete?.id?.let { idStr ->
+                            viewModel.deleteNote(idStr)
+                            if (idStr.isNotBlank()) {
+                                DrawingSerializer.deleteNoteDrawing(context, idStr)
+                            }
+                        }
                         noteToDelete = null
                     }
                 ) {
@@ -376,6 +489,12 @@ fun NotesScreen(
                     Text("İptal")
                 }
             }
+        )
+    }
+
+    if (showVaultBackupDialog) {
+        VaultBackupDialog(
+            onDismiss = { showVaultBackupDialog = false }
         )
     }
 }

@@ -186,10 +186,54 @@ object AutoIntentClassifier {
         "hata kumbarasi",
         "klasörle",
         "klasorle",
-        "ekle"
+        "ekle",
+        "tüm konular",
+        "tum konular",
+        "müfredat",
+        "mufredat",
+        "konu hakimiyeti",
+        "kütüphane",
+        "kutuphane",
+        "kitabını",
+        "kitabini",
+        "kitapta",
+        "sayfaya kadar",
+        "teste kadar",
+        "işaretle",
+        "isaretle",
+        "hedef ekle",
+        "hedefi güncelle",
+        "hedefimi"
+    )
+
+    private val AUTONOMOUS_TOOL_KEYWORDS = listOf(
+        "haftalık plan",
+        "haftalik plan",
+        "çalışma programı",
+        "calisma programi",
+        "plana ekle",
+        "tüm konular",
+        "tum konular",
+        "müfredat",
+        "mufredat",
+        "konu hakimiyeti",
+        "sayfaya kadar",
+        "teste kadar",
+        "işaretle",
+        "isaretle",
+        "kitap ekle",
+        "kaynak ekle",
+        "hedef ekle",
+        "hedefleri ekle",
+        "hedefi güncelle"
     )
 
     private val MATH_SYMBOL_REGEX = Regex("([=\\+\\^√∫∑π÷×]|\\d+\\s*[\\+\\-\\*/=]\\s*\\d+)")
+
+    fun isComplexAutonomousActionIntent(text: String): Boolean {
+        val normalized = text.lowercase(Locale("tr")).trim()
+        return AUTONOMOUS_TOOL_KEYWORDS.any { normalized.contains(it) }
+    }
 
     fun classify(text: String, hasAttachment: Boolean = false): SharkAiEngine {
         val normalized = text.lowercase(Locale("tr")).trim()
@@ -199,17 +243,17 @@ object AutoIntentClassifier {
             return SharkAiEngine.TWIN_QUESTION_ENGINE
         }
 
-        // Rule B (Problem Solver / Scanner)
+        // Rule B (Planner / Autonomous Tool / Topic Mastery / Resource / Target Organizer)
+        if (PLANNER_KEYWORDS.any { normalized.contains(it) }) {
+            return SharkAiEngine.PLANNER_OR_ORGANIZER
+        }
+
+        // Rule C (Problem Solver / Scanner)
         // Image attachment alone does NOT force SolverEngine; user decides via prompt or action chips
         if (SOLVER_KEYWORDS.any { normalized.contains(it) } ||
             MATH_SYMBOL_REGEX.containsMatchIn(normalized)
         ) {
             return SharkAiEngine.SOLVER_ENGINE
-        }
-
-        // Rule C (Planner / Error Bank Organizer)
-        if (PLANNER_KEYWORDS.any { normalized.contains(it) }) {
-            return SharkAiEngine.PLANNER_OR_ORGANIZER
         }
 
         // Rule D (Default - Conversational Peer)
@@ -230,26 +274,28 @@ class AiRouterRepository(
 ) {
 
     companion object {
-        private val VISION_MODEL_TIERS = listOf(
-            "gemini-3.6-flash"
-        )
-        private val FAST_MODEL_TIERS = listOf(
-            "gemini-3.6-flash"
-        )
-        private val DEEP_MODEL_TIERS = listOf(
-            "gemini-3.6-flash"
-        )
+        const val SOLE_GEMINI_MODEL = "gemini-3.6-flash"
+        private val VISION_MODEL_TIERS = listOf(SOLE_GEMINI_MODEL)
+        private val FAST_MODEL_TIERS = listOf(SOLE_GEMINI_MODEL)
+        private val DEEP_MODEL_TIERS = listOf(SOLE_GEMINI_MODEL)
 
         const val MANDATORY_PERSONA_RULES = """
 KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
 1. SIFIR YALAKALIK & GİRİŞ YASAĞI: "Harika bir soru!", "Çok güzel düşünmüşsün!", "Merhaba! Sana bugün nasıl yardımcı olabilirim?" gibi yapay övgüleri ve kurumsal giriş cümlelerini KESİNLİKLE KULLANMA. Doğrudan konuya veya çözüme gir.
 2. ORANTILI UZUNLUK:
    - Kullanıcı yalnızca "Merhaba", "Selam", "Nasılsın" gibi kısa bir selam verirse MAKSİMUM 1 KISA CÜMLE ile yanıt ver (Örn: "Selam! Bugün hangi derse veya soruya odaklanıyoruz?"). Selamlamaya asla paragraflarca yanıt yazma.
-   - Çok adımlı matematik/fen işlemi çözmüyorsan standart açıklamalarını 4-6 kısa ve net cümleyle sınırla.
+   - Seçilen yanıt gücüne (Hızlı vs Detaylı) sadık kal.
 3. SOHBET KANCASI (KAPIYI KAPATMA):
    - Yanıtlarını "Başarılar dilerim, başka sorun varsa sorabilirsin" gibi sohbeti bitiren klişelerle BİTİRME.
    - Bunun yerine öğrenciyi akışta tutan tek cümlelik doğal bir takip sorusu (kanca) sor (Örn: "Bu adımda kafana yatmayan bir yer var mı, yoksa benzer bir ikiz soruyla pekiştirelim mi?").
 """
+
+        fun getDepthDirective(modelPower: AiModelPower): String = when (modelPower) {
+            AiModelPower.FLASH ->
+                "\n[YANIT DERİNLİĞİ: HIZLI MOD (DÜŞÜK KOTA)] -> Lafı uzatma; 3-5 net, vurucu cümlede doğrudan özeti veya pratik çözümü ver."
+            AiModelPower.PRO ->
+                "\n[YANIT DERİNLİĞİ: DETAYLI MOD (DERİN SENTEZ)] -> Konuyu veya soruyu yüzeysel geçme; mantığını, adım adım çıkarımını, kavramsal arka planını, ÖSYM/MEB sınav tuzaklarını ve somut örneklerini derinlemesine açıkla."
+        }
 
         const val SOLVER_ENGINE_SYSTEM_PROMPT = """
 Sen YKS/LGS düzeyinde uzman, pedagojik ve analitik bir Soru Çözüm Motorusun.
@@ -306,12 +352,12 @@ $MANDATORY_PERSONA_RULES
         const val TWIN_QUESTION_SYSTEM_PROMPT = TWIN_QUESTION_ENGINE_SYSTEM_PROMPT
 
         const val AUTONOMOUS_PLANNER_SYSTEM_PROMPT = """
-Sen SharkMentor Otonom Programlayıcı ve Koç Motorusun.
-Öğrencinin haftalık çalışma planını hazırlar, takvime görev ekler, kaynak/kitap ve konu hedefleri atarsın.
+Sen SharkMentor Otonom Programlayıcı, Kütüphane ve Konu Hakimiyeti Motorusun.
+Öğrencinin haftalık çalışma planını hazırlar, takvime görev ekler, mevcut kaynak/kitap ilerlemesini günceller, yeni kaynak ekler ve TYT/AYT konularını eksiksiz olarak konu hakimiyetine işlersin.
 
 KURALLAR VE EYLEM YÖNETİMİ:
 1. Sohbet metninde öğrenciye hitaben 2-4 cümlelik samimi, motive edici ve net bir Türkçe açıklama/özet yaz.
-2. Yapılan veya önerilen işlemi sisteme işlemek için mesajının EN SONUNA ilgili JSON eylem bloğunu ekle:
+2. Yapılan veya önerilen işlemi sisteme işlemek için mesajının EN SONUNA ilgili JSON eylem bloğunu (#ACTION:{...}#) ekle:
 
 HAFTALIK 7 GÜNLÜK PLAN OLUŞTURMA:
 #ACTION:{"type":"CREATE_WEEKLY_PLAN","title":"Haftalık Çalışma Programı","summary":"Strateji özeti","schedule":[{"dayOfWeek":1,"timeSlot":"09:00 - 10:30","subject":"Matematik","topic":"Türev","targetQuestions":40}]}#
@@ -319,14 +365,25 @@ HAFTALIK 7 GÜNLÜK PLAN OLUŞTURMA:
 TEKİL GÖREV EKLEME:
 #ACTION:{"type":"INSERT_PLAN_TASK","day":1,"time":"16:00 - 17:30","subject":"Fizik","topic":"Kuvvet ve Hareket","questions":30}#
 
-HEDEF EKLEME (Net veya Soru Hedefi):
+TOPLU KONU HAKİMİYETİ EKLEME (Örn: "TYT tüm konular", "AYT tüm konular" veya müfredat görseli/listesi istendiğinde ASLA tek boş klasör açma; preset veya topics dizisiyle tüm alt konuları gönder):
+#ACTION:{"type":"INSERT_TOPICS_BATCH","exam":"TYT","preset":"TYT_ALL","topics":[{"subject":"TYT Türkçe","topic":"Sözcükte Anlam","targetLevel":5},{"subject":"TYT Matematik","topic":"Temel Kavramlar","targetLevel":5}]}#
+
+TEKİL KONU HEDEFİ EKLEME / GÜNCELLEME:
+#ACTION:{"type":"INSERT_TOPIC","subject":"Biyoloji","topic":"Kalıtım ve Genetik","currentLevel":1,"targetLevel":5}#
+#ACTION:{"type":"UPDATE_TOPIC_PROGRESS","subject":"Biyoloji","topic":"Kalıtım ve Genetik","currentLevel":4}#
+
+MEVCUT KAYNAK / KİTAP İLERLEMESİ GÜNCELLEME (Öğrenci "X kitabını 45. sayfaya/teste kadar çözdüm işaretle" dediğinde YENİ KİTAP AÇMA, mevcut kitabı güncelle!):
+#ACTION:{"type":"UPDATE_RESOURCE_PROGRESS","resourceId":0,"title":"Kitap Adı","completedUnits":45,"unitType":"Sayfa","isIncremental":false}#
+
+YENİ KAYNAK / KİTAP EKLEME (Yalnızca kütüphanede henüz yoksa):
+#ACTION:{"type":"INSERT_RESOURCE","title":"3D AYT Matematik Soru Bankası","subject":"Matematik","totalUnits":48,"completedUnits":0,"unitType":"Test"}#
+
+TEKİL VEYA TOPLU HEDEF EKLEME:
 #ACTION:{"type":"INSERT_TARGET","title":"TYT Türkçe 35+ Net","description":"Haftalık deneme ve paragraf rutini","type":"SHORT_TERM","period":"WEEKLY","targetQuestions":150,"priority":"HIGH"}#
+#ACTION:{"type":"INSERT_TARGETS_BATCH","targets":[{"title":"TYT Türkçe 35+ Net","description":"Haftalık paragraf rutini","type":"SHORT_TERM","period":"WEEKLY","targetQuestions":150,"priority":"HIGH"}]}#
 
-KAYNAK / KİTAP EKLEME:
-#ACTION:{"type":"INSERT_RESOURCE","title":"3D AYT Matematik Soru Bankası","subject":"Matematik","totalUnits":48,"unitType":"Test"}#
-
-KONU HEDEFİ EKLEME:
-#ACTION:{"type":"INSERT_TOPIC","subject":"Biyoloji","topic":"Kalıtım ve Genetik","targetLevel":5}#
+MEVCUT HEDEF İLERLEMESİNİ GÜNCELLEME:
+#ACTION:{"type":"UPDATE_TARGET_PROGRESS","targetId":0,"title":"TYT Türkçe 35+ Net","solvedQuestions":60,"isCompleted":false,"isIncremental":false}#
 $MANDATORY_PERSONA_RULES
 """
 
@@ -612,16 +669,22 @@ $MANDATORY_PERSONA_RULES
         systemInstruction: String,
         attachmentUri: Uri,
         activeEngine: SharkAiEngine = SharkAiEngine.SOLVER_ENGINE,
+        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
         val attachments = resolveMultimodalAttachment(attachmentUri)
         val keyCount = ApiKeyRotator.getKeyCount().coerceAtLeast(1)
         var lastException: Throwable? = null
 
+        val enrichedSystemInstruction = buildString {
+            append(systemInstruction.trim())
+            append(getDepthDirective(modelPower))
+        }.trim()
+
         val visionConfig = generationConfig {
-            temperature = 0.1f // Strictly 0.1f for accurate OCR & Math problem reading
-            maxOutputTokens = 8192
-            topP = 0.8f
+            temperature = if (modelPower == AiModelPower.PRO) 0.2f else 0.1f
+            maxOutputTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096
+            topP = 0.85f
         }
 
         for (modelName in VISION_MODEL_TIERS) {
@@ -639,14 +702,13 @@ $MANDATORY_PERSONA_RULES
                 }
 
                 try {
-                    val cleanModelName = modelName.trim().removePrefix("models/").removePrefix("/")
                     val model = GenerativeModel(
-                        modelName = cleanModelName,
+                        modelName = SOLE_GEMINI_MODEL,
                         apiKey = activeKey,
                         generationConfig = visionConfig,
                         tools = emptyList(), // Strictly tools = emptyList() for vision requests
-                        systemInstruction = if (systemInstruction.isNotBlank()) {
-                            content { text(systemInstruction) }
+                        systemInstruction = if (enrichedSystemInstruction.isNotBlank()) {
+                            content { text(enrichedSystemInstruction) }
                         } else null,
                         requestOptions = RequestOptions(timeout = 60_000L)
                     )
@@ -680,12 +742,13 @@ $MANDATORY_PERSONA_RULES
                         "Görsel incelendi ve çözüldü."
                     }
 
+                    val parsedActionNotes = parseInlineActionNotes(finalText)
                     onPartialText(finalText)
 
                     return@withContext Result.success(
                         AiRouterResult(
                             text = finalText,
-                            executedToolNotes = emptyList(),
+                            executedToolNotes = parsedActionNotes,
                             createdPlanFolderId = null,
                             engineUsed = activeEngine
                         )
@@ -715,14 +778,12 @@ $MANDATORY_PERSONA_RULES
                         ApiKeyRotator.rotateToNextKey()
                         delay(backoffMs)
                         if (attempt >= 2) {
-                            // Advance to next fallback model tier
                             break
                         }
                     } else if (isKeyOrQuota) {
                         ApiKeyRotator.rotateToNextKey()
                         delay(250L)
                     } else if (msg.contains("404") || msg.contains("not_found") || msg.contains("no longer available") || msg.contains("not found for api version")) {
-                        // Model not supported, advance to next model tier
                         break
                     } else {
                         ApiKeyRotator.rotateToNextKey()
@@ -740,17 +801,19 @@ $MANDATORY_PERSONA_RULES
                 Log.i("SharkAiVision", "Gemini vision exhausted, falling back to Kimi Vision...")
                 try {
                     val kimiResult = DeepSeekClient.streamKimiVisionCompletion(
-                        systemPrompt = systemInstruction,
+                        systemPrompt = enrichedSystemInstruction,
                         userPrompt = prompt,
                         base64Image = base64Img,
                         mimeType = attachments.mimeType ?: "image/jpeg",
+                        maxTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096,
                         onAccumulatedChunk = onPartialText
                     )
                     if (kimiResult.isNotBlank()) {
+                        val parsedActionNotes = parseInlineActionNotes(kimiResult)
                         return@withContext Result.success(
                             AiRouterResult(
                                 text = kimiResult,
-                                executedToolNotes = emptyList(),
+                                executedToolNotes = parsedActionNotes,
                                 createdPlanFolderId = null,
                                 engineUsed = activeEngine
                             )
@@ -768,37 +831,18 @@ $MANDATORY_PERSONA_RULES
     }
 
     /**
-     * Dedicated Text/Chat streaming pipeline powered by DeepSeek API with automatic Kimi fallback.
+     * Parses inline `#ACTION:{...}#` tags for both Text and Vision pipelines.
      */
-    suspend fun executeTextStream(
-        activeEngine: SharkAiEngine = SharkAiEngine.CONVERSATIONAL_PEER,
-        prompt: String,
-        systemInstruction: String,
-        chatHistory: List<com.example.sharkmentor.core.ai.OpenAiChatMessage> = emptyList(),
-        modelPower: AiModelPower = AiModelPower.FLASH,
-        onPartialText: (String) -> Unit = {}
-    ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
-        try {
-            val temp = if (modelPower == AiModelPower.PRO) 0.4f else 0.25f
-            val maxTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096
-
-            val resultText = DeepSeekClient.streamChatCompletion(
-                systemPrompt = systemInstruction,
-                userPrompt = prompt,
-                chatHistory = chatHistory,
-                temperature = temp,
-                maxTokens = maxTokens,
-                onAccumulatedChunk = onPartialText
-            )
-
-            val parsedActionNotes = mutableListOf<String>()
-            val actionRegex = Regex("#ACTION:(\\{.*?\\})#")
-            for (match in actionRegex.findAll(resultText)) {
-                val jsonPayload = match.groupValues[1]
-                runCatching {
-                    val jsonObj = Gson().fromJson(jsonPayload, JsonObject::class.java)
-                    val actionType = jsonObj.get("type")?.asString
-                    if (actionType == "INSERT_TASK") {
+    private suspend fun parseInlineActionNotes(resultText: String): List<String> {
+        val parsedActionNotes = mutableListOf<String>()
+        val actionRegex = Regex("#ACTION:(\\{.*?\\})#", setOf(RegexOption.DOT_MATCHES_ALL))
+        for (match in actionRegex.findAll(resultText)) {
+            val jsonPayload = match.groupValues[1]
+            runCatching {
+                val jsonObj = Gson().fromJson(jsonPayload, JsonObject::class.java)
+                val actionType = jsonObj.get("type")?.asString?.uppercase(Locale.ROOT)
+                when (actionType) {
+                    "INSERT_TASK" -> {
                         val day = jsonObj.get("day")?.asInt ?: 1
                         val subj = jsonObj.get("subject")?.asString ?: "Ders"
                         val top = jsonObj.get("topic")?.asString ?: "Çalışma"
@@ -817,8 +861,80 @@ $MANDATORY_PERSONA_RULES
                         planDao.insertTasks(listOf(planEntity))
                         parsedActionNotes.add("Plan eklendi: $subj • $top ($qCount Soru)")
                     }
+                    "INSERT_TOPICS_BATCH" -> {
+                        parsedActionNotes.add("Konu hakimiyeti listesi işlendi.")
+                    }
+                    "UPDATE_RESOURCE_PROGRESS" -> {
+                        parsedActionNotes.add("Kütüphane kaynak ilerlemesi güncellendi.")
+                    }
+                    "INSERT_TARGETS_BATCH", "UPDATE_TARGET_PROGRESS" -> {
+                        parsedActionNotes.add("Hedef ilerlemesi güncellendi.")
+                    }
                 }
             }
+        }
+        return parsedActionNotes
+    }
+
+    /**
+     * Dedicated Text/Chat streaming pipeline:
+     * - Complex autonomous action/tool generation -> `gemini-3.6-flash` primary, DeepSeek/Kimi fallback.
+     * - Long text/document context summary -> `Kimi` primary, DeepSeek -> `gemini-3.6-flash` fallback.
+     * - Peer chat, "Detaylı" (`AiModelPower.PRO`) deep topic synthesis & explanations, short-medium note summaries -> `DeepSeek` primary, `Kimi` immediate fallback, `gemini-3.6-flash` critical fallback.
+     */
+    suspend fun executeTextStream(
+        activeEngine: SharkAiEngine = SharkAiEngine.CONVERSATIONAL_PEER,
+        prompt: String,
+        systemInstruction: String,
+        chatHistory: List<com.example.sharkmentor.core.ai.OpenAiChatMessage> = emptyList(),
+        modelPower: AiModelPower = AiModelPower.FLASH,
+        onPartialText: (String) -> Unit = {}
+    ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
+        val enrichedSystemInstruction = buildString {
+            append(systemInstruction.trim())
+            append(getDepthDirective(modelPower))
+        }.trim()
+
+        val isAutonomousActionRequest = activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER ||
+            AutoIntentClassifier.isComplexAutonomousActionIntent(prompt)
+
+        if (isAutonomousActionRequest) {
+            val geminiActionAttempt = streamGeminiTextFallback(
+                activeEngine = activeEngine,
+                prompt = prompt,
+                systemInstruction = enrichedSystemInstruction,
+                modelPower = modelPower,
+                overrideMaxTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096,
+                forceInlineActionMode = true,
+                onPartialText = onPartialText
+            )
+            if (geminiActionAttempt.isSuccess) {
+                return@withContext geminiActionAttempt
+            }
+            Log.w("AiRouterRepository", "Gemini autonomous action call failed, falling back to DeepSeek/Kimi...")
+        }
+
+        try {
+            val temp = if (modelPower == AiModelPower.PRO) 0.4f else 0.25f
+            // Low quota consumption in Hızlı mode (1536 tokens) vs deep synthesis in Detaylı mode (4096 tokens)
+            val maxTokens = when {
+                isAutonomousActionRequest -> 4096
+                modelPower == AiModelPower.PRO -> 4096
+                else -> 1536
+            }
+            val preferKimi = DeepSeekClient.isLongContextPrompt(prompt, enrichedSystemInstruction)
+
+            val resultText = DeepSeekClient.streamChatCompletion(
+                systemPrompt = enrichedSystemInstruction,
+                userPrompt = prompt,
+                chatHistory = chatHistory,
+                temperature = temp,
+                maxTokens = maxTokens,
+                preferKimiLongContext = preferKimi,
+                onAccumulatedChunk = onPartialText
+            )
+
+            val parsedActionNotes = parseInlineActionNotes(resultText)
 
             Result.success(
                 AiRouterResult(
@@ -829,11 +945,11 @@ $MANDATORY_PERSONA_RULES
                 )
             )
         } catch (e: Exception) {
-            Log.w("AiRouterRepository", "DeepSeek/Kimi text stream failed (${e.message}), attempting Gemini fallback...", e)
+            Log.w("AiRouterRepository", "DeepSeek/Kimi text stream failed (${e.message}), attempting Gemini (gemini-3.6-flash) critical fallback...", e)
             streamGeminiTextFallback(
                 activeEngine = activeEngine,
                 prompt = prompt,
-                systemInstruction = systemInstruction,
+                systemInstruction = enrichedSystemInstruction,
                 modelPower = modelPower,
                 onPartialText = onPartialText
             )
@@ -841,7 +957,7 @@ $MANDATORY_PERSONA_RULES
     }
 
     /**
-     * Core hybrid router: Routes Multimodal/Vision to Gemini Vision, Text-only to DeepSeek (with Kimi fallback).
+     * Core hybrid router: Routes Multimodal/Vision to Gemini Vision, Text-only to DeepSeek/Kimi/Gemini.
      */
     private suspend fun streamEnginePipeline(
         activeEngine: SharkAiEngine,
@@ -859,6 +975,7 @@ $MANDATORY_PERSONA_RULES
                 systemInstruction = systemInstruction,
                 attachmentUri = attachmentUri,
                 activeEngine = activeEngine,
+                modelPower = modelPower,
                 onPartialText = onPartialText
             )
         } else {
@@ -874,7 +991,7 @@ $MANDATORY_PERSONA_RULES
     }
 
     /**
-     * Fallback Gemini streaming execution pipeline if external providers are unavailable.
+     * Gemini (`gemini-3.6-flash`) streaming execution pipeline for complex autonomous action generation and critical fallback.
      */
     private suspend fun streamGeminiTextFallback(
         activeEngine: SharkAiEngine,
@@ -882,12 +999,13 @@ $MANDATORY_PERSONA_RULES
         systemInstruction: String,
         modelPower: AiModelPower = AiModelPower.FLASH,
         overrideMaxTokens: Int? = null,
+        forceInlineActionMode: Boolean = false,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
         val keyCount = ApiKeyRotator.getKeyCount().coerceAtLeast(1)
         var lastException: Throwable? = null
         val modelTiers = if (modelPower == AiModelPower.PRO) DEEP_MODEL_TIERS else FAST_MODEL_TIERS
-        val shouldAttachTools = activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER
+        val shouldAttachTools = !forceInlineActionMode && activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER
 
         for (modelName in modelTiers) {
             for (attempt in 0 until keyCount) {
@@ -970,6 +1088,9 @@ $MANDATORY_PERSONA_RULES
                         "İşleminiz tamamlandı."
                     }
 
+                    val inlineNotes = parseInlineActionNotes(finalText)
+                    toolNotes.addAll(inlineNotes)
+
                     onPartialText(finalText)
 
                     return@withContext Result.success(
@@ -1010,7 +1131,7 @@ $MANDATORY_PERSONA_RULES
                         // Immediate tool-free streaming fallback on the same fast model
                         val fallbackResult = runCatching {
                             val fallbackModel = createModel(
-                                modelName = modelName,
+                                modelName = SOLE_GEMINI_MODEL,
                                 apiKey = activeKey,
                                 systemInstruction = systemInstruction,
                                 modelPower = modelPower,
@@ -1032,6 +1153,7 @@ $MANDATORY_PERSONA_RULES
                             return@withContext Result.success(
                                 AiRouterResult(
                                     text = fallbackResult,
+                                    executedToolNotes = parseInlineActionNotes(fallbackResult),
                                     engineUsed = activeEngine
                                 )
                             )
@@ -1057,9 +1179,8 @@ $MANDATORY_PERSONA_RULES
         overrideMaxTokens: Int? = null,
         enableTools: Boolean = false
     ): GenerativeModel {
-        val cleanModelName = modelName.trim().removePrefix("models/").removePrefix("/")
         return GenerativeModel(
-            modelName = cleanModelName,
+            modelName = SOLE_GEMINI_MODEL,
             apiKey = apiKey,
             generationConfig = modelPower.toGenerationConfig(overrideMaxTokens),
             tools = if (enableTools) listOf(autonomousSharkTool) else emptyList(),

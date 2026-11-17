@@ -265,12 +265,112 @@ class ErrorBankViewModel(application: Application, savedStateHandle: androidx.li
     }
 
     /**
-     * Manually reassigns the AI topic tag for a question.
-     * Updates Room and re-enqueues sync.
+     * Manually reassigns the topic tag for a question within its current subject.
+     * Updates Room, refreshes state, and enqueues immediate Cloud Sync.
      */
     fun updateQuestionTopic(questionId: Long, newTopic: String) {
+        val cleanTopic = newTopic.trim().ifBlank { "Genel" }
+        val existing = _allQuestions.value.find { it.id == questionId }
+        if (existing != null) {
+            reclassifyQuestion(
+                questionId = questionId,
+                newSubject = existing.subject,
+                newTopic = cleanTopic,
+                aiTopic = cleanTopic
+            )
+        } else {
+            viewModelScope.launch(Dispatchers.IO) {
+                dao?.updateAiTopic(questionId, cleanTopic)
+                refreshDueQuestions()
+                com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
+            }
+        }
+    }
+
+    /**
+     * Updates a question's subject, topic, and aiTopic in Room (`isSynced = false`),
+     * updates preview/session state, refreshes due counts, and triggers immediate Cloud Sync.
+     */
+    fun reclassifyQuestion(
+        questionId: Long,
+        newSubject: String,
+        newTopic: String,
+        aiTopic: String? = newTopic,
+        onCompleted: (() -> Unit)? = null
+    ) {
+        val cleanSubject = newSubject.trim().ifBlank { "Matematik" }
+        val cleanTopic = newTopic.trim().ifBlank { "Genel" }
+        val cleanAiTopic = aiTopic?.trim()?.takeIf { it.isNotBlank() } ?: cleanTopic
+
         viewModelScope.launch(Dispatchers.IO) {
-            dao?.updateAiTopic(questionId, newTopic)
+            val db = com.example.sharkmentor.data.local.SharkMentorDatabase.getDatabase(getApplication())
+            val activeDao = dao ?: db.errorQuestionDao().also { dao = it }
+            activeDao.updateQuestionClassification(
+                id = questionId,
+                subject = cleanSubject,
+                topic = cleanTopic,
+                aiTopic = cleanAiTopic
+            )
+
+            // Keep previewQuestion in sync if currently open
+            val currentPreview = _previewQuestion.value
+            if (currentPreview != null && currentPreview.id == questionId) {
+                _previewQuestion.value = currentPreview.copy(
+                    subject = cleanSubject,
+                    topic = cleanTopic,
+                    aiTopic = cleanAiTopic,
+                    isSynced = false,
+                    lastModifiedMillis = System.currentTimeMillis()
+                )
+            }
+
+            refreshDueQuestions()
+            com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
+
+            if (onCompleted != null) {
+                withContext(Dispatchers.Main) {
+                    onCompleted()
+                }
+            }
+        }
+    }
+
+    /**
+     * On-demand AI reclassification using ONLY `gemini-3.6-flash` (with strict
+     * Physics / Chemistry / Biology disambiguation).
+     */
+    fun reclassifyQuestionWithAi(
+        question: ErrorQuestionEntity,
+        onResult: ((resolvedSubject: String, resolvedTopic: String) -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val result = com.example.sharkmentor.worker.TopicTaggingWorker.classifyQuestionWithGemini(
+                    context = context,
+                    question = question
+                )
+                if (result != null) {
+                    val (resolvedSubject, resolvedTopic) = result
+                    reclassifyQuestion(
+                        questionId = question.id,
+                        newSubject = resolvedSubject,
+                        newTopic = resolvedTopic,
+                        aiTopic = resolvedTopic,
+                        onCompleted = {
+                            onResult?.invoke(resolvedSubject, resolvedTopic)
+                        }
+                    )
+                } else {
+                    withContext(Dispatchers.Main) {
+                        onError?.invoke("AI sınıflandırma yanıtı alınamadı.")
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onError?.invoke("AI sınıflandırma hatası: ${e.localizedMessage ?: "Bilinmeyen hata"}")
+                }
+            }
         }
     }
 

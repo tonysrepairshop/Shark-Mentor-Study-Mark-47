@@ -30,10 +30,10 @@ enum class AiTaskType(
 }
 
 object GeminiAiFactory {
-    const val VISION_MODEL = "gemini-3.6-flash"
-    const val FAST_MODEL_3_6 = "gemini-3.6-flash"
-    const val DEEP_MODEL_3_8 = "gemini-3.6-flash"
-    const val FALLBACK_MODEL_3_6 = "gemini-3.6-flash"
+    const val SOLE_GEMINI_MODEL = "gemini-3.6-flash"
+    const val VISION_MODEL = SOLE_GEMINI_MODEL
+    const val FAST_MODEL_3_6 = SOLE_GEMINI_MODEL
+    const val FALLBACK_MODEL_3_6 = SOLE_GEMINI_MODEL
 
     val VISION_PRESET_CONFIG: GenerationConfig = generationConfig {
         temperature = 0.1f
@@ -54,12 +54,8 @@ object GeminiAiFactory {
     }
 
     fun sanitizeModelName(name: String): String {
-        val cleaned = name.trim().removePrefix("models/").removePrefix("/")
-        return when {
-            cleaned.isBlank() -> FAST_MODEL_3_6
-            cleaned.contains("preview", ignoreCase = true) || cleaned.contains("exp", ignoreCase = true) -> FAST_MODEL_3_6
-            else -> cleaned
-        }
+        // Strict Model Policy: Only gemini-3.6-flash is allowed across all Gemini API calls
+        return SOLE_GEMINI_MODEL
     }
 
     fun resolveCleanApiKey(overrideKey: String? = null): String {

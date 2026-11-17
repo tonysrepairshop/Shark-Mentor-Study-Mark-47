@@ -3,21 +3,26 @@ package com.example.sharkmentor.core.widget
 import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
+import androidx.glance.Image
+import androidx.glance.ImageProvider
+import androidx.glance.LocalContext
+import androidx.glance.LocalSize
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
+import androidx.glance.appwidget.LinearProgressIndicator
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
-import androidx.glance.appwidget.updateAll
 import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
@@ -29,279 +34,333 @@ import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
 import androidx.glance.layout.padding
+import androidx.glance.layout.size
 import androidx.glance.layout.width
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
-import androidx.glance.unit.ColorProvider
 import com.example.sharkmentor.MainActivity
-import com.example.sharkmentor.core.analytics.MasteryScoreEngine
-import com.example.sharkmentor.data.local.SharkMentorDatabase
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.util.Calendar
+import com.example.sharkmentor.R
 
 class SharkMentorWidget : GlanceAppWidget() {
 
-    override val sizeMode: SizeMode = SizeMode.Exact
+    companion object {
+        private val SIZE_COMPACT = DpSize(180.dp, 80.dp)
+        private val SIZE_MEDIUM = DpSize(250.dp, 120.dp)
+        private val SIZE_EXPANDED = DpSize(300.dp, 170.dp)
+    }
+
+    override val sizeMode: SizeMode = SizeMode.Responsive(
+        setOf(SIZE_COMPACT, SIZE_MEDIUM, SIZE_EXPANDED)
+    )
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val (masteryScore, todayFocusMins, pendingReviews) = withContext(Dispatchers.IO) {
-            try {
-                val db = SharkMentorDatabase.getDatabase(context)
-
-                val errors = db.errorQuestionDao().getAllQuestionsRaw()
-                val now = System.currentTimeMillis()
-                val dueCount = errors.count { it.state == 0 || it.dueDateMillis <= now }
-
-                val cal = Calendar.getInstance().apply {
-                    set(Calendar.HOUR_OF_DAY, 0)
-                    set(Calendar.MINUTE, 0)
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                }
-                val startOfDay = cal.timeInMillis
-                val focusSessions = db.sessionDao().getSessionsSince(startOfDay)
-                val todayMins = focusSessions.sumOf { it.durationSeconds / 60 }
-
-                val topics = db.goalsDao().getAllTopicsRaw()
-                val resources = db.goalsDao().getAllResourcesRaw()
-                val allFocus = db.sessionDao().getAllSessionsRaw()
-                val totalFocusMinutes = allFocus.sumOf { it.durationSeconds / 60 }
-
-                val reflections = db.dailyReflectionDao().getRecentReflectionsRaw()
-                val avgScore = if (reflections.isNotEmpty()) reflections.map { it.productivityScore }.average().toFloat() else null
-
-                val report = MasteryScoreEngine.calculate(
-                    topics = topics,
-                    resources = resources,
-                    errorQuestions = errors,
-                    totalFocusMinutes = totalFocusMinutes,
-                    recentReflectionAvg = avgScore
-                )
-
-                Triple(report.overallScore, todayMins, dueCount)
-            } catch (_: Exception) {
-                Triple(0, 0L, 0)
-            }
-        }
+        val snapshot = WidgetUpdateManager.loadSnapshot(context)
 
         provideContent {
             GlanceTheme {
-                WidgetLayout(
-                    masteryScore = masteryScore,
-                    todayFocusMins = todayFocusMins,
-                    pendingReviews = pendingReviews
-                )
+                WidgetLayout(snapshot = snapshot)
             }
         }
     }
 
     @Composable
-    private fun WidgetLayout(
-        masteryScore: Int,
-        todayFocusMins: Long,
-        pendingReviews: Int
-    ) {
-        // Color Palette
-        val darkBg = Color(0xFF0B132B)           // Deep Ocean Navy
-        val cardBg = Color(0xFF1E293B)           // Slate Container
-        val offWhite = Color(0xFFF8FAFC)         // Crisp Broken White
-        val textSecondary = Color(0xFF94A3B8)    // Muted Slate Grey
-        val signaturePurple = Color(0xFF7C3AED)  // App Signature Vibrant Purple
-        val alertAmber = Color(0xFFF59E0B)
-        val successGreen = Color(0xFF10B981)
+    private fun WidgetLayout(snapshot: WidgetSnapshot) {
+        val context = LocalContext.current
+        val size = LocalSize.current
+        val isCompact = size.height < 110.dp
+        val isExpanded = size.height >= 155.dp
 
-        val openAppIntent = Intent(androidx.glance.LocalContext.current, MainActivity::class.java).apply {
+        val openHomeIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("EXTRA_TARGET_ROUTE", "home")
         }
-
-        val startFocusIntent = Intent(androidx.glance.LocalContext.current, MainActivity::class.java).apply {
+        val openAnalyticsIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("EXTRA_TARGET_ROUTE", "analytics")
+        }
+        val openErrorBankIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("EXTRA_TARGET_ROUTE", "error_bank")
+        }
+        val startFocusIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("EXTRA_START_FOCUS", true)
+            putExtra("EXTRA_TARGET_ROUTE", "home")
         }
+
+        val hasPending = snapshot.pendingReviews > 0
+        val goalProgress = (snapshot.todayFocusMinutes.toFloat() / snapshot.dailyGoalMinutes.toFloat())
+            .coerceIn(0f, 1f)
 
         Box(
             modifier = GlanceModifier
                 .fillMaxSize()
-                .background(darkBg)
-                .cornerRadius(18.dp)
-                .padding(10.dp)
-                .clickable(actionStartActivity(openAppIntent))
+                .background(WidgetThemeTokens.DeepOceanBg)
+                .cornerRadius(24.dp)
+                .padding(if (isCompact) 10.dp else 12.dp)
+                .clickable(actionStartActivity(openHomeIntent))
         ) {
             Column(modifier = GlanceModifier.fillMaxSize()) {
-
-                // 1. HEADER ROW: Title (Shark Study Mentor) + Status Badge + Refresh Button
+                // Header Row
                 Row(
-                    modifier = GlanceModifier.fillMaxWidth().height(24.dp),
+                    modifier = GlanceModifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Shark Study Mentor Title Hierarchy
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "Shark ",
-                            style = TextStyle(
-                                color = ColorProvider(offWhite),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                        Text(
-                            text = "Study ",
-                            style = TextStyle(
-                                color = ColorProvider(textSecondary),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        )
-                        Text(
-                            text = "Mentor",
-                            style = TextStyle(
-                                color = ColorProvider(offWhite),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
+                    Text(
+                        text = "SharkMentor",
+                        style = TextStyle(
+                            color = WidgetThemeTokens.OffWhite,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        maxLines = 1
+                    )
 
                     Spacer(modifier = GlanceModifier.defaultWeight())
 
-                    // Status Badge (Shifted slightly left)
+                    // Pending Errors / Queue Status Badge (Direct jump to Error Bank)
                     Box(
                         modifier = GlanceModifier
-                            .background(if (pendingReviews > 0) alertAmber.copy(alpha = 0.25f) else successGreen.copy(alpha = 0.25f))
-                            .cornerRadius(6.dp)
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .background(if (hasPending) WidgetThemeTokens.AlertAmberBg else WidgetThemeTokens.SuccessGreenBg)
+                            .cornerRadius(10.dp)
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                            .clickable(actionStartActivity(openErrorBankIntent))
                     ) {
                         Text(
-                            text = if (pendingReviews > 0) "$pendingReviews Tekrar" else "Kuyruk Temiz",
+                            text = if (hasPending) "${snapshot.pendingReviews} Tekrar" else "Kuyruk Temiz",
                             style = TextStyle(
-                                color = ColorProvider(if (pendingReviews > 0) alertAmber else successGreen),
+                                color = if (hasPending) WidgetThemeTokens.AlertAmber else WidgetThemeTokens.SuccessGreen,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold
-                            )
+                            ),
+                            maxLines = 1
                         )
                     }
 
                     Spacer(modifier = GlanceModifier.width(6.dp))
 
-                    // Manual Refresh Button (🔄)
+                    // Refresh Action Button
                     Box(
                         modifier = GlanceModifier
-                            .background(cardBg)
-                            .cornerRadius(6.dp)
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .size(26.dp)
+                            .background(WidgetThemeTokens.ElevatedCardBg)
+                            .cornerRadius(13.dp)
                             .clickable(actionRunCallback<RefreshWidgetAction>()),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "🔄",
-                            style = TextStyle(
-                                color = ColorProvider(offWhite),
-                                fontSize = 11.sp
-                            )
+                        Image(
+                            provider = ImageProvider(R.drawable.ic_widget_refresh),
+                            contentDescription = "Yenile",
+                            modifier = GlanceModifier.size(14.dp),
+                            colorFilter = ColorFilter.tint(WidgetThemeTokens.IceBlue)
                         )
                     }
                 }
 
-                Spacer(modifier = GlanceModifier.height(6.dp))
+                Spacer(modifier = GlanceModifier.height(8.dp))
 
-                // 2. METRIC CARDS ROW (Ustalık, Bugün Odak, Mor Odaklan Butonu)
+                // Metric Cards Row
                 Row(
                     modifier = GlanceModifier
                         .fillMaxWidth()
                         .defaultWeight(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // KART 1: Genel Ustalık
+                    // Card 1: Mastery Score -> Analytics
                     Box(
                         modifier = GlanceModifier
                             .defaultWeight()
                             .fillMaxHeight()
-                            .background(cardBg)
-                            .cornerRadius(10.dp)
-                            .padding(4.dp),
+                            .background(WidgetThemeTokens.ElevatedCardBg)
+                            .cornerRadius(16.dp)
+                            .padding(6.dp)
+                            .clickable(actionStartActivity(openAnalyticsIntent)),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            if (!isCompact) {
+                                Image(
+                                    provider = ImageProvider(R.drawable.ic_widget_trophy),
+                                    contentDescription = null,
+                                    modifier = GlanceModifier.size(16.dp),
+                                    colorFilter = ColorFilter.tint(WidgetThemeTokens.IceBlue)
+                                )
+                                Spacer(modifier = GlanceModifier.height(2.dp))
+                            }
                             Text(
-                                text = "%$masteryScore",
+                                text = "%${snapshot.masteryScore}",
                                 style = TextStyle(
-                                    color = ColorProvider(offWhite),
+                                    color = WidgetThemeTokens.OffWhite,
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold
-                                )
+                                ),
+                                maxLines = 1
                             )
                             Text(
-                                text = "Genel Ustalık",
+                                text = "Ustalık",
                                 style = TextStyle(
-                                    color = ColorProvider(textSecondary),
-                                    fontSize = 9.sp
-                                )
+                                    color = WidgetThemeTokens.MutedBlue,
+                                    fontSize = 10.sp
+                                ),
+                                maxLines = 1
                             )
                         }
                     }
 
-                    Spacer(modifier = GlanceModifier.width(6.dp))
+                    Spacer(modifier = GlanceModifier.width(8.dp))
 
-                    // KART 2: Bugün Odak
+                    // Card 2: Today Focus -> Home
                     Box(
                         modifier = GlanceModifier
                             .defaultWeight()
                             .fillMaxHeight()
-                            .background(cardBg)
-                            .cornerRadius(10.dp)
-                            .padding(4.dp),
+                            .background(WidgetThemeTokens.ElevatedCardBg)
+                            .cornerRadius(16.dp)
+                            .padding(6.dp)
+                            .clickable(actionStartActivity(openHomeIntent)),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "$todayFocusMins dk",
-                                style = TextStyle(
-                                    color = ColorProvider(offWhite),
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold
+                            if (!isCompact) {
+                                Image(
+                                    provider = ImageProvider(R.drawable.ic_widget_desk),
+                                    contentDescription = null,
+                                    modifier = GlanceModifier.size(16.dp),
+                                    colorFilter = ColorFilter.tint(WidgetThemeTokens.OceanTeal)
                                 )
+                                Spacer(modifier = GlanceModifier.height(2.dp))
+                            }
+                            Text(
+                                text = WidgetUpdateManager.formatMinutesCompact(snapshot.todayFocusMinutes),
+                                style = TextStyle(
+                                    color = WidgetThemeTokens.OffWhite,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                maxLines = 1
                             )
                             Text(
                                 text = "Bugün Odak",
                                 style = TextStyle(
-                                    color = ColorProvider(textSecondary),
-                                    fontSize = 9.sp
-                                )
+                                    color = WidgetThemeTokens.MutedBlue,
+                                    fontSize = 10.sp
+                                ),
+                                maxLines = 1
                             )
                         }
                     }
 
-                    Spacer(modifier = GlanceModifier.width(6.dp))
+                    Spacer(modifier = GlanceModifier.width(8.dp))
 
-                    // KART 3: ⚡ Odaklan Butonu (İmza Mor Renk #7C3AED)
+                    // Card 3: Quick Focus CTA
+                    val isTimerRunning = snapshot.timerState.isRunning
                     Box(
                         modifier = GlanceModifier
                             .defaultWeight()
                             .fillMaxHeight()
-                            .background(signaturePurple)
-                            .cornerRadius(10.dp)
-                            .padding(4.dp)
+                            .background(
+                                if (isTimerRunning) WidgetThemeTokens.OceanTeal else WidgetThemeTokens.SignaturePurple
+                            )
+                            .cornerRadius(16.dp)
+                            .padding(6.dp)
                             .clickable(actionStartActivity(startFocusIntent)),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "⚡",
-                                style = TextStyle(
-                                    color = ColorProvider(offWhite),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold
+                            Image(
+                                provider = ImageProvider(R.drawable.ic_widget_bolt),
+                                contentDescription = "Odaklan",
+                                modifier = GlanceModifier.size(16.dp),
+                                colorFilter = ColorFilter.tint(
+                                    if (isTimerRunning) WidgetThemeTokens.DarkOnAccent else WidgetThemeTokens.OffWhite
                                 )
                             )
+                            Spacer(modifier = GlanceModifier.height(2.dp))
                             Text(
-                                text = "Odaklan",
+                                text = if (isTimerRunning) "Aktif" else "Odaklan",
                                 style = TextStyle(
-                                    color = ColorProvider(offWhite),
-                                    fontSize = 9.sp,
+                                    color = if (isTimerRunning) WidgetThemeTokens.DarkOnAccent else WidgetThemeTokens.OffWhite,
+                                    fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
+                                ),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+
+                // Expanded Footer: Daily Goal Progress + Streak Pill
+                if (isExpanded) {
+                    Spacer(modifier = GlanceModifier.height(8.dp))
+                    Row(
+                        modifier = GlanceModifier
+                            .fillMaxWidth()
+                            .background(WidgetThemeTokens.ElevatedCardBg)
+                            .cornerRadius(12.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = GlanceModifier.defaultWeight()) {
+                            Row(
+                                modifier = GlanceModifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Günlük Hedef",
+                                    style = TextStyle(
+                                        color = WidgetThemeTokens.MutedBlue,
+                                        fontSize = 10.sp
+                                    ),
+                                    maxLines = 1
                                 )
+                                Spacer(modifier = GlanceModifier.defaultWeight())
+                                Text(
+                                    text = "${snapshot.todayFocusMinutes}/${snapshot.dailyGoalMinutes} dk",
+                                    style = TextStyle(
+                                        color = WidgetThemeTokens.OffWhite,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    maxLines = 1
+                                )
+                            }
+                            Spacer(modifier = GlanceModifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = goalProgress,
+                                modifier = GlanceModifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .cornerRadius(3.dp),
+                                color = WidgetThemeTokens.IceBlue,
+                                backgroundColor = WidgetThemeTokens.TrackBg
+                            )
+                        }
+
+                        Spacer(modifier = GlanceModifier.width(10.dp))
+
+                        Row(
+                            modifier = GlanceModifier
+                                .background(WidgetThemeTokens.SoftCardBg)
+                                .cornerRadius(10.dp)
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Image(
+                                provider = ImageProvider(R.drawable.ic_widget_flame),
+                                contentDescription = null,
+                                modifier = GlanceModifier.size(12.dp),
+                                colorFilter = ColorFilter.tint(WidgetThemeTokens.AlertAmber)
+                            )
+                            Spacer(modifier = GlanceModifier.width(4.dp))
+                            Text(
+                                text = "${snapshot.streakCount}g",
+                                style = TextStyle(
+                                    color = WidgetThemeTokens.OffWhite,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                maxLines = 1
                             )
                         }
                     }

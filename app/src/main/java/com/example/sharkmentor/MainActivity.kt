@@ -47,7 +47,8 @@ data class ImportedNotePayload(
     val mimeType: String? = null,
     val pdfPreviewBitmap: Bitmap? = null,
     val pdfPageCount: Int = 0,
-    val pdfPageImagePaths: List<String> = emptyList()
+    val pdfPageImagePaths: List<String> = emptyList(),
+    val localPdfPath: String? = null
 )
 
 /**
@@ -56,6 +57,8 @@ data class ImportedNotePayload(
 class MainActivity : ComponentActivity() {
 
     private var importedNoteState by mutableStateOf<ImportedNotePayload?>(null)
+    private var pendingPdfChoiceState by mutableStateOf<com.example.sharkmentor.core.util.ImportedPdfFile?>(null)
+    private var targetRouteState by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
@@ -93,7 +96,9 @@ class MainActivity : ComponentActivity() {
                         MainScreen(
                             openReflectionDialog = openReflection,
                             importedNote = importedNoteState,
-                            onImportedNoteConsumed = { importedNoteState = null }
+                            onImportedNoteConsumed = { importedNoteState = null },
+                            targetRoute = targetRouteState,
+                            onTargetRouteConsumed = { targetRouteState = null }
                         )
                     } else {
                         AuthScreen(
@@ -104,6 +109,52 @@ class MainActivity : ComponentActivity() {
                             onGuestContinue = {
                                 userPrefs.completeOnboardingAsIndividual("Misafir Öğrenci")
                                 isLoggedIn = true
+                            }
+                        )
+                    }
+
+                    val pdfChoice = pendingPdfChoiceState
+                    if (pdfChoice != null) {
+                        com.example.sharkmentor.ui.screens.pdf.PdfOpenChoiceDialog(
+                            title = pdfChoice.title,
+                            pageCount = pdfChoice.pageCount,
+                            onOpenAsPdfReader = {
+                                pendingPdfChoiceState = null
+                                startActivity(
+                                    com.example.sharkmentor.ui.screens.pdf.PdfReaderActivity.createIntent(
+                                        context = this@MainActivity,
+                                        pdfFilePath = pdfChoice.localFile.absolutePath,
+                                        title = pdfChoice.title,
+                                        skipChooser = true
+                                    )
+                                )
+                            },
+                            onOpenAsEditableNote = {
+                                val chosen = pdfChoice
+                                pendingPdfChoiceState = null
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    val cleanText = runCatching {
+                                        com.example.sharkmentor.core.util.DocumentTextExtractor.extractCleanText(
+                                            context = this@MainActivity,
+                                            uri = chosen.localUri,
+                                            displayName = chosen.displayName,
+                                            mimeType = "application/pdf"
+                                        )
+                                    }.getOrDefault("").take(30_000)
+                                    withContext(Dispatchers.Main) {
+                                        importedNoteState = ImportedNotePayload(
+                                            title = chosen.title,
+                                            content = cleanText,
+                                            sourceUri = chosen.localUri,
+                                            mimeType = "application/pdf",
+                                            pdfPageCount = chosen.pageCount,
+                                            localPdfPath = chosen.localFile.absolutePath
+                                        )
+                                    }
+                                }
+                            },
+                            onDismiss = {
+                                pendingPdfChoiceState = null
                             }
                         )
                     }
@@ -129,15 +180,43 @@ class MainActivity : ComponentActivity() {
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
 
+        val requestedRoute = intent.getStringExtra("EXTRA_TARGET_ROUTE")?.trim()?.takeIf { it.isNotEmpty() }
+        val shouldStartFocus = intent.getBooleanExtra("EXTRA_START_FOCUS", false)
+        if (requestedRoute != null) {
+            targetRouteState = requestedRoute
+            intent.removeExtra("EXTRA_TARGET_ROUTE")
+        }
+        if (shouldStartFocus) {
+            if (targetRouteState == null) {
+                targetRouteState = "home"
+            }
+            intent.removeExtra("EXTRA_START_FOCUS")
+            val timerState = com.example.sharkmentor.core.service.FocusTimerService.timerStateFlow.value
+            if (timerState.timerPhase == com.example.sharkmentor.core.timer.TimerPhase.IDLE) {
+                val modeToStart = timerState.currentMode
+                    .takeIf { it != com.example.sharkmentor.core.timer.TimerMode.BREAK }
+                    ?: com.example.sharkmentor.core.timer.TimerMode.POMODORO
+                val startIntent = Intent(this, com.example.sharkmentor.core.service.FocusTimerService::class.java).apply {
+                    action = com.example.sharkmentor.core.service.FocusTimerService.ACTION_START
+                    putExtra(com.example.sharkmentor.core.service.FocusTimerService.EXTRA_MODE, modeToStart.name)
+                    putExtra(
+                        com.example.sharkmentor.core.service.FocusTimerService.EXTRA_POMODORO_MINUTES,
+                        timerState.customPomodoroDurationMinutes
+                    )
+                    putExtra(
+                        com.example.sharkmentor.core.service.FocusTimerService.EXTRA_BREAK_MINUTES,
+                        timerState.breakDurationMinutes
+                    )
+                    putExtra(com.example.sharkmentor.core.service.FocusTimerService.EXTRA_SUBJECT, "Genel Odak")
+                }
+                runCatching { startForegroundService(startIntent) }
+            }
+        }
+
         when (intent.action) {
             Intent.ACTION_VIEW -> {
                 val uri = intent.data ?: return
-                lifecycleScope.launch(Dispatchers.IO) {
-                    val payload = readUriToNotePayload(uri, intent.type)
-                    withContext(Dispatchers.Main) {
-                        importedNoteState = payload
-                    }
-                }
+                processIncomingUri(uri, intent.type)
             }
             Intent.ACTION_SEND -> {
                 val streamUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -148,12 +227,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (streamUri != null) {
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        val payload = readUriToNotePayload(streamUri, intent.type)
-                        withContext(Dispatchers.Main) {
-                            importedNoteState = payload
-                        }
-                    }
+                    processIncomingUri(streamUri, intent.type)
                 } else {
                     val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
                     if (!sharedText.isNullOrBlank()) {
@@ -175,6 +249,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun processIncomingUri(uri: Uri, fallbackMimeType: String?) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
+                runCatching {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            }
+            val resolver = contentResolver
+            val mimeType = resolver.getType(uri) ?: fallbackMimeType
+            val displayName = resolveDisplayName(resolver, uri)
+            val isPdf = mimeType == "application/pdf" || displayName.endsWith(".pdf", ignoreCase = true)
+
+            if (isPdf) {
+                val copiedPdf = PdfBitmapConverter.copyUriToPrivatePdfsDir(this@MainActivity, uri)
+                withContext(Dispatchers.Main) {
+                    if (copiedPdf != null) {
+                        pendingPdfChoiceState = copiedPdf
+                    }
+                }
+            } else {
+                val payload = readUriToNotePayload(uri, mimeType)
+                withContext(Dispatchers.Main) {
+                    importedNoteState = payload
+                }
+            }
+        }
+    }
+
     private fun readUriToNotePayload(uri: Uri, fallbackMimeType: String?): ImportedNotePayload {
         val resolver = contentResolver
         val mimeType = resolver.getType(uri) ?: fallbackMimeType
@@ -182,33 +284,27 @@ class MainActivity : ComponentActivity() {
         val noteTitle = displayName.substringBeforeLast('.', displayName).ifBlank { "İçe Aktarılan Not" }
         val isPdf = mimeType == "application/pdf" || displayName.endsWith(".pdf", ignoreCase = true)
 
-        var pdfPreviewBitmap: Bitmap? = null
         var pdfPageCount = 0
-        var pdfPageImagePaths: List<String> = emptyList()
+        var localPdfPath: String? = null
+        var effectiveUri = uri
 
         if (isPdf) {
             runCatching {
-                pdfPageImagePaths = PdfBitmapConverter.convertPdfUriToPagePaths(this, uri, maxPages = 25)
-                pdfPageCount = pdfPageImagePaths.size
-                if (pdfPageCount == 0) {
-                    resolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                        PdfRenderer(pfd).use { renderer ->
-                            pdfPageCount = renderer.pageCount
-                        }
-                    }
+                val copied = PdfBitmapConverter.copyUriToPrivatePdfsDir(this, uri)
+                if (copied != null) {
+                    pdfPageCount = copied.pageCount
+                    localPdfPath = copied.localFile.absolutePath
+                    effectiveUri = copied.localUri
                 }
-                pdfPreviewBitmap = pdfPageImagePaths.firstOrNull()?.let { firstPath ->
-                    android.graphics.BitmapFactory.decodeFile(firstPath)
-                } ?: PdfBitmapConverter.convertPdfUriToBitmaps(this, uri, maxPages = 1).firstOrNull()
             }.onFailure { e ->
-                Log.w("MainActivity", "Failed to render PDF pages for $uri: ${e.message}")
+                Log.w("MainActivity", "Failed to copy PDF to private storage for $uri: ${e.message}")
             }
         }
 
         val extractedContent = runCatching {
             com.example.sharkmentor.core.util.DocumentTextExtractor.extractCleanText(
                 context = this,
-                uri = uri,
+                uri = effectiveUri,
                 displayName = displayName,
                 mimeType = mimeType
             )
@@ -226,11 +322,12 @@ class MainActivity : ComponentActivity() {
         return ImportedNotePayload(
             title = noteTitle,
             content = safeContent,
-            sourceUri = uri,
+            sourceUri = effectiveUri,
             mimeType = if (isPdf) "application/pdf" else mimeType,
-            pdfPreviewBitmap = pdfPreviewBitmap,
+            pdfPreviewBitmap = null,
             pdfPageCount = pdfPageCount,
-            pdfPageImagePaths = pdfPageImagePaths
+            pdfPageImagePaths = emptyList(),
+            localPdfPath = localPdfPath
         )
     }
 

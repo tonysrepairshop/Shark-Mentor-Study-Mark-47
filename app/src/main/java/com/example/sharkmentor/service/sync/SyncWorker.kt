@@ -961,11 +961,20 @@ class SyncWorker(
         for (session in pendingSessions) {
             try {
                 val instId = session.institutionId?.takeIf { it.isNotBlank() } ?: defaultInstitution
+                val docId = session.cloudId?.takeIf { it.isNotBlank() } ?: session.id.toString()
                 val sessionData = hashMapOf(
-                    "id" to session.id.toString(),
+                    "id" to docId,
+                    "cloudId" to docId,
+                    "localId" to session.id,
+                    "studentId" to uid,
+                    "mode" to session.modeName,
+                    "modeName" to session.modeName,
                     "durationSeconds" to session.durationSeconds,
                     "durationMinutes" to session.durationSeconds / 60,
                     "durationFormatted" to "${session.durationSeconds / 60} dk ${session.durationSeconds % 60} sn",
+                    "afkScore" to session.afkScore,
+                    "phoneLiftCount" to session.phoneLiftCount,
+                    "screenOnMinutes" to session.screenOnMinutes,
                     "studentName" to studentName,
                     "institutionId" to instId,
                     "isIndividual" to (instId == "INDIVIDUAL"),
@@ -978,8 +987,15 @@ class SyncWorker(
                 if (instId != "INDIVIDUAL") parentStudentData["coachCode"] = instId
                 firestore.collection("students").document(uid).set(parentStudentData, SetOptions.merge())
 
-                firestore.collection("students").document(uid).collection("focus_sessions").document(session.id.toString()).set(sessionData, SetOptions.merge()).await()
-                db.syncDao().markSessionAsSynced(session.id)
+                firestore.collection("students").document(uid).collection("sessions").document(docId).set(sessionData, SetOptions.merge()).await()
+                try {
+                    firestore.collection("users").document(uid).collection("sessions").document(docId).set(sessionData, SetOptions.merge()).await()
+                } catch (_: Exception) {}
+                try {
+                    firestore.collection("students").document(uid).collection("focus_sessions").document(docId).set(sessionData, SetOptions.merge()).await()
+                } catch (_: Exception) {}
+
+                db.syncDao().markSessionSynced(session.id, docId)
                 count++
             } catch (e: Exception) {
                 Log.e(syncTag, "Session err", e)

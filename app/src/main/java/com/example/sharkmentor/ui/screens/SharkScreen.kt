@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
@@ -33,7 +34,7 @@ fun SharkScreen(
     onNavigateToLeague: () -> Unit = {},
     onNavigateToPlans: (String) -> Unit = {}
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: AI Sohbet Hub, 1: Shark Arena
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0: AI Sohbet Hub, 1: Shark Arena
 
     Column(
         modifier = modifier
@@ -204,7 +205,7 @@ fun SharkArenaContent(
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = "Kurum içi mikro-lig — odaklanma süresi bazlı sıralama",
+                        text = "Bireysel Genel Lig, Kodlu Çalışma Grupları & Arkadaş Rekabeti",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

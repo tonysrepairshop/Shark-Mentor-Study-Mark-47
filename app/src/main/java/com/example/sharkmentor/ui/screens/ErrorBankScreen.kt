@@ -15,8 +15,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import android.widget.Toast
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.CheckCircle
@@ -41,10 +44,12 @@ import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.data.local.entity.ErrorQuestionEntity
 import com.example.sharkmentor.data.local.entity.TrainingFolderEntity
 import com.example.sharkmentor.data.repository.SharkAiEngine
+import com.example.sharkmentor.data.sync.VaultBackupDialog
 import com.example.sharkmentor.ui.viewmodel.ErrorBankViewModel
 import com.example.sharkmentor.ui.viewmodel.SharkAiHandoffManager
 import com.example.sharkmentor.ui.viewmodel.SubjectFolderItem
 
+import com.example.sharkmentor.ui.screens.components.EditQuestionClassificationDialog
 import com.example.sharkmentor.ui.screens.components.QuickQuestionPreviewDialog
 import com.example.sharkmentor.ui.errorbank.components.QuestionImagePickerWithCrop
 import com.example.sharkmentor.core.service.FocusTimerService
@@ -61,6 +66,7 @@ fun ErrorBankScreen(
     onStartTraining: (String) -> Unit,
     onNavigateToSharkAi: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.bankUiState.collectAsStateWithLifecycle()
     val folders = uiState.folders
     val aiTrainingFolders = uiState.aiTrainingFolders
@@ -71,6 +77,8 @@ fun ErrorBankScreen(
     val dueQuestionsCount = uiState.dueQuestionsCount
     val timerState by FocusTimerService.timerStateFlow.collectAsStateWithLifecycle()
     var showAddDialog by remember { mutableStateOf(false) }
+    var showVaultBackupDialog by remember { mutableStateOf(false) }
+    var questionToReclassify by remember { mutableStateOf<ErrorQuestionEntity?>(null) }
 
     // System back press handling: Topic -> Subject -> Root
     BackHandler(enabled = selectedTopic != null || selectedSubject != null) {
@@ -163,6 +171,14 @@ fun ErrorBankScreen(
                             finishedListener = { isRefreshing = false },
                             label = "refreshRotation"
                         )
+
+                        IconButton(onClick = { showVaultBackupDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Default.CloudSync,
+                                contentDescription = "Yedekle / Geri Yükle",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
 
                         IconButton(onClick = {
                             isRefreshing = true
@@ -463,6 +479,7 @@ fun ErrorBankScreen(
                             availableTopics = availableTopics,
                             onDelete = remember(question.id) { { viewModel.deleteQuestion(question) } },
                             onTopicChange = { newTopic -> viewModel.updateQuestionTopic(question.id, newTopic) },
+                            onEditClassification = { questionToReclassify = question },
                             onClick = { viewModel.setPreviewQuestion(question) },
                             onSolveClick = {
                                 SharkAiHandoffManager.enqueueFromErrorQuestion(
@@ -510,6 +527,43 @@ fun ErrorBankScreen(
                     targetEngine = SharkAiEngine.TWIN_QUESTION_ENGINE
                 )
                 onNavigateToSharkAi()
+            },
+            onEditClassification = { q ->
+                questionToReclassify = q
+            }
+        )
+    }
+
+    questionToReclassify?.let { targetQuestion ->
+        EditQuestionClassificationDialog(
+            question = targetQuestion,
+            availableTopics = availableTopics,
+            onDismiss = { questionToReclassify = null },
+            onSave = { newSubject, newTopic ->
+                viewModel.reclassifyQuestion(
+                    questionId = targetQuestion.id,
+                    newSubject = newSubject,
+                    newTopic = newTopic,
+                    aiTopic = newTopic
+                ) {
+                    Toast.makeText(
+                        context,
+                        "Soru '$newSubject • $newTopic' klasörüne taşındı.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                questionToReclassify = null
+            },
+            onAiReclassify = { onComplete, onError ->
+                viewModel.reclassifyQuestionWithAi(
+                    question = targetQuestion,
+                    onResult = { aiSubject, aiTopic ->
+                        onComplete(aiSubject, aiTopic)
+                    },
+                    onError = { errMsg ->
+                        onError(errMsg)
+                    }
+                )
             }
         )
     }
@@ -523,6 +577,13 @@ fun ErrorBankScreen(
             }
         )
     }
+
+    if (showVaultBackupDialog) {
+        VaultBackupDialog(
+            onDismiss = { showVaultBackupDialog = false },
+            onDataRestored = { viewModel.refreshDueQuestions() }
+        )
+    }
 }
 
 @Composable
@@ -531,6 +592,7 @@ fun ErrorQuestionCard(
     availableTopics: List<String> = emptyList(),
     onDelete: () -> Unit,
     onTopicChange: (String) -> Unit = {},
+    onEditClassification: () -> Unit = {},
     onClick: () -> Unit = {},
     onSolveClick: () -> Unit = {},
     onTwinClick: () -> Unit = {}
@@ -566,9 +628,9 @@ fun ErrorQuestionCard(
                     }
                 }
 
-                // AI Topic chip — clickable to reassign
+                // AI Topic chip — clickable to reassign topic or edit subject/topic
                 Box(modifier = Modifier.align(Alignment.BottomStart)) {
-                    Box(
+                    Row(
                         modifier = Modifier
                             .padding(8.dp)
                             .background(
@@ -579,7 +641,9 @@ fun ErrorQuestionCard(
                                 RoundedCornerShape(6.dp)
                             )
                             .clickable { showTopicMenu = true }
-                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
                             text = question.aiTopic ?: question.topic,
@@ -588,23 +652,54 @@ fun ErrorQuestionCard(
                             else
                                 MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Dersi / Konuyu Düzenle",
+                            tint = if (question.aiTopic != null)
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(11.dp)
                         )
                     }
 
-                    // Topic reassignment dropdown
+                    // Topic reassignment & Subject/Topic edit dropdown
                     DropdownMenu(
                         expanded = showTopicMenu,
                         onDismissRequest = { showTopicMenu = false }
                     ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Dersi / Konuyu Düzenle",
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            onClick = {
+                                showTopicMenu = false
+                                onEditClassification()
+                            }
+                        )
+                        HorizontalDivider()
                         Text(
-                            text = "Konuyu Değiştir",
+                            text = "Hızlı Konu Değiştir (${question.subject})",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        HorizontalDivider()
                         val allTopics = (availableTopics + listOfNotNull(question.aiTopic, question.topic)).distinct()
                         allTopics.forEach { topic ->
                             DropdownMenuItem(

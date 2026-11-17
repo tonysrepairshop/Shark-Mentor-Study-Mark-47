@@ -1,0 +1,837 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>PACE/KEEP</title>
+  <style>
+    :root {
+      --bg-main: #071426;
+      --bg-card: #0C1F3D;
+      --bg-card-hover: #122B54;
+      --border: #1C3D6E;
+      --text-primary: #F4F6F8;
+      --text-secondary: #9FB3CE;
+      --accent: #60A5FA;
+      --accent-soft: rgba(96, 165, 250, 0.16);
+      --success: #34D399;
+      --success-soft: rgba(52, 211, 153, 0.15);
+      --warn: #FBBF24;
+      --warn-soft: rgba(251, 191, 36, 0.15);
+      --danger: #F87171;
+      --danger-soft: rgba(248, 113, 113, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg-main);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      user-select: none;
+      overflow-x: hidden;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 14px 16px 20px;
+      gap: 14px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand {
+      font-weight: 800;
+      font-size: 18px;
+      letter-spacing: 1.4px;
+      color: var(--text-primary);
+    }
+
+    .brand span {
+      color: var(--accent);
+    }
+
+    .brand-sub {
+      font-size: 11px;
+      color: var(--text-secondary);
+      letter-spacing: 0.4px;
+    }
+
+    .badge {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      padding: 5px 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      border-radius: 999px;
+      color: var(--text-secondary);
+      transition: all 0.2s ease;
+    }
+
+    .badge.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .badge.paused {
+      color: var(--warn);
+      border-color: rgba(251, 191, 36, 0.5);
+      background: var(--warn-soft);
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .tab {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 12px 14px;
+      border-radius: 16px;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.18s ease;
+    }
+
+    .tab.active {
+      border-color: var(--accent);
+      background: var(--bg-card-hover);
+      color: var(--text-primary);
+      box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25);
+    }
+
+    .tab strong {
+      display: block;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .tab.active strong {
+      color: var(--accent);
+    }
+
+    .tab small {
+      display: block;
+      margin-top: 3px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 14px;
+    }
+
+    .header-row label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    select {
+      background: var(--bg-main);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      outline: none;
+    }
+
+    select:focus {
+      border-color: var(--accent);
+    }
+
+    .tap-area {
+      flex: 1;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 220px;
+      padding: 24px 18px;
+      cursor: pointer;
+      transition: transform 0.1s ease, border-color 0.2s ease, background 0.2s ease;
+    }
+
+    .tap-area.interactive:active {
+      transform: scale(0.985);
+      background: var(--bg-card-hover);
+      border-color: var(--accent);
+    }
+
+    .tap-area.pulse {
+      border-color: var(--accent);
+      box-shadow: 0 0 24px rgba(96, 165, 250, 0.22);
+    }
+
+    .sub-txt {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .big-num {
+      font-size: 72px;
+      font-weight: 800;
+      color: var(--text-primary);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -1px;
+    }
+
+    .hint-txt {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-top: 14px;
+      text-align: center;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .stat-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      padding: 12px 8px;
+      border-radius: 16px;
+      text-align: center;
+    }
+
+    .stat-box span {
+      display: block;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      color: var(--text-secondary);
+    }
+
+    .stat-box strong {
+      display: block;
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text-primary);
+      margin-top: 5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-box strong.positive { color: var(--success); }
+    .stat-box strong.negative { color: var(--danger); }
+
+    .pavlov-meter {
+      width: 100%;
+      max-width: 320px;
+      margin-top: 24px;
+      background: var(--bg-main);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px;
+    }
+
+    .pavlov-meter-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+    }
+
+    .pavlov-meter-top strong {
+      color: var(--accent);
+      font-size: 14px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .rail {
+      width: 100%;
+      height: 10px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .rail-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #3B82F6, #60A5FA);
+      border-radius: 999px;
+      transition: width 0.18s linear;
+    }
+
+    .cycle-pill {
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-align: center;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 10px;
+      margin-top: auto;
+    }
+
+    button.btn {
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      padding: 15px 14px;
+      border-radius: 16px;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      cursor: pointer;
+      transition: transform 0.1s ease, background 0.15s ease;
+    }
+
+    button.btn:active {
+      transform: scale(0.98);
+      background: var(--bg-card-hover);
+    }
+
+    button.btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #04101E;
+    }
+
+    button.btn.primary.running {
+      background: var(--warn-soft);
+      border-color: var(--warn);
+      color: var(--warn);
+    }
+
+    button.btn.reset {
+      color: var(--danger);
+      border-color: rgba(248, 113, 113, 0.35);
+      background: var(--danger-soft);
+    }
+
+    .sync-foot {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-secondary);
+      min-height: 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div class="brand-wrap">
+      <div class="brand">PACE<span>/</span>KEEP</div>
+      <div class="brand-sub">Ritim &amp; Zaman Havuzu Motoru</div>
+    </div>
+    <div class="badge" id="statusBadge">HAZIR</div>
+  </div>
+
+  <div class="tabs">
+    <button type="button" class="tab active" id="tabA" onclick="switchTab('A')">
+      <strong>Pool Mode</strong>
+      <small>Soru tempo &amp; zaman bankası</small>
+    </button>
+    <button type="button" class="tab" id="tabB" onclick="switchTab('B')">
+      <strong>Pavlov Mode</strong>
+      <small>90 sn ritmik odak uyarısı</small>
+    </button>
+  </div>
+
+  <!-- PANEL A: POOL MODE -->
+  <div class="panel" id="panelA">
+    <div class="header-row">
+      <label for="targetSelect">Soru Başına Hedef</label>
+      <select id="targetSelect" onchange="changeTarget()">
+        <option value="90">Standart (90 sn)</option>
+        <option value="75">Türkçe / Sosyal (75 sn)</option>
+        <option value="105">Matematik / Geo (105 sn)</option>
+        <option value="45">Fen Bilimleri (45 sn)</option>
+      </select>
+    </div>
+
+    <div class="tap-area interactive" id="poolTapArea" onclick="tapQuestion()">
+      <div class="sub-txt">ÇÖZÜLEN SORU</div>
+      <div class="big-num" id="qCount">00</div>
+      <div class="hint-txt" id="poolHint">Başlamak için dokun</div>
+    </div>
+
+    <div class="stats">
+      <div class="stat-box">
+        <span>GEÇEN SÜRE</span>
+        <strong id="cogTime">00:00</strong>
+      </div>
+      <div class="stat-box">
+        <span>SON SORU</span>
+        <strong id="lastQ">--</strong>
+      </div>
+      <div class="stat-box">
+        <span>ZAMAN HAVUZU</span>
+        <strong id="timeBank">+0s</strong>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button type="button" class="btn primary" id="cogBtn" onclick="toggleCog()">▶ BAŞLAT</button>
+      <button type="button" class="btn reset" onclick="resetCog()">↺ SIFIRLA</button>
+    </div>
+  </div>
+
+  <!-- PANEL B: PAVLOV MODE -->
+  <div class="panel hidden" id="panelB">
+    <div class="tap-area" id="pavlovCard">
+      <div class="sub-txt">PAVLOV RİTMİ</div>
+      <div class="big-num" id="intTime">00:00</div>
+      <div class="pavlov-meter">
+        <div class="pavlov-meter-top">
+          <span>SONRAKİ UYARI</span>
+          <strong id="nextBeep">01:30</strong>
+        </div>
+        <div class="rail">
+          <div class="rail-fill" id="progressBar"></div>
+        </div>
+        <div class="cycle-pill" id="pavlovCycles">Tamamlanan aralık: 0</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button type="button" class="btn primary" id="intBtn" onclick="toggleInt()">▶ BAŞLAT</button>
+      <button type="button" class="btn reset" onclick="resetInt()">↺ SIFIRLA</button>
+    </div>
+  </div>
+
+  <div class="sync-foot" id="syncStatus">Oturum süreleri otomatik kaydedilir</div>
+
+  <script>
+    var currentTab = 'A';
+    var audioCtx = null;
+    var audioUnlocked = false;
+    var CHECKPOINT_MS = 20 * 60 * 1000;
+
+    function unlockAudio() {
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!audioCtx) {
+          audioCtx = new AC();
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        if (!audioUnlocked && audioCtx.state === 'running') {
+          var buffer = audioCtx.createBuffer(1, 1, 22050);
+          var source = audioCtx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(audioCtx.destination);
+          source.start(0);
+          audioUnlocked = true;
+        }
+      } catch (e) {}
+    }
+
+    document.addEventListener('pointerdown', unlockAudio, { passive: true });
+    document.addEventListener('touchstart', unlockAudio, { passive: true });
+
+    function triggerVibration(ms) {
+      var dur = Math.max(15, Math.min(800, ms || 50));
+      try {
+        if (window.PaceKeepBridge && typeof window.PaceKeepBridge.vibrate === 'function') {
+          window.PaceKeepBridge.vibrate(dur);
+          return;
+        }
+      } catch (e) {}
+      try {
+        if (navigator.vibrate) navigator.vibrate(dur);
+      } catch (e2) {}
+    }
+
+    function beep(freq, dur, vib) {
+      unlockAudio();
+      try {
+        if (audioCtx) {
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+          }
+          var osc = audioCtx.createOscillator();
+          var gain = audioCtx.createGain();
+          var now = audioCtx.currentTime;
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now);
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.exponentialRampToValueAtTime(0.08, now + 0.015);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start(now);
+          osc.stop(now + dur + 0.02);
+        }
+      } catch (e) {}
+      triggerVibration(vib);
+    }
+
+    function fmt(sec) {
+      var safe = Math.max(0, Math.floor(sec));
+      var m = Math.floor(safe / 60);
+      var s = safe % 60;
+      return (m < 10 ? '0' + m : String(m)) + ':' + (s < 10 ? '0' + s : String(s));
+    }
+
+    function updateStatusBadge() {
+      var b = document.getElementById('statusBadge');
+      var running = (currentTab === 'A') ? cogRun : intRun;
+      var hasElapsed = (currentTab === 'A') ? (cogPaused > 0 || qDone > 0) : (intPaused > 0);
+      if (running) {
+        b.innerText = 'AKTİF';
+        b.className = 'badge active';
+      } else if (hasElapsed) {
+        b.innerText = 'DURAKLATILDI';
+        b.className = 'badge paused';
+      } else {
+        b.innerText = 'HAZIR';
+        b.className = 'badge';
+      }
+    }
+
+    function switchTab(tab) {
+      currentTab = tab;
+      document.getElementById('tabA').className = tab === 'A' ? 'tab active' : 'tab';
+      document.getElementById('tabB').className = tab === 'B' ? 'tab active' : 'tab';
+      document.getElementById('panelA').className = tab === 'A' ? 'panel' : 'panel hidden';
+      document.getElementById('panelB').className = tab === 'B' ? 'panel' : 'panel hidden';
+      updateStatusBadge();
+    }
+
+    function notifySessionSaved(seconds, sourceMode) {
+      if (seconds <= 0) return;
+      try {
+        if (window.PaceKeepBridge && typeof window.PaceKeepBridge.recordFocusSession === 'function') {
+          window.PaceKeepBridge.recordFocusSession(seconds, sourceMode);
+          var el = document.getElementById('syncStatus');
+          if (el) {
+            el.innerText = 'Son kayıt: ' + fmt(seconds) + ' (' + sourceMode + ')';
+          }
+        }
+      } catch (e) {}
+    }
+
+    // --- PANEL A: POOL MODE ---
+    var cogRun = false;
+    var cogStart = 0;
+    var cogPaused = 0;
+    var cogPausedAt = 0;
+    var cogFlushedMs = 0;
+    var cogTimer = null;
+    var qDone = 0;
+    var lastQStart = 0;
+    var targetSec = 90;
+
+    function getCogElapsedMs(nowTs) {
+      var now = nowTs || Date.now();
+      return cogPaused + (cogRun ? Math.max(0, now - cogStart) : 0);
+    }
+
+    function flushCog(minSeconds) {
+      var threshold = typeof minSeconds === 'number' ? minSeconds : 1;
+      var elapsedMs = getCogElapsedMs();
+      var unsavedSec = Math.floor((elapsedMs - cogFlushedMs) / 1000);
+      if (unsavedSec >= threshold) {
+        cogFlushedMs += unsavedSec * 1000;
+        notifySessionSaved(unsavedSec, 'POOL');
+      }
+    }
+
+    function changeTarget() {
+      targetSec = parseInt(document.getElementById('targetSelect').value, 10) || 90;
+      updateCog();
+    }
+
+    function updateCog() {
+      var now = Date.now();
+      var elapsedMs = getCogElapsedMs(now);
+      var elapsedSec = Math.floor(elapsedMs / 1000);
+      document.getElementById('cogTime').innerText = fmt(elapsedSec);
+
+      var delta = (qDone * targetSec) - elapsedSec;
+      var bankEl = document.getElementById('timeBank');
+      bankEl.innerText = (delta >= 0 ? '+' + delta : String(delta)) + 's';
+      bankEl.className = delta > 0 ? 'positive' : (delta < 0 ? 'negative' : '');
+
+      if (elapsedMs - cogFlushedMs >= CHECKPOINT_MS) {
+        flushCog(60);
+      }
+    }
+
+    function toggleCog() {
+      unlockAudio();
+      var now = Date.now();
+      var btn = document.getElementById('cogBtn');
+      var hint = document.getElementById('poolHint');
+
+      if (!cogRun) {
+        if (cogPausedAt > 0 && lastQStart > 0) {
+          var pauseDelta = Math.max(0, now - cogPausedAt);
+          lastQStart += pauseDelta;
+        }
+        cogPausedAt = 0;
+        cogStart = now;
+        if (lastQStart === 0) {
+          lastQStart = now;
+        }
+        cogRun = true;
+        btn.innerText = '⏸ DURAKLAT';
+        btn.className = 'btn primary running';
+        hint.innerText = 'Soruyu bitirince dokun';
+        clearInterval(cogTimer);
+        cogTimer = setInterval(updateCog, 250);
+        updateCog();
+      } else {
+        cogPaused += Math.max(0, now - cogStart);
+        cogPausedAt = now;
+        cogRun = false;
+        clearInterval(cogTimer);
+        btn.innerText = '▶ DEVAM ET';
+        btn.className = 'btn primary';
+        hint.innerText = 'Duraklatıldı — devam etmek için dokun';
+        updateCog();
+        flushCog(1);
+      }
+      updateStatusBadge();
+    }
+
+    function tapQuestion() {
+      unlockAudio();
+      if (!cogRun) {
+        toggleCog();
+        return;
+      }
+
+      var now = Date.now();
+      var activeDeltaMs = Math.max(0, now - lastQStart);
+      var qDur = Math.max(1, Math.round(activeDeltaMs / 1000));
+      lastQStart = now;
+      qDone++;
+
+      document.getElementById('qCount').innerText = qDone < 10 ? '0' + qDone : String(qDone);
+      document.getElementById('lastQ').innerText = qDur + 's';
+
+      if (qDone % 10 === 0) {
+        beep(880, 0.2, 180);
+      } else {
+        beep(520, 0.06, 45);
+      }
+      updateCog();
+    }
+
+    function resetCog() {
+      flushCog(1);
+      cogRun = false;
+      clearInterval(cogTimer);
+      cogStart = 0;
+      cogPaused = 0;
+      cogPausedAt = 0;
+      cogFlushedMs = 0;
+      qDone = 0;
+      lastQStart = 0;
+
+      document.getElementById('qCount').innerText = '00';
+      document.getElementById('cogTime').innerText = '00:00';
+      document.getElementById('lastQ').innerText = '--';
+      var bankEl = document.getElementById('timeBank');
+      bankEl.innerText = '+0s';
+      bankEl.className = '';
+
+      var btn = document.getElementById('cogBtn');
+      btn.innerText = '▶ BAŞLAT';
+      btn.className = 'btn primary';
+      document.getElementById('poolHint').innerText = 'Başlamak için dokun';
+      updateStatusBadge();
+    }
+
+    // --- PANEL B: PAVLOV MODE ---
+    var PAVLOV_INTERVAL_SEC = 90;
+    var PAVLOV_INTERVAL_MS = PAVLOV_INTERVAL_SEC * 1000;
+    var intRun = false;
+    var intStart = 0;
+    var intPaused = 0;
+    var intFlushedMs = 0;
+    var intTimer = null;
+    var lastStep = 0;
+
+    function getIntElapsedMs(nowTs) {
+      var now = nowTs || Date.now();
+      return intPaused + (intRun ? Math.max(0, now - intStart) : 0);
+    }
+
+    function flushInt(minSeconds) {
+      var threshold = typeof minSeconds === 'number' ? minSeconds : 1;
+      var elapsedMs = getIntElapsedMs();
+      var unsavedSec = Math.floor((elapsedMs - intFlushedMs) / 1000);
+      if (unsavedSec >= threshold) {
+        intFlushedMs += unsavedSec * 1000;
+        notifySessionSaved(unsavedSec, 'PAVLOV');
+      }
+    }
+
+    function pulsePavlovCard() {
+      var card = document.getElementById('pavlovCard');
+      if (!card) return;
+      card.classList.add('pulse');
+      setTimeout(function() {
+        card.classList.remove('pulse');
+      }, 900);
+    }
+
+    function updateInt() {
+      var now = Date.now();
+      var ms = getIntElapsedMs(now);
+      var sec = Math.floor(ms / 1000);
+      document.getElementById('intTime').innerText = fmt(sec);
+
+      var step = Math.floor(ms / PAVLOV_INTERVAL_MS);
+      var modSec = sec % PAVLOV_INTERVAL_SEC;
+      var atExactBoundary = sec > 0 && modSec === 0;
+
+      var remSec = atExactBoundary ? 0 : (PAVLOV_INTERVAL_SEC - modSec);
+      document.getElementById('nextBeep').innerText = fmt(remSec);
+
+      var pct = atExactBoundary ? 100 : ((ms % PAVLOV_INTERVAL_MS) / (PAVLOV_INTERVAL_MS / 100));
+      document.getElementById('progressBar').style.width = Math.min(100, Math.max(0, pct)).toFixed(1) + '%';
+      document.getElementById('pavlovCycles').innerText = 'Tamamlanan aralık: ' + step;
+
+      if (intRun && step > lastStep) {
+        var sinceBoundaryMs = ms % PAVLOV_INTERVAL_MS;
+        lastStep = step;
+        if (sinceBoundaryMs < 3500) {
+          beep(880, 0.16, 200);
+          pulsePavlovCard();
+        }
+      }
+
+      if (ms - intFlushedMs >= CHECKPOINT_MS) {
+        flushInt(60);
+      }
+    }
+
+    function toggleInt() {
+      unlockAudio();
+      var btn = document.getElementById('intBtn');
+      if (!intRun) {
+        intStart = Date.now();
+        intRun = true;
+        btn.innerText = '⏸ DURAKLAT';
+        btn.className = 'btn primary running';
+        clearInterval(intTimer);
+        intTimer = setInterval(updateInt, 200);
+        updateInt();
+      } else {
+        intPaused += Math.max(0, Date.now() - intStart);
+        intRun = false;
+        clearInterval(intTimer);
+        btn.innerText = '▶ DEVAM ET';
+        btn.className = 'btn primary';
+        updateInt();
+        flushInt(1);
+      }
+      updateStatusBadge();
+    }
+
+    function resetInt() {
+      flushInt(1);
+      intRun = false;
+      clearInterval(intTimer);
+      intStart = 0;
+      intPaused = 0;
+      intFlushedMs = 0;
+      lastStep = 0;
+
+      document.getElementById('intTime').innerText = '00:00';
+      document.getElementById('nextBeep').innerText = '01:30';
+      document.getElementById('progressBar').style.width = '0%';
+      document.getElementById('pavlovCycles').innerText = 'Tamamlanan aralık: 0';
+
+      var btn = document.getElementById('intBtn');
+      btn.innerText = '▶ BAŞLAT';
+      btn.className = 'btn primary';
+      updateStatusBadge();
+    }
+
+    window.flushAllPaceKeepSessions = function() {
+      flushCog(1);
+      flushInt(1);
+    };
+
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+        window.flushAllPaceKeepSessions();
+      } else {
+        if (cogRun) updateCog();
+        if (intRun) updateInt();
+      }
+    });
+
+    window.addEventListener('pagehide', function() {
+      window.flushAllPaceKeepSessions();
+    });
+
+    document.onkeydown = function(e) {
+      if (e.code === 'Space' && currentTab === 'A') {
+        e.preventDefault();
+        tapQuestion();
+      }
+    };
+  </script>
+</body>
+</html>

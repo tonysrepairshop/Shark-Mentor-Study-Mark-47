@@ -6,9 +6,11 @@ const messaging = admin.messaging();
 
 interface NotificationState {
   lastNotificationTimestamp: admin.firestore.Timestamp;
-  lastTriggerType: '48H_INACTIVITY' | 'STREAK_3DAY' | 'EXAM_UPLOADED' | 'MANUAL';
+  lastTriggerType: '48H_INACTIVITY' | 'STREAK_3DAY' | 'EXAM_UPLOADED' | 'NUDGE' | 'MANUAL';
   streakDaysCount: number;
 }
+
+const NUDGE_COOLDOWN_HOURS = 12;
 
 // ─── ANTI-SPAM & QUIET HOURS ─────────────────────────────────────────────
 
@@ -33,9 +35,9 @@ function isQuietHours(): boolean {
 }
 
 /**
- * Checks if a notification can be sent based on 24-hour rate limit.
+ * Checks if a notification can be sent based on rate limit (default 24-hour, or custom cooldownHours).
  */
-async function canSendNotification(studentId: string): Promise<boolean> {
+async function canSendNotification(studentId: string, cooldownHours: number = 24): Promise<boolean> {
   const metaRef = db.doc(`students/${studentId}/meta/notificationState`);
   const metaSnap = await metaRef.get();
   
@@ -48,7 +50,28 @@ async function canSendNotification(studentId: string): Promise<boolean> {
   const now = Date.now();
   const hoursSinceLast = (now - lastTime) / (1000 * 60 * 60);
   
-  return hoursSinceLast >= 24;
+  return hoursSinceLast >= cooldownHours;
+}
+
+/**
+ * Resolves all unique FCM tokens for a student (supports both `fcmTokens` array and single `fcmToken`).
+ */
+async function resolveStudentFcmTokens(studentId: string): Promise<string[]> {
+  const studentSnap = await db.doc(`students/${studentId}`).get();
+  const data = studentSnap.data();
+  const tokenSet = new Set<string>();
+
+  if (data) {
+    const arr = data.fcmTokens as string[] | undefined;
+    if (Array.isArray(arr)) {
+      arr.filter((t) => typeof t === "string" && t.trim().length > 0).forEach((t) => tokenSet.add(t.trim()));
+    }
+    const single = data.fcmToken as string | undefined;
+    if (typeof single === "string" && single.trim().length > 0) {
+      tokenSet.add(single.trim());
+    }
+  }
+  return Array.from(tokenSet);
 }
 
 /**
@@ -61,28 +84,28 @@ async function dispatchPushNotification(
   studentId: string, 
   title: string, 
   body: string,
-  triggerType: NotificationState['lastTriggerType']
-): Promise<void> {
+  triggerType: NotificationState['lastTriggerType'],
+  cooldownHours: number = 24,
+  extraData: Record<string, string> = {}
+): Promise<boolean> {
   if (isQuietHours()) {
     console.log(`[Quiet Hours] Suppressed notification for ${studentId}: ${title}`);
-    return;
+    return false;
   }
   
-  if (!(await canSendNotification(studentId))) {
+  if (!(await canSendNotification(studentId, cooldownHours))) {
     console.log(`[Rate Limit] Suppressed notification for ${studentId}: ${title}`);
-    return;
+    return false;
   }
   
-  // Fetch FCM tokens (Assuming array of strings at students/{studentId}.fcmTokens)
-  const studentSnap = await db.doc(`students/${studentId}`).get();
-  const fcmTokens = studentSnap.data()?.fcmTokens as string[] | undefined;
+  const fcmTokens = await resolveStudentFcmTokens(studentId);
   
   if (fcmTokens && fcmTokens.length > 0) {
     try {
       await messaging.sendEachForMulticast({
         tokens: fcmTokens,
         notification: { title, body },
-        data: { triggerType }
+        data: { triggerType, ...extraData }
       });
       
       // Update state
@@ -92,11 +115,14 @@ async function dispatchPushNotification(
       }, { merge: true });
       
       console.log(`Successfully dispatched ${triggerType} to ${studentId}`);
+      return true;
     } catch (err) {
       console.error(`Failed to send FCM to ${studentId}`, err);
+      return false;
     }
   } else {
     console.log(`No FCM tokens found for ${studentId}`);
+    return false;
   }
 }
 
@@ -215,3 +241,80 @@ export const onExamUpdated = functions.firestore
       );
     }
   });
+
+// ─── SHARK LEAGUE NUDGE ("DÜRTME") PUSH NOTIFICATION RULE ───────────────────
+
+/**
+ * Triggered when a student nudges a friend or study group member via `nudges/{nudgeId}`.
+ * Enforces:
+ * - Quiet hours (23:00 - 08:30 UTC+3)
+ * - 12-hour per-pair anti-spam rate limit (`senderId -> receiverId`)
+ * - Receiver global rate limit (12h window for nudges)
+ */
+export const onNudgeCreated = functions.firestore
+  .document('nudges/{nudgeId}')
+  .onCreate(async (snap, context) => {
+    const data = snap.data();
+    if (!data) return;
+
+    const senderId = (data.senderId as string | undefined)?.trim() || "";
+    const receiverId = (data.receiverId as string | undefined)?.trim() || "";
+    const senderName = (data.senderName as string | undefined)?.trim() || "Arkadaşın";
+    const groupId = (data.groupId as string | undefined)?.trim() || "GLOBAL_INDIVIDUAL";
+
+    if (!senderId || !receiverId || senderId === receiverId) {
+      console.log(`[onNudgeCreated] Invalid sender/receiver on nudge ${context.params.nudgeId}`);
+      return;
+    }
+
+    if (isQuietHours()) {
+      console.log(`[Quiet Hours] Suppressed nudge from ${senderId} to ${receiverId}`);
+      return;
+    }
+
+    // Check 12-hour per-pair (sender -> receiver) rate limit
+    const pairMetaRef = db.doc(`students/${receiverId}/meta/nudge_${senderId}`);
+    const pairMetaSnap = await pairMetaRef.get();
+    if (pairMetaSnap.exists) {
+      const lastNudgeTs = pairMetaSnap.data()?.lastNudgeTimestamp as admin.firestore.Timestamp | undefined;
+      if (lastNudgeTs) {
+        const hoursElapsed = (Date.now() - lastNudgeTs.toDate().getTime()) / (1000 * 60 * 60);
+        if (hoursElapsed < NUDGE_COOLDOWN_HOURS) {
+          console.log(`[Rate Limit] Suppressed duplicate nudge from ${senderId} to ${receiverId} (${hoursElapsed.toFixed(1)}h < 12h)`);
+          return;
+        }
+      }
+    }
+
+    const title = `🦈 ${senderName} Seni Masaya Çağırıyor!`;
+    const body = (data.message as string | undefined)?.trim() ||
+      `${senderName} seni dürttü! Kronometreni başlat ve odak yarışında geri kalma.`;
+
+    const sent = await dispatchPushNotification(
+      receiverId,
+      title,
+      body,
+      "NUDGE",
+      NUDGE_COOLDOWN_HOURS,
+      {
+        senderId,
+        senderName,
+        groupId,
+        nudgeId: context.params.nudgeId
+      }
+    );
+
+    if (sent) {
+      await pairMetaRef.set({
+        senderId,
+        senderName,
+        lastNudgeTimestamp: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      await snap.ref.set({
+        deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: "DELIVERED"
+      }, { merge: true });
+    }
+  });
+
