@@ -46,7 +46,6 @@ import com.example.sharkmentor.data.sync.InstitutionScheduleSyncListener
 import com.example.sharkmentor.domain.model.prediction.NetWizardUiState
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.GeminiCoreService
-import com.example.sharkmentor.core.ai.PreferredPowerMode
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.ai.YksCurriculumCatalog
 import com.example.sharkmentor.data.repository.AiRouterResult
@@ -66,7 +65,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -171,6 +170,9 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
     private val _modelPower = MutableStateFlow(initialSessionSnapshot.modelPower)
     val modelPower: StateFlow<AiModelPower> = _modelPower.asStateFlow()
+
+    private val _activeModelDisplay = MutableStateFlow(userAiPrefs.getActiveDisplayText())
+    val activeModelDisplay: StateFlow<String> = _activeModelDisplay.asStateFlow()
 
     private val _activeCapability = MutableStateFlow<SharkAiCapability?>(null)
     val activeCapability: StateFlow<SharkAiCapability?> = _activeCapability.asStateFlow()
@@ -303,10 +305,6 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
     fun setModelPower(power: AiModelPower) {
         _modelPower.value = power
-        val prefMode = if (power == AiModelPower.PRO) PreferredPowerMode.PRO else PreferredPowerMode.FLASH
-        if (userAiPrefs.getPreferredPowerMode() != prefMode) {
-            userAiPrefs.setPreferredPowerMode(prefMode)
-        }
         val snapshot = SharkAiChatSessionStore.saveModelPower(getApplication(), power)
         _chatSessions.value = snapshot.sessions
     }
@@ -453,13 +451,20 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
             }
         }
         viewModelScope.launch {
-            userAiPrefs.preferredPowerMode.drop(1).collect { mode ->
-                val targetPower = if (mode == PreferredPowerMode.PRO) AiModelPower.PRO else AiModelPower.FLASH
-                if (_modelPower.value != targetPower) {
-                    _modelPower.value = targetPower
-                    val snapshot = SharkAiChatSessionStore.saveModelPower(getApplication(), targetPower)
-                    _chatSessions.value = snapshot.sessions
-                }
+            merge(
+                userAiPrefs.userGeminiKeys,
+                userAiPrefs.selectedUserGeminiModel,
+                userAiPrefs.userDeepSeekKey,
+                userAiPrefs.selectedDeepSeekModel,
+                userAiPrefs.userKimiKey,
+                userAiPrefs.selectedKimiModel,
+                userAiPrefs.userClaudeKey,
+                userAiPrefs.selectedClaudeModel,
+                userAiPrefs.userOpenAiKey,
+                userAiPrefs.selectedOpenAiModel,
+                userAiPrefs.selectedAiProvider
+            ).collect {
+                _activeModelDisplay.value = userAiPrefs.getActiveDisplayText()
             }
         }
         val prefs = getApplication<Application>().getSharedPreferences("shark_dopamine_prefs", Context.MODE_PRIVATE)
@@ -2216,11 +2221,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
             - Eğer plan oluşturduysan veya planı incelemesini istiyorsan mesajın sonuna '#ACTION:NAV_PLANS' ekle.
         """.trimIndent()
 
-        val lengthGuide = if (modelPower == AiModelPower.PRO) {
-            "Detaylı Mod aktif: Konuyu adım adım, derinlemesine sentezleyerek, örneklerle ve sınav tuzaklarıyla açıkla."
-        } else {
-            "Hızlı Mod aktif: Standart açıklamalarda 3-5 kısa ve vurucu cümle kullan, selamlamada maksimum 1 cümle kur."
-        }
+        val lengthGuide = "Açıklamaları net, anlaşılır ve dengeli tut; kısa selamlamalarda maksimum 1 cümle kur."
 
         val basePrompt = when (persona) {
             AiPersona.SHARK_COACH -> """

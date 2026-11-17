@@ -10,6 +10,7 @@ import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
 import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.GeminiChatTurn
+import com.example.sharkmentor.core.ai.MultiProviderAiClient
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.core.util.PdfBitmapConverter
@@ -274,18 +275,13 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
 1. SIFIR YALAKALIK & GİRİŞ YASAĞI: "Harika bir soru!", "Çok güzel düşünmüşsün!", "Merhaba! Sana bugün nasıl yardımcı olabilirim?" gibi yapay övgüleri ve kurumsal giriş cümlelerini KESİNLİKLE KULLANMA. Doğrudan konuya veya çözüme gir.
 2. ORANTILI UZUNLUK:
    - Kullanıcı yalnızca "Merhaba", "Selam", "Nasılsın" gibi kısa bir selam verirse MAKSİMUM 1 KISA CÜMLE ile yanıt ver (Örn: "Selam! Bugün hangi derse veya soruya odaklanıyoruz?"). Selamlamaya asla paragraflarca yanıt yazma.
-   - Seçilen yanıt gücüne (Hızlı vs Detaylı) sadık kal.
+   - Konuyu net, anlaşılır ve öğrencinin ihtiyacına orantılı derinlikte açıkla.
 3. SOHBET KANCASI (KAPIYI KAPATMA):
    - Yanıtlarını "Başarılar dilerim, başka sorun varsa sorabilirsin" gibi sohbeti bitiren klişelerle BİTİRME.
    - Bunun yerine öğrenciyi akışta tutan tek cümlelik doğal bir takip sorusu (kanca) sor (Örn: "Bu adımda kafana yatmayan bir yer var mı, yoksa benzer bir ikiz soruyla pekiştirelim mi?").
 """
 
-        fun getDepthDirective(modelPower: AiModelPower): String = when (modelPower) {
-            AiModelPower.FLASH ->
-                "\n[YANIT DERİNLİĞİ: HIZLI MOD (DÜŞÜK KOTA)] -> Lafı uzatma; 3-5 net, vurucu cümlede doğrudan özeti veya pratik çözümü ver."
-            AiModelPower.PRO ->
-                "\n[YANIT DERİNLİĞİ: DETAYLI MOD (DERİN SENTEZ)] -> Konuyu veya soruyu yüzeysel geçme; mantığını, adım adım çıkarımını, kavramsal arka planını, ÖSYM/MEB sınav tuzaklarını ve somut örneklerini derinlemesine açıkla."
-        }
+        fun getDepthDirective(modelPower: AiModelPower): String = ""
 
         const val SOLVER_ENGINE_SYSTEM_PROMPT = """
 Sen YKS/LGS düzeyinde uzman, pedagojik ve analitik bir Soru Çözüm Motorusun.
@@ -688,12 +684,69 @@ $MANDATORY_PERSONA_RULES
                 return@withContext Result.failure(IllegalStateException("Eklenen dosya veya görsel okunamadı."))
             }
 
-            val maxTokens = if (modelPower == AiModelPower.PRO) 12288 else 6144
+            val maxTokens = 6144
+            val prefs = UserAiPreferences.getOrNull(context)
+            val selectedProvider = prefs?.getSelectedProvider() ?: AiProviderChoice.AUTO
+            val cleanVisionPrompt = prompt.trim().ifBlank { "Eklenen görseli veya belgeyi incele." }
+
+            fun isVisionCapableProviderConfigured(p: AiProviderChoice): Boolean = when (p) {
+                AiProviderChoice.CLAUDE -> MultiProviderAiClient.getClaudeApiKey(context).isNotBlank()
+                AiProviderChoice.OPENAI -> MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank()
+                AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(context).isNotBlank()
+                else -> false
+            }
+
+            // If user explicitly chose Claude/OpenAI/Kimi (or AUTO resolves to Claude/OpenAI) and we have an image bitmap, honor it first
+            val autoActiveProvider = prefs?.getActiveProviderAndModel()?.first ?: AiProviderChoice.GEMINI
+            val primaryExternalVision = when {
+                selectedProvider in listOf(AiProviderChoice.CLAUDE, AiProviderChoice.OPENAI, AiProviderChoice.KIMI) &&
+                    isVisionCapableProviderConfigured(selectedProvider) -> selectedProvider
+                selectedProvider == AiProviderChoice.AUTO &&
+                    autoActiveProvider in listOf(AiProviderChoice.CLAUDE, AiProviderChoice.OPENAI) &&
+                    isVisionCapableProviderConfigured(autoActiveProvider) -> autoActiveProvider
+                else -> null
+            }
+
+            var externalVisionError: Throwable? = null
+            if (primaryExternalVision != null && visionBitmaps.isNotEmpty()) {
+                val base64Img = extractBase64FromAttachment(attachments)
+                if (base64Img != null) {
+                    try {
+                        val extText = MultiProviderAiClient.streamChatCompletion(
+                            provider = primaryExternalVision,
+                            systemPrompt = enrichedSystemInstruction,
+                            userPrompt = cleanVisionPrompt,
+                            temperature = 0.2f,
+                            maxTokens = maxTokens,
+                            imageBase64 = base64Img,
+                            imageMimeType = attachments.mimeType,
+                            context = context,
+                            onAccumulatedChunk = onPartialText
+                        )
+                        if (extText.isNotBlank()) {
+                            val parsedActionNotes = parseInlineActionNotes(extText)
+                            return@withContext Result.success(
+                                AiRouterResult(
+                                    text = extText,
+                                    executedToolNotes = parsedActionNotes,
+                                    createdPlanFolderId = null,
+                                    engineUsed = activeEngine
+                                )
+                            )
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Throwable) {
+                        externalVisionError = e
+                        Log.w("SharkAiVision", "${primaryExternalVision.shortLabel} vision failed (${e.message}), trying Gemini...")
+                    }
+                }
+            }
 
             val geminiResult = GeminiAiFactory.streamContentWithFailover(
                 context = context,
                 systemInstruction = enrichedSystemInstruction,
-                userPrompt = prompt.trim().ifBlank { "Eklenen görseli veya belgeyi incele." },
+                userPrompt = cleanVisionPrompt,
                 bitmaps = visionBitmaps,
                 inlineFiles = inlineFiles,
                 tools = emptyList(),
@@ -724,43 +777,51 @@ $MANDATORY_PERSONA_RULES
             val lastException = geminiResult.exceptionOrNull()
             if (lastException is CancellationException) throw lastException
 
-            // Seamless fallback to Kimi Vision ONLY if Kimi key is configured
-            val kimiKey = DeepSeekClient.getKimiApiKey(context)
-            if (kimiKey.isNotBlank()) {
+            // Seamless fallback to any other configured vision-capable external provider (Claude, OpenAI, Kimi)
+            val fallbackVisionProviders = listOf(
+                AiProviderChoice.CLAUDE,
+                AiProviderChoice.OPENAI,
+                AiProviderChoice.KIMI
+            ).filter { it != primaryExternalVision && isVisionCapableProviderConfigured(it) }
+
+            if (fallbackVisionProviders.isNotEmpty() && visionBitmaps.isNotEmpty()) {
                 val base64Img = extractBase64FromAttachment(attachments)
                 if (base64Img != null) {
-                    Log.i("SharkAiVision", "Gemini vision failed, falling back to Kimi Vision...")
-                    try {
-                        val kimiResult = DeepSeekClient.streamKimiVisionCompletion(
-                            systemPrompt = enrichedSystemInstruction,
-                            userPrompt = prompt,
-                            base64Image = base64Img,
-                            mimeType = attachments.mimeType,
-                            maxTokens = if (modelPower == AiModelPower.PRO) 8192 else 4096,
-                            context = context,
-                            onAccumulatedChunk = onPartialText
-                        )
-                        if (kimiResult.isNotBlank()) {
-                            val parsedActionNotes = parseInlineActionNotes(kimiResult)
-                            return@withContext Result.success(
-                                AiRouterResult(
-                                    text = kimiResult,
-                                    executedToolNotes = parsedActionNotes,
-                                    createdPlanFolderId = null,
-                                    engineUsed = activeEngine
-                                )
+                    for (fallbackProvider in fallbackVisionProviders) {
+                        try {
+                            val fallbackText = MultiProviderAiClient.streamChatCompletion(
+                                provider = fallbackProvider,
+                                systemPrompt = enrichedSystemInstruction,
+                                userPrompt = cleanVisionPrompt,
+                                temperature = 0.2f,
+                                maxTokens = maxTokens,
+                                imageBase64 = base64Img,
+                                imageMimeType = attachments.mimeType,
+                                context = context,
+                                onAccumulatedChunk = onPartialText
                             )
+                            if (fallbackText.isNotBlank()) {
+                                val parsedActionNotes = parseInlineActionNotes(fallbackText)
+                                return@withContext Result.success(
+                                    AiRouterResult(
+                                        text = fallbackText,
+                                        executedToolNotes = parsedActionNotes,
+                                        createdPlanFolderId = null,
+                                        engineUsed = activeEngine
+                                    )
+                                )
+                            }
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (fe: Throwable) {
+                            Log.w("SharkAiVision", "${fallbackProvider.shortLabel} Vision fallback failed: ${fe.message}", fe)
                         }
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (ke: Throwable) {
-                        Log.w("SharkAiVision", "Kimi Vision fallback failed: ${ke.message}", ke)
                     }
                 }
             }
 
             Result.failure(
-                lastException ?: IllegalStateException("Vision modelleri yanıt vermedi.")
+                externalVisionError ?: lastException ?: IllegalStateException("Vision modelleri yanıt vermedi.")
             )
         } finally {
             attachments.bitmaps.forEach { runCatching { if (!it.isRecycled) it.recycle() } }
@@ -815,10 +876,8 @@ $MANDATORY_PERSONA_RULES
     }
 
     /**
-     * Dedicated Text/Chat streaming pipeline:
-     * - Respects `UserAiPreferences.selectedAiProvider` (`AUTO`, `GEMINI`, `DEEPSEEK`, `KIMI`).
-     * - Forwards conversation `chatHistory` to Gemini as well as OpenAI-compatible providers.
-     * - Skips DeepSeek/Kimi completely when user chose `GEMINI` or when no DeepSeek/Kimi keys exist.
+     * Dedicated Text/Chat streaming pipeline across all 5 providers
+     * (`Gemini`, `DeepSeek`, `Kimi`, `Claude`, `GPT (OpenAI)` and `AUTO`).
      */
     suspend fun executeTextStream(
         activeEngine: SharkAiEngine = SharkAiEngine.CONVERSATIONAL_PEER,
@@ -833,8 +892,9 @@ $MANDATORY_PERSONA_RULES
             append(getDepthDirective(modelPower))
         }.trim()
 
-        val selectedProvider = UserAiPreferences.getOrNull(context)?.getSelectedProvider() ?: AiProviderChoice.AUTO
-        val hasOpenAiProviderKeys = DeepSeekClient.hasAnyOpenAiProviderKey(context)
+        val prefs = UserAiPreferences.getOrNull(context)
+        val selectedProvider = prefs?.getSelectedProvider() ?: AiProviderChoice.AUTO
+        val hasAnyExternalKeys = MultiProviderAiClient.hasAnyExternalProviderKey(context)
         val geminiHistory = chatHistory.takeLast(6).map { msg ->
             GeminiChatTurn(role = msg.role, text = msg.content)
         }
@@ -842,21 +902,53 @@ $MANDATORY_PERSONA_RULES
         val isAutonomousActionRequest = activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER ||
             AutoIntentClassifier.isComplexAutonomousActionIntent(prompt)
 
-        suspend fun runOpenAiProvider(): Result<AiRouterResult> {
+        fun hasKeyForProvider(provider: AiProviderChoice): Boolean = when (provider) {
+            AiProviderChoice.CLAUDE -> MultiProviderAiClient.getClaudeApiKey(context).isNotBlank()
+            AiProviderChoice.OPENAI -> MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank()
+            AiProviderChoice.DEEPSEEK -> DeepSeekClient.getDeepSeekApiKey(context).isNotBlank()
+            AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(context).isNotBlank()
+            AiProviderChoice.GEMINI -> (prefs?.getParsedUserGeminiKeys()?.isNotEmpty() == true)
+            AiProviderChoice.AUTO -> true
+        }
+
+        suspend fun runSpecificExternalProvider(provider: AiProviderChoice): Result<AiRouterResult> {
             return try {
-                val temp = if (modelPower == AiModelPower.PRO) 0.4f else 0.25f
-                val maxTokens = when {
-                    isAutonomousActionRequest -> 4096
-                    modelPower == AiModelPower.PRO -> 4096
-                    else -> 2048
-                }
+                val maxTokens = if (isAutonomousActionRequest) 4096 else 4096
+                val resultText = MultiProviderAiClient.streamChatCompletion(
+                    provider = provider,
+                    systemPrompt = enrichedSystemInstruction,
+                    userPrompt = prompt,
+                    chatHistory = chatHistory,
+                    temperature = 0.3f,
+                    maxTokens = maxTokens,
+                    context = context,
+                    onAccumulatedChunk = onPartialText
+                )
+                val parsedActionNotes = parseInlineActionNotes(resultText)
+                Result.success(
+                    AiRouterResult(
+                        text = resultText,
+                        executedToolNotes = parsedActionNotes,
+                        createdPlanFolderId = null,
+                        engineUsed = activeEngine
+                    )
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+        suspend fun runAnyExternalProvider(): Result<AiRouterResult> {
+            return try {
                 val preferKimi = DeepSeekClient.isLongContextPrompt(prompt, enrichedSystemInstruction)
                 val resultText = DeepSeekClient.streamChatCompletion(
                     systemPrompt = enrichedSystemInstruction,
                     userPrompt = prompt,
                     chatHistory = chatHistory,
-                    temperature = temp,
-                    maxTokens = maxTokens,
+                    temperature = 0.3f,
+                    maxTokens = 4096,
                     preferKimiLongContext = preferKimi,
                     context = context,
                     onAccumulatedChunk = onPartialText
@@ -885,68 +977,84 @@ $MANDATORY_PERSONA_RULES
                     systemInstruction = enrichedSystemInstruction,
                     chatHistory = geminiHistory,
                     modelPower = modelPower,
-                    overrideMaxTokens = if (modelPower == AiModelPower.PRO) 16384 else 6144,
+                    overrideMaxTokens = 6144,
                     forceInlineActionMode = isAutonomousActionRequest,
                     onPartialText = onPartialText
                 )
             }
 
-            AiProviderChoice.DEEPSEEK, AiProviderChoice.KIMI -> {
-                if (hasOpenAiProviderKeys) {
-                    val openAiAttempt = runOpenAiProvider()
-                    if (openAiAttempt.isSuccess) return@withContext openAiAttempt
+            AiProviderChoice.CLAUDE,
+            AiProviderChoice.OPENAI,
+            AiProviderChoice.DEEPSEEK,
+            AiProviderChoice.KIMI -> {
+                var explicitError: Throwable? = null
+                if (hasKeyForProvider(selectedProvider)) {
+                    val providerAttempt = runSpecificExternalProvider(selectedProvider)
+                    if (providerAttempt.isSuccess) return@withContext providerAttempt
+                    explicitError = providerAttempt.exceptionOrNull()
                     Log.w(
                         "AiRouterRepository",
-                        "Selected provider $selectedProvider failed (${openAiAttempt.exceptionOrNull()?.message}), falling back to gemini-3.6-flash..."
+                        "Selected provider $selectedProvider failed (${explicitError?.message}), falling back to Gemini..."
                     )
                 }
-                return@withContext streamGeminiTextFallback(
+                val geminiFallback = streamGeminiTextFallback(
                     activeEngine = activeEngine,
                     prompt = prompt,
                     systemInstruction = enrichedSystemInstruction,
                     chatHistory = geminiHistory,
                     modelPower = modelPower,
-                    overrideMaxTokens = if (modelPower == AiModelPower.PRO) 16384 else 6144,
+                    overrideMaxTokens = 6144,
                     forceInlineActionMode = isAutonomousActionRequest,
                     onPartialText = onPartialText
                 )
+                return@withContext if (geminiFallback.isSuccess || explicitError == null) {
+                    geminiFallback
+                } else {
+                    Result.failure(explicitError)
+                }
             }
 
             AiProviderChoice.AUTO -> {
-                if (isAutonomousActionRequest) {
+                val activeAutoProvider = prefs?.getActiveProviderAndModel()?.first ?: AiProviderChoice.GEMINI
+
+                if (isAutonomousActionRequest && activeAutoProvider == AiProviderChoice.GEMINI) {
                     val geminiActionAttempt = streamGeminiTextFallback(
                         activeEngine = activeEngine,
                         prompt = prompt,
                         systemInstruction = enrichedSystemInstruction,
                         chatHistory = geminiHistory,
                         modelPower = modelPower,
-                        overrideMaxTokens = if (modelPower == AiModelPower.PRO) 12288 else 6144,
+                        overrideMaxTokens = 6144,
                         forceInlineActionMode = true,
                         onPartialText = onPartialText
                     )
-                    if (geminiActionAttempt.isSuccess) {
+                    if (geminiActionAttempt.isSuccess || !hasAnyExternalKeys) {
                         return@withContext geminiActionAttempt
                     }
-                    if (!hasOpenAiProviderKeys) {
-                        return@withContext geminiActionAttempt
-                    }
-                    Log.w("AiRouterRepository", "Gemini autonomous action call failed, falling back to DeepSeek/Kimi...")
-                    val openAiFallback = runOpenAiProvider()
-                    return@withContext if (openAiFallback.isSuccess) openAiFallback else geminiActionAttempt
+                    Log.w("AiRouterRepository", "Gemini autonomous action call failed, falling back to configured external provider...")
+                    val extFallback = runAnyExternalProvider()
+                    return@withContext if (extFallback.isSuccess) extFallback else geminiActionAttempt
                 }
 
-                if (hasOpenAiProviderKeys) {
-                    val openAiAttempt = runOpenAiProvider()
-                    if (openAiAttempt.isSuccess) {
-                        return@withContext openAiAttempt
-                    }
+                if (activeAutoProvider != AiProviderChoice.GEMINI && hasKeyForProvider(activeAutoProvider)) {
+                    val autoExtAttempt = runSpecificExternalProvider(activeAutoProvider)
+                    if (autoExtAttempt.isSuccess) return@withContext autoExtAttempt
                     Log.w(
                         "AiRouterRepository",
-                        "DeepSeek/Kimi text stream failed (${openAiAttempt.exceptionOrNull()?.message}), falling back to gemini-3.6-flash..."
+                        "Auto active provider $activeAutoProvider failed (${autoExtAttempt.exceptionOrNull()?.message}), falling back to Gemini..."
                     )
+                    val geminiFallback = streamGeminiTextFallback(
+                        activeEngine = activeEngine,
+                        prompt = prompt,
+                        systemInstruction = enrichedSystemInstruction,
+                        chatHistory = geminiHistory,
+                        modelPower = modelPower,
+                        onPartialText = onPartialText
+                    )
+                    return@withContext if (geminiFallback.isSuccess) geminiFallback else autoExtAttempt
                 }
 
-                return@withContext streamGeminiTextFallback(
+                val geminiAttempt = streamGeminiTextFallback(
                     activeEngine = activeEngine,
                     prompt = prompt,
                     systemInstruction = enrichedSystemInstruction,
@@ -954,6 +1062,11 @@ $MANDATORY_PERSONA_RULES
                     modelPower = modelPower,
                     onPartialText = onPartialText
                 )
+                if (geminiAttempt.isSuccess || !hasAnyExternalKeys) {
+                    return@withContext geminiAttempt
+                }
+                val extFallback = runAnyExternalProvider()
+                return@withContext if (extFallback.isSuccess) extFallback else geminiAttempt
             }
         }
     }

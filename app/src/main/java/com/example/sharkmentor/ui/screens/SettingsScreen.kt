@@ -79,11 +79,43 @@ fun SettingsScreen(
 
     val userAiPrefs = remember { UserAiPreferences.initialize(context) }
     val savedGeminiKeys by userAiPrefs.userGeminiKeys.collectAsStateWithLifecycle()
-    val savedModel by userAiPrefs.selectedUserGeminiModel.collectAsStateWithLifecycle()
+    val savedGeminiModel by userAiPrefs.selectedUserGeminiModel.collectAsStateWithLifecycle()
+    val savedDeepSeekKey by userAiPrefs.userDeepSeekKey.collectAsStateWithLifecycle()
+    val savedDeepSeekModel by userAiPrefs.selectedDeepSeekModel.collectAsStateWithLifecycle()
+    val savedKimiKey by userAiPrefs.userKimiKey.collectAsStateWithLifecycle()
+    val savedKimiModel by userAiPrefs.selectedKimiModel.collectAsStateWithLifecycle()
+    val savedClaudeKey by userAiPrefs.userClaudeKey.collectAsStateWithLifecycle()
+    val savedClaudeModel by userAiPrefs.selectedClaudeModel.collectAsStateWithLifecycle()
+    val savedOpenAiKey by userAiPrefs.userOpenAiKey.collectAsStateWithLifecycle()
+    val savedOpenAiModel by userAiPrefs.selectedOpenAiModel.collectAsStateWithLifecycle()
     val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
-    val savedPowerMode by userAiPrefs.preferredPowerMode.collectAsStateWithLifecycle()
-    val hasCustomGemini = remember(savedGeminiKeys) {
-        UserAiPreferences.parseGeminiKeyList(savedGeminiKeys).isNotEmpty()
+    val hasCustomAnyKey = remember(
+        savedGeminiKeys,
+        savedDeepSeekKey,
+        savedKimiKey,
+        savedClaudeKey,
+        savedOpenAiKey
+    ) {
+        UserAiPreferences.parseGeminiKeyList(savedGeminiKeys).isNotEmpty() ||
+            savedDeepSeekKey.isNotBlank() ||
+            savedKimiKey.isNotBlank() ||
+            savedClaudeKey.isNotBlank() ||
+            savedOpenAiKey.isNotBlank()
+    }
+    val activeSummaryDisplay = remember(
+        savedGeminiKeys,
+        savedGeminiModel,
+        savedDeepSeekKey,
+        savedDeepSeekModel,
+        savedKimiKey,
+        savedKimiModel,
+        savedClaudeKey,
+        savedClaudeModel,
+        savedOpenAiKey,
+        savedOpenAiModel,
+        savedProvider
+    ) {
+        userAiPrefs.getActiveDisplayText()
     }
 
     if (showTimeDialog) {
@@ -156,10 +188,9 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.SemiBold
                             )
-                            val modelText = if (hasCustomGemini) savedModel else UserAiPreferences.STANDARD_GEMINI_MODEL
-                            val keySourceText = if (hasCustomGemini) "Özel Anahtar" else "Standart Anahtar"
+                            val keySourceText = if (hasCustomAnyKey) "Özel Anahtar" else "Standart Anahtar"
                             Text(
-                                text = "$keySourceText • $modelText • ${savedProvider.label} (${savedPowerMode.label})",
+                                text = "$keySourceText • $activeSummaryDisplay (${savedProvider.shortLabel})",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,

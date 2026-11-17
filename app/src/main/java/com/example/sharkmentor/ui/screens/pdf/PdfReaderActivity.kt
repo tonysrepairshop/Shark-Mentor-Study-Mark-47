@@ -119,6 +119,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
 import com.example.sharkmentor.core.ai.GeminiAiFactory
+import com.example.sharkmentor.core.ai.MultiProviderAiClient
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.data.ThemePreferences
 import com.example.sharkmentor.core.theme.ThemeManager
@@ -1034,15 +1035,31 @@ fun PdfReaderScreen(
                     $effectivePrompt
                 """.trimIndent()
 
-                val shouldTryOpenAiFirst = when (selectedProvider) {
-                    AiProviderChoice.GEMINI -> false
-                    AiProviderChoice.DEEPSEEK, AiProviderChoice.KIMI -> DeepSeekClient.hasAnyOpenAiProviderKey(context)
-                    AiProviderChoice.AUTO -> DeepSeekClient.hasAnyOpenAiProviderKey(context)
+                val prefs = UserAiPreferences.getOrNull(context)
+                val targetExternalProvider: AiProviderChoice? = when (selectedProvider) {
+                    AiProviderChoice.GEMINI -> null
+                    AiProviderChoice.CLAUDE ->
+                        AiProviderChoice.CLAUDE.takeIf { MultiProviderAiClient.getClaudeApiKey(context).isNotBlank() }
+                    AiProviderChoice.OPENAI ->
+                        AiProviderChoice.OPENAI.takeIf { MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank() }
+                    AiProviderChoice.DEEPSEEK ->
+                        AiProviderChoice.DEEPSEEK.takeIf { DeepSeekClient.getDeepSeekApiKey(context).isNotBlank() }
+                    AiProviderChoice.KIMI ->
+                        AiProviderChoice.KIMI.takeIf { DeepSeekClient.getKimiApiKey(context).isNotBlank() }
+                    AiProviderChoice.AUTO -> {
+                        val activeAuto = prefs?.getActiveProviderAndModel()?.first ?: AiProviderChoice.GEMINI
+                        if (activeAuto != AiProviderChoice.GEMINI && MultiProviderAiClient.hasAnyExternalProviderKey(context)) {
+                            activeAuto
+                        } else {
+                            null
+                        }
+                    }
                 }
 
-                if (shouldTryOpenAiFirst) {
+                if (targetExternalProvider != null) {
                     try {
-                        val streamed = DeepSeekClient.streamChatCompletion(
+                        val streamed = MultiProviderAiClient.streamChatCompletion(
+                            provider = targetExternalProvider,
                             systemPrompt = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
                             userPrompt = contextualPrompt,
                             temperature = 0.2f,
@@ -1068,7 +1085,7 @@ fun PdfReaderScreen(
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Exception) {
-                        Log.w("PdfReaderAI", "DeepSeek/Kimi fallback to Gemini: ${e.message}")
+                        Log.w("PdfReaderAI", "${targetExternalProvider.shortLabel} fallback to Gemini: ${e.message}")
                     }
                 }
 

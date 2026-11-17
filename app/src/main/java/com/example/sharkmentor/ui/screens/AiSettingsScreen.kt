@@ -29,6 +29,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
@@ -46,9 +48,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -75,8 +74,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.ApiKeyRotator
 import com.example.sharkmentor.core.ai.GeminiConnectionTestResult
+import com.example.sharkmentor.core.ai.GeminiModelOption
 import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.PreferredPowerMode
+import com.example.sharkmentor.core.ai.MultiProviderAiClient
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -91,72 +91,112 @@ fun AiSettingsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val userAiPrefs = remember { UserAiPreferences.initialize(context) }
 
+    // Saved StateFlows
     val savedGemini by userAiPrefs.userGeminiKeys.collectAsStateWithLifecycle()
-    val savedSelectedModel by userAiPrefs.selectedUserGeminiModel.collectAsStateWithLifecycle()
-    val savedDiscoveredModels by userAiPrefs.discoveredGeminiModels.collectAsStateWithLifecycle()
-    val savedDeepSeek by userAiPrefs.userDeepSeekKey.collectAsStateWithLifecycle()
-    val savedKimi by userAiPrefs.userKimiKey.collectAsStateWithLifecycle()
-    val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
-    val savedPowerMode by userAiPrefs.preferredPowerMode.collectAsStateWithLifecycle()
+    val savedGeminiModel by userAiPrefs.selectedUserGeminiModel.collectAsStateWithLifecycle()
+    val savedGeminiList by userAiPrefs.discoveredGeminiModels.collectAsStateWithLifecycle()
 
+    val savedDeepSeek by userAiPrefs.userDeepSeekKey.collectAsStateWithLifecycle()
+    val savedDeepSeekModel by userAiPrefs.selectedDeepSeekModel.collectAsStateWithLifecycle()
+    val savedDeepSeekList by userAiPrefs.discoveredDeepSeekModels.collectAsStateWithLifecycle()
+
+    val savedKimi by userAiPrefs.userKimiKey.collectAsStateWithLifecycle()
+    val savedKimiModel by userAiPrefs.selectedKimiModel.collectAsStateWithLifecycle()
+    val savedKimiList by userAiPrefs.discoveredKimiModels.collectAsStateWithLifecycle()
+
+    val savedClaude by userAiPrefs.userClaudeKey.collectAsStateWithLifecycle()
+    val savedClaudeModel by userAiPrefs.selectedClaudeModel.collectAsStateWithLifecycle()
+    val savedClaudeList by userAiPrefs.discoveredClaudeModels.collectAsStateWithLifecycle()
+
+    val savedOpenAi by userAiPrefs.userOpenAiKey.collectAsStateWithLifecycle()
+    val savedOpenAiModel by userAiPrefs.selectedOpenAiModel.collectAsStateWithLifecycle()
+    val savedOpenAiList by userAiPrefs.discoveredOpenAiModels.collectAsStateWithLifecycle()
+
+    val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
+
+    // Editable local states
     var geminiKeysInput by remember(savedGemini) { mutableStateOf(savedGemini) }
-    var selectedGeminiModel by remember(savedSelectedModel) { mutableStateOf(savedSelectedModel) }
-    var discoveredModels by remember(savedDiscoveredModels) { mutableStateOf(savedDiscoveredModels) }
-    var isDiscoveringModels by remember { mutableStateOf(false) }
-    var modelDiscoveryError by remember { mutableStateOf<String?>(null) }
-    var modelSearchQuery by remember { mutableStateOf("") }
+    var selectedGeminiModel by remember(savedGeminiModel) { mutableStateOf(savedGeminiModel) }
+    var discoveredGeminiModels by remember(savedGeminiList) { mutableStateOf(savedGeminiList) }
 
     var deepSeekInput by remember(savedDeepSeek) { mutableStateOf(savedDeepSeek) }
-    var kimiInput by remember(savedKimi) { mutableStateOf(savedKimi) }
-    var selectedProvider by remember(savedProvider) { mutableStateOf(savedProvider) }
-    var selectedPowerMode by remember(savedPowerMode) { mutableStateOf(savedPowerMode) }
+    var selectedDeepSeekModel by remember(savedDeepSeekModel) { mutableStateOf(savedDeepSeekModel) }
+    var discoveredDeepSeekModels by remember(savedDeepSeekList) { mutableStateOf(savedDeepSeekList) }
 
-    var showGeminiKey by remember { mutableStateOf(false) }
-    var showDeepSeekKey by remember { mutableStateOf(false) }
-    var showKimiKey by remember { mutableStateOf(false) }
-    var isTestingConnection by remember { mutableStateOf(false) }
-    var connectionTestResult by remember { mutableStateOf<GeminiConnectionTestResult?>(null) }
+    var kimiInput by remember(savedKimi) { mutableStateOf(savedKimi) }
+    var selectedKimiModel by remember(savedKimiModel) { mutableStateOf(savedKimiModel) }
+    var discoveredKimiModels by remember(savedKimiList) { mutableStateOf(savedKimiList) }
+
+    var claudeInput by remember(savedClaude) { mutableStateOf(savedClaude) }
+    var selectedClaudeModel by remember(savedClaudeModel) { mutableStateOf(savedClaudeModel) }
+    var discoveredClaudeModels by remember(savedClaudeList) { mutableStateOf(savedClaudeList) }
+
+    var openAiInput by remember(savedOpenAi) { mutableStateOf(savedOpenAi) }
+    var selectedOpenAiModel by remember(savedOpenAiModel) { mutableStateOf(savedOpenAiModel) }
+    var discoveredOpenAiModels by remember(savedOpenAiList) { mutableStateOf(savedOpenAiList) }
+
+    var selectedProvider by remember(savedProvider) { mutableStateOf(savedProvider) }
 
     val hasCustomGeminiInput = remember(geminiKeysInput) {
         UserAiPreferences.parseGeminiKeyList(geminiKeysInput).isNotEmpty()
     }
 
-    LaunchedEffect(geminiKeysInput) {
-        val parsed = UserAiPreferences.parseGeminiKeyList(geminiKeysInput)
-        if (parsed.isEmpty()) {
-            selectedGeminiModel = UserAiPreferences.STANDARD_GEMINI_MODEL
-            modelDiscoveryError = null
-            isDiscoveringModels = false
-            modelSearchQuery = ""
-            return@LaunchedEffect
-        }
-        val firstKey = parsed.firstOrNull().orEmpty()
-        if (firstKey.length < 16) return@LaunchedEffect
-
-        delay(750L)
-        isDiscoveringModels = true
-        modelDiscoveryError = null
-        val discovery = GeminiRestClient.fetchSupportedModels(geminiKeysInput)
-        isDiscoveringModels = false
-        if (discovery.success && discovery.models.isNotEmpty()) {
-            discoveredModels = discovery.models
-            if (discovery.models.none { it.id == selectedGeminiModel }) {
-                selectedGeminiModel = discovery.models
-                    .firstOrNull { it.id == UserAiPreferences.STANDARD_GEMINI_MODEL }
-                    ?.id ?: discovery.models.first().id
+    fun persistAll(showFeedback: Boolean = false) {
+        userAiPrefs.saveSettings(
+            geminiKeys = geminiKeysInput,
+            deepSeekKey = deepSeekInput,
+            kimiKey = kimiInput,
+            claudeKey = claudeInput,
+            openAiKey = openAiInput,
+            provider = selectedProvider,
+            selectedGeminiModel = if (hasCustomGeminiInput) selectedGeminiModel else UserAiPreferences.STANDARD_GEMINI_MODEL,
+            discoveredGeminiModels = if (hasCustomGeminiInput) discoveredGeminiModels else emptyList(),
+            selectedDeepSeekModel = selectedDeepSeekModel,
+            discoveredDeepSeekModels = if (deepSeekInput.isNotBlank()) discoveredDeepSeekModels else emptyList(),
+            selectedKimiModel = selectedKimiModel,
+            discoveredKimiModels = if (kimiInput.isNotBlank()) discoveredKimiModels else emptyList(),
+            selectedClaudeModel = selectedClaudeModel,
+            discoveredClaudeModels = if (claudeInput.isNotBlank()) discoveredClaudeModels else emptyList(),
+            selectedOpenAiModel = selectedOpenAiModel,
+            discoveredOpenAiModels = if (openAiInput.isNotBlank()) discoveredOpenAiModels else emptyList()
+        )
+        ApiKeyRotator.invalidateAndReset()
+        if (showFeedback) {
+            scope.launch {
+                snackbarHostState.showSnackbar("AI ve API ayarları kaydedildi")
             }
-        } else if (discoveredModels.isEmpty()) {
-            modelDiscoveryError = discovery.summary
         }
     }
 
-    val filteredModels = remember(discoveredModels, modelSearchQuery) {
-        val q = modelSearchQuery.trim()
-        if (q.isBlank()) discoveredModels
-        else discoveredModels.filter {
-            it.id.contains(q, ignoreCase = true) ||
-                it.displayName.contains(q, ignoreCase = true) ||
-                it.description.contains(q, ignoreCase = true)
+    // Compute live active preview for the top banner based on current editable fields
+    val liveActivePair: Pair<AiProviderChoice, String> = remember(
+        selectedProvider,
+        geminiKeysInput,
+        selectedGeminiModel,
+        deepSeekInput,
+        selectedDeepSeekModel,
+        kimiInput,
+        selectedKimiModel,
+        claudeInput,
+        selectedClaudeModel,
+        openAiInput,
+        selectedOpenAiModel
+    ) {
+        val effGeminiModel = if (hasCustomGeminiInput) selectedGeminiModel else UserAiPreferences.STANDARD_GEMINI_MODEL
+        when (selectedProvider) {
+            AiProviderChoice.GEMINI -> AiProviderChoice.GEMINI to effGeminiModel
+            AiProviderChoice.DEEPSEEK -> AiProviderChoice.DEEPSEEK to selectedDeepSeekModel
+            AiProviderChoice.KIMI -> AiProviderChoice.KIMI to selectedKimiModel
+            AiProviderChoice.CLAUDE -> AiProviderChoice.CLAUDE to selectedClaudeModel
+            AiProviderChoice.OPENAI -> AiProviderChoice.OPENAI to selectedOpenAiModel
+            AiProviderChoice.AUTO -> when {
+                hasCustomGeminiInput -> AiProviderChoice.GEMINI to effGeminiModel
+                claudeInput.isNotBlank() -> AiProviderChoice.CLAUDE to selectedClaudeModel
+                openAiInput.isNotBlank() -> AiProviderChoice.OPENAI to selectedOpenAiModel
+                deepSeekInput.isNotBlank() -> AiProviderChoice.DEEPSEEK to selectedDeepSeekModel
+                kimiInput.isNotBlank() -> AiProviderChoice.KIMI to selectedKimiModel
+                else -> AiProviderChoice.GEMINI to UserAiPreferences.STANDARD_GEMINI_MODEL
+            }
         }
     }
 
@@ -173,6 +213,13 @@ fun AiSettingsScreen(
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Geri")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { persistAll(showFeedback = true) }) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Kaydet", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
                 }
             )
@@ -213,22 +260,25 @@ fun AiSettingsScreen(
                         )
                         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(
-                                text = if (hasCustomGeminiInput) {
-                                    "Aktif Model: $selectedGeminiModel"
-                                } else {
-                                    "Standart Mod: ${UserAiPreferences.STANDARD_GEMINI_MODEL}"
-                                },
+                                text = "Aktif Model: ${liveActivePair.first.shortLabel} • ${liveActivePair.second}",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                            val bannerSub = if (
+                                !hasCustomGeminiInput &&
+                                deepSeekInput.isBlank() &&
+                                kimiInput.isBlank() &&
+                                claudeInput.isBlank() &&
+                                openAiInput.isBlank()
+                            ) {
+                                "Özel anahtar girilmediğinde varsayılan Gemini (${UserAiPreferences.STANDARD_GEMINI_MODEL}) kullanılır. Dilediğiniz sağlayıcıya API anahtarı ekleyip modellerini listeleyebilir ve test edebilirsiniz."
+                            } else {
+                                "Sağlayıcı tercihiniz: ${selectedProvider.label}. Her sağlayıcı için modelleri çekip seçebilir ve bağlantıyı test edebilirsiniz."
+                            }
                             Text(
-                                text = if (hasCustomGeminiInput) {
-                                    "Kendi Gemini API anahtarın ve seçtiğin model kullanılıyor."
-                                } else {
-                                    "Özel anahtar girilmediğinde varsayılan 3 anahtar (${UserAiPreferences.STANDARD_GEMINI_MODEL}) kullanılır."
-                                },
+                                text = bannerSub,
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontSize = 13.sp,
                                 lineHeight = 18.sp,
@@ -238,7 +288,7 @@ fun AiSettingsScreen(
                     }
                 }
 
-                // API Keys Card
+                // Active Provider Choice
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
                     shape = RoundedCornerShape(16.dp),
@@ -247,275 +297,20 @@ fun AiSettingsScreen(
                 ) {
                     Column(
                         modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Key,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                text = "API Anahtarları",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        AiKeyField(
-                            value = geminiKeysInput,
-                            onValueChange = {
-                                geminiKeysInput = it
-                                connectionTestResult = null
-                            },
-                            label = "Gemini API Key (AI Studio)",
-                            placeholder = "Birden fazla için virgülle ayır: key1, key2",
-                            isVisible = showGeminiKey,
-                            onToggleVisibility = { showGeminiKey = !showGeminiKey },
-                            onClear = {
-                                geminiKeysInput = ""
-                                selectedGeminiModel = UserAiPreferences.STANDARD_GEMINI_MODEL
-                                discoveredModels = emptyList()
-                                modelDiscoveryError = null
-                                connectionTestResult = null
-                            }
-                        )
-
-                        AiKeyField(
-                            value = deepSeekInput,
-                            onValueChange = { deepSeekInput = it },
-                            label = "DeepSeek API Key (İsteğe bağlı)",
-                            placeholder = "sk-...",
-                            isVisible = showDeepSeekKey,
-                            onToggleVisibility = { showDeepSeekKey = !showDeepSeekKey },
-                            onClear = { deepSeekInput = "" }
-                        )
-
-                        AiKeyField(
-                            value = kimiInput,
-                            onValueChange = { kimiInput = it },
-                            label = "Kimi API Key (İsteğe bağlı)",
-                            placeholder = "sk-...",
-                            isVisible = showKimiKey,
-                            onToggleVisibility = { showKimiKey = !showKimiKey },
-                            onClear = { kimiInput = "" }
-                        )
-                    }
-                }
-
-                // Supported Models Card (large & tablet-friendly)
-                if (hasCustomGeminiInput) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                        shape = RoundedCornerShape(16.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Anahtarın Desteklediği Modeller",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    if (discoveredModels.isNotEmpty()) {
-                                        Text(
-                                            text = "${discoveredModels.size} model bulundu • Seçili: $selectedGeminiModel",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontSize = 13.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                                TextButton(
-                                    onClick = {
-                                        if (isDiscoveringModels) return@TextButton
-                                        scope.launch {
-                                            isDiscoveringModels = true
-                                            modelDiscoveryError = null
-                                            val discovery = GeminiRestClient.fetchSupportedModels(geminiKeysInput)
-                                            isDiscoveringModels = false
-                                            if (discovery.success && discovery.models.isNotEmpty()) {
-                                                discoveredModels = discovery.models
-                                                if (discovery.models.none { it.id == selectedGeminiModel }) {
-                                                    selectedGeminiModel = discovery.models
-                                                        .firstOrNull { it.id == UserAiPreferences.STANDARD_GEMINI_MODEL }
-                                                        ?.id ?: discovery.models.first().id
-                                                }
-                                            } else {
-                                                modelDiscoveryError = discovery.summary
-                                            }
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                                ) {
-                                    if (isDiscoveringModels) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Taranıyor...", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                    } else {
-                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Modelleri Getir", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                    }
-                                }
-                            }
-
-                            modelDiscoveryError?.let { errText ->
-                                Surface(
-                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = errText,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontSize = 14.sp,
-                                        lineHeight = 20.sp,
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
-                                        modifier = Modifier.padding(12.dp)
-                                    )
-                                }
-                            }
-
-                            if (discoveredModels.size > 6) {
-                                OutlinedTextField(
-                                    value = modelSearchQuery,
-                                    onValueChange = { modelSearchQuery = it },
-                                    placeholder = { Text("Model ara (örn. flash, pro, 2.5, 3.8)...", fontSize = 14.sp) },
-                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                                    trailingIcon = {
-                                        if (modelSearchQuery.isNotEmpty()) {
-                                            IconButton(onClick = { modelSearchQuery = "" }) {
-                                                Icon(Icons.Default.Close, contentDescription = "Temizle")
-                                            }
-                                        }
-                                    },
-                                    singleLine = true,
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-
-                            if (filteredModels.isNotEmpty()) {
-                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    filteredModels.forEach { modelOpt ->
-                                        val isSelected = selectedGeminiModel == modelOpt.id
-                                        Surface(
-                                            shape = RoundedCornerShape(14.dp),
-                                            color = if (isSelected) {
-                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-                                            } else {
-                                                MaterialTheme.colorScheme.surface
-                                            },
-                                            border = BorderStroke(
-                                                width = if (isSelected) 2.dp else 1.dp,
-                                                color = if (isSelected) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.outlineVariant
-                                                }
-                                            ),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    selectedGeminiModel = modelOpt.id
-                                                    connectionTestResult = null
-                                                }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                RadioButton(
-                                                    selected = isSelected,
-                                                    onClick = {
-                                                        selectedGeminiModel = modelOpt.id
-                                                        connectionTestResult = null
-                                                    }
-                                                )
-                                                Column(
-                                                    modifier = Modifier.weight(1f),
-                                                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                                                ) {
-                                                    Text(
-                                                        text = modelOpt.displayName.ifBlank { modelOpt.id },
-                                                        style = MaterialTheme.typography.titleSmall,
-                                                        fontSize = 15.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.onSurface
-                                                    )
-                                                    Text(
-                                                        text = modelOpt.id,
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontSize = 13.sp,
-                                                        fontWeight = FontWeight.Medium,
-                                                        color = MaterialTheme.colorScheme.primary
-                                                    )
-                                                    if (modelOpt.description.isNotBlank()) {
-                                                        Text(
-                                                            text = modelOpt.description,
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            fontSize = 13.sp,
-                                                            lineHeight = 18.sp,
-                                                            maxLines = 2,
-                                                            overflow = TextOverflow.Ellipsis,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                        )
-                                                    }
-                                                }
-                                                if (isSelected) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.CheckCircle,
-                                                        contentDescription = "Seçili",
-                                                        tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(22.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Provider & Power Mode Card
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                    shape = RoundedCornerShape(16.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
-                            text = "Sağlayıcı Tercihi",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontSize = 15.sp,
+                            text = "Aktif Sağlayıcı Tercihi",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontSize = 16.sp,
                             fontWeight = FontWeight.Bold
                         )
-
+                        Text(
+                            text = "Sohbette kullanılacak birincil AI sağlayıcısını seçin:",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -524,7 +319,10 @@ fun AiSettingsScreen(
                                 val isSelected = selectedProvider == provider
                                 FilterChip(
                                     selected = isSelected,
-                                    onClick = { selectedProvider = provider },
+                                    onClick = {
+                                        selectedProvider = provider
+                                        persistAll(showFeedback = false)
+                                    },
                                     label = {
                                         Text(
                                             text = provider.label,
@@ -541,145 +339,703 @@ fun AiSettingsScreen(
                                 )
                             }
                         }
+                    }
+                }
 
+                // 1. Gemini (Google AI Studio)
+                ProviderConfigCard(
+                    provider = AiProviderChoice.GEMINI,
+                    title = "Gemini (Google AI Studio)",
+                    keyLabel = "Gemini API Key",
+                    keyPlaceholder = "Birden fazla için virgülle ayır: AIza..., AIza...",
+                    keyValue = geminiKeysInput,
+                    hasConfiguredKey = hasCustomGeminiInput,
+                    allowTestWithoutUserKey = true,
+                    selectedModel = if (hasCustomGeminiInput) selectedGeminiModel else UserAiPreferences.STANDARD_GEMINI_MODEL,
+                    discoveredModels = discoveredGeminiModels,
+                    isPreferred = selectedProvider == AiProviderChoice.GEMINI,
+                    searchPlaceholder = "Gemini modeli ara (örn. flash, pro, 2.5, 3.8)...",
+                    onKeyChange = {
+                        geminiKeysInput = it
+                        if (UserAiPreferences.parseGeminiKeyList(it).isEmpty()) {
+                            selectedGeminiModel = UserAiPreferences.STANDARD_GEMINI_MODEL
+                            discoveredGeminiModels = emptyList()
+                        }
+                    },
+                    onClearKey = {
+                        geminiKeysInput = ""
+                        selectedGeminiModel = UserAiPreferences.STANDARD_GEMINI_MODEL
+                        discoveredGeminiModels = emptyList()
+                    },
+                    onSelectProvider = {
+                        selectedProvider = AiProviderChoice.GEMINI
+                        persistAll(showFeedback = false)
+                    },
+                    onSelectModel = { modelId ->
+                        selectedGeminiModel = modelId
+                        persistAll(showFeedback = false)
+                    },
+                    onModelsDiscovered = { models ->
+                        discoveredGeminiModels = models
+                        if (models.none { it.id == selectedGeminiModel }) {
+                            selectedGeminiModel = models
+                                .firstOrNull { it.id == UserAiPreferences.STANDARD_GEMINI_MODEL }
+                                ?.id ?: models.first().id
+                        }
+                        persistAll(showFeedback = false)
+                    },
+                    onDiscover = { key -> GeminiRestClient.fetchSupportedModels(key) },
+                    onTest = { key, modelId ->
+                        GeminiRestClient.testApiConnection(
+                            context = context,
+                            candidateUserKeysRaw = key,
+                            candidateModelId = if (UserAiPreferences.parseGeminiKeyList(key).isNotEmpty()) modelId else null
+                        )
+                    }
+                )
+
+                // 2. Claude (Anthropic)
+                ProviderConfigCard(
+                    provider = AiProviderChoice.CLAUDE,
+                    title = "Claude (Anthropic)",
+                    keyLabel = "Claude API Key",
+                    keyPlaceholder = "sk-ant-...",
+                    keyValue = claudeInput,
+                    hasConfiguredKey = claudeInput.isNotBlank(),
+                    allowTestWithoutUserKey = false,
+                    selectedModel = selectedClaudeModel,
+                    discoveredModels = discoveredClaudeModels,
+                    isPreferred = selectedProvider == AiProviderChoice.CLAUDE,
+                    searchPlaceholder = "Claude modeli ara (örn. sonnet, opus, haiku)...",
+                    onKeyChange = {
+                        claudeInput = it
+                        if (it.isBlank()) {
+                            selectedClaudeModel = UserAiPreferences.DEFAULT_CLAUDE_MODEL
+                            discoveredClaudeModels = emptyList()
+                        }
+                    },
+                    onClearKey = {
+                        claudeInput = ""
+                        selectedClaudeModel = UserAiPreferences.DEFAULT_CLAUDE_MODEL
+                        discoveredClaudeModels = emptyList()
+                    },
+                    onSelectProvider = {
+                        selectedProvider = AiProviderChoice.CLAUDE
+                        persistAll(showFeedback = false)
+                    },
+                    onSelectModel = { modelId ->
+                        selectedClaudeModel = modelId
+                        persistAll(showFeedback = false)
+                    },
+                    onModelsDiscovered = { models ->
+                        discoveredClaudeModels = models
+                        if (models.none { it.id == selectedClaudeModel }) {
+                            selectedClaudeModel = models
+                                .firstOrNull { it.id.contains("sonnet", ignoreCase = true) }
+                                ?.id ?: models.first().id
+                        }
+                        persistAll(showFeedback = false)
+                    },
+                    onDiscover = { key -> MultiProviderAiClient.fetchSupportedModels(AiProviderChoice.CLAUDE, key) },
+                    onTest = { key, modelId ->
+                        MultiProviderAiClient.testConnection(
+                            provider = AiProviderChoice.CLAUDE,
+                            context = context,
+                            candidateKey = key,
+                            candidateModelId = modelId
+                        )
+                    }
+                )
+
+                // 3. GPT (OpenAI)
+                ProviderConfigCard(
+                    provider = AiProviderChoice.OPENAI,
+                    title = "GPT (OpenAI)",
+                    keyLabel = "OpenAI API Key",
+                    keyPlaceholder = "sk-proj-... veya sk-...",
+                    keyValue = openAiInput,
+                    hasConfiguredKey = openAiInput.isNotBlank(),
+                    allowTestWithoutUserKey = false,
+                    selectedModel = selectedOpenAiModel,
+                    discoveredModels = discoveredOpenAiModels,
+                    isPreferred = selectedProvider == AiProviderChoice.OPENAI,
+                    searchPlaceholder = "GPT modeli ara (örn. gpt-5, gpt-4o, o3)...",
+                    onKeyChange = {
+                        openAiInput = it
+                        if (it.isBlank()) {
+                            selectedOpenAiModel = UserAiPreferences.DEFAULT_OPENAI_MODEL
+                            discoveredOpenAiModels = emptyList()
+                        }
+                    },
+                    onClearKey = {
+                        openAiInput = ""
+                        selectedOpenAiModel = UserAiPreferences.DEFAULT_OPENAI_MODEL
+                        discoveredOpenAiModels = emptyList()
+                    },
+                    onSelectProvider = {
+                        selectedProvider = AiProviderChoice.OPENAI
+                        persistAll(showFeedback = false)
+                    },
+                    onSelectModel = { modelId ->
+                        selectedOpenAiModel = modelId
+                        persistAll(showFeedback = false)
+                    },
+                    onModelsDiscovered = { models ->
+                        discoveredOpenAiModels = models
+                        if (models.none { it.id == selectedOpenAiModel }) {
+                            selectedOpenAiModel = models
+                                .firstOrNull { it.id == UserAiPreferences.DEFAULT_OPENAI_MODEL }
+                                ?.id ?: models.first().id
+                        }
+                        persistAll(showFeedback = false)
+                    },
+                    onDiscover = { key -> MultiProviderAiClient.fetchSupportedModels(AiProviderChoice.OPENAI, key) },
+                    onTest = { key, modelId ->
+                        MultiProviderAiClient.testConnection(
+                            provider = AiProviderChoice.OPENAI,
+                            context = context,
+                            candidateKey = key,
+                            candidateModelId = modelId
+                        )
+                    }
+                )
+
+                // 4. DeepSeek
+                ProviderConfigCard(
+                    provider = AiProviderChoice.DEEPSEEK,
+                    title = "DeepSeek",
+                    keyLabel = "DeepSeek API Key",
+                    keyPlaceholder = "sk-...",
+                    keyValue = deepSeekInput,
+                    hasConfiguredKey = deepSeekInput.isNotBlank(),
+                    allowTestWithoutUserKey = false,
+                    selectedModel = selectedDeepSeekModel,
+                    discoveredModels = discoveredDeepSeekModels,
+                    isPreferred = selectedProvider == AiProviderChoice.DEEPSEEK,
+                    searchPlaceholder = "DeepSeek modeli ara (chat, reasoner)...",
+                    onKeyChange = {
+                        deepSeekInput = it
+                        if (it.isBlank()) {
+                            selectedDeepSeekModel = UserAiPreferences.DEFAULT_DEEPSEEK_MODEL
+                            discoveredDeepSeekModels = emptyList()
+                        }
+                    },
+                    onClearKey = {
+                        deepSeekInput = ""
+                        selectedDeepSeekModel = UserAiPreferences.DEFAULT_DEEPSEEK_MODEL
+                        discoveredDeepSeekModels = emptyList()
+                    },
+                    onSelectProvider = {
+                        selectedProvider = AiProviderChoice.DEEPSEEK
+                        persistAll(showFeedback = false)
+                    },
+                    onSelectModel = { modelId ->
+                        selectedDeepSeekModel = modelId
+                        persistAll(showFeedback = false)
+                    },
+                    onModelsDiscovered = { models ->
+                        discoveredDeepSeekModels = models
+                        if (models.none { it.id == selectedDeepSeekModel }) {
+                            selectedDeepSeekModel = models
+                                .firstOrNull { it.id == UserAiPreferences.DEFAULT_DEEPSEEK_MODEL }
+                                ?.id ?: models.first().id
+                        }
+                        persistAll(showFeedback = false)
+                    },
+                    onDiscover = { key -> MultiProviderAiClient.fetchSupportedModels(AiProviderChoice.DEEPSEEK, key) },
+                    onTest = { key, modelId ->
+                        MultiProviderAiClient.testConnection(
+                            provider = AiProviderChoice.DEEPSEEK,
+                            context = context,
+                            candidateKey = key,
+                            candidateModelId = modelId
+                        )
+                    }
+                )
+
+                // 5. Kimi (Moonshot)
+                ProviderConfigCard(
+                    provider = AiProviderChoice.KIMI,
+                    title = "Kimi (Moonshot)",
+                    keyLabel = "Kimi API Key",
+                    keyPlaceholder = "sk-...",
+                    keyValue = kimiInput,
+                    hasConfiguredKey = kimiInput.isNotBlank(),
+                    allowTestWithoutUserKey = false,
+                    selectedModel = selectedKimiModel,
+                    discoveredModels = discoveredKimiModels,
+                    isPreferred = selectedProvider == AiProviderChoice.KIMI,
+                    searchPlaceholder = "Kimi modeli ara (kimi-k2, moonshot)...",
+                    onKeyChange = {
+                        kimiInput = it
+                        if (it.isBlank()) {
+                            selectedKimiModel = UserAiPreferences.DEFAULT_KIMI_MODEL
+                            discoveredKimiModels = emptyList()
+                        }
+                    },
+                    onClearKey = {
+                        kimiInput = ""
+                        selectedKimiModel = UserAiPreferences.DEFAULT_KIMI_MODEL
+                        discoveredKimiModels = emptyList()
+                    },
+                    onSelectProvider = {
+                        selectedProvider = AiProviderChoice.KIMI
+                        persistAll(showFeedback = false)
+                    },
+                    onSelectModel = { modelId ->
+                        selectedKimiModel = modelId
+                        persistAll(showFeedback = false)
+                    },
+                    onModelsDiscovered = { models ->
+                        discoveredKimiModels = models
+                        if (models.none { it.id == selectedKimiModel }) {
+                            selectedKimiModel = models
+                                .firstOrNull { it.id.contains("k2", ignoreCase = true) || it.id == UserAiPreferences.DEFAULT_KIMI_MODEL }
+                                ?.id ?: models.first().id
+                        }
+                        persistAll(showFeedback = false)
+                    },
+                    onDiscover = { key -> MultiProviderAiClient.fetchSupportedModels(AiProviderChoice.KIMI, key) },
+                    onTest = { key, modelId ->
+                        MultiProviderAiClient.testConnection(
+                            provider = AiProviderChoice.KIMI,
+                            context = context,
+                            candidateKey = key,
+                            candidateModelId = modelId
+                        )
+                    }
+                )
+
+                // Save Button
+                Button(
+                    onClick = { persistAll(showFeedback = true) },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 52.dp)
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Ayarları Kaydet", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderConfigCard(
+    provider: AiProviderChoice,
+    title: String,
+    keyLabel: String,
+    keyPlaceholder: String,
+    keyValue: String,
+    hasConfiguredKey: Boolean,
+    allowTestWithoutUserKey: Boolean,
+    selectedModel: String,
+    discoveredModels: List<GeminiModelOption>,
+    isPreferred: Boolean,
+    searchPlaceholder: String,
+    onKeyChange: (String) -> Unit,
+    onClearKey: () -> Unit,
+    onSelectProvider: () -> Unit,
+    onSelectModel: (String) -> Unit,
+    onModelsDiscovered: (List<GeminiModelOption>) -> Unit,
+    onDiscover: suspend (String) -> com.example.sharkmentor.core.ai.GeminiModelDiscoveryResult,
+    onTest: suspend (String, String) -> GeminiConnectionTestResult
+) {
+    val scope = rememberCoroutineScope()
+    var showKey by remember { mutableStateOf(false) }
+    var isDiscovering by remember { mutableStateOf(false) }
+    var discoveryError by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var modelsExpanded by remember(discoveredModels.isNotEmpty()) { mutableStateOf(discoveredModels.isNotEmpty()) }
+    var isTesting by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<GeminiConnectionTestResult?>(null) }
+
+    // Automatically discover models shortly after pasting a valid key
+    LaunchedEffect(keyValue) {
+        val clean = keyValue.trim()
+        if (clean.length < 16 || !hasConfiguredKey) {
+            discoveryError = null
+            searchQuery = ""
+            return@LaunchedEffect
+        }
+        delay(800L)
+        isDiscovering = true
+        discoveryError = null
+        val discovery = onDiscover(keyValue)
+        isDiscovering = false
+        if (discovery.success && discovery.models.isNotEmpty()) {
+            onModelsDiscovered(discovery.models)
+            modelsExpanded = true
+        } else if (discoveredModels.isEmpty()) {
+            discoveryError = discovery.summary
+        }
+    }
+
+    val filteredModels = remember(discoveredModels, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isBlank()) discoveredModels
+        else discoveredModels.filter {
+            it.id.contains(q, ignoreCase = true) ||
+                it.displayName.contains(q, ignoreCase = true) ||
+                it.description.contains(q, ignoreCase = true)
+        }
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(
+            width = if (isPreferred) 1.5.dp else 1.dp,
+            color = if (isPreferred) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Card Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Key,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Column {
                         Text(
-                            text = "Yanıt Hızı & Derinlik Modu",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontSize = 15.sp,
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontSize = 16.sp,
                             fontWeight = FontWeight.Bold
                         )
+                        Text(
+                            text = if (hasConfiguredKey) {
+                                "Seçili model: $selectedModel"
+                            } else if (provider == AiProviderChoice.GEMINI) {
+                                "Varsayılan model: ${UserAiPreferences.STANDARD_GEMINI_MODEL}"
+                            } else {
+                                "Anahtar girilmedi"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontSize = 13.sp,
+                            color = if (hasConfiguredKey) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
 
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            PreferredPowerMode.entries.forEachIndexed { index, mode ->
-                                SegmentedButton(
-                                    selected = selectedPowerMode == mode,
-                                    onClick = { selectedPowerMode = mode },
-                                    shape = SegmentedButtonDefaults.itemShape(
-                                        index = index,
-                                        count = PreferredPowerMode.entries.size
-                                    )
+                FilterChip(
+                    selected = isPreferred,
+                    onClick = onSelectProvider,
+                    label = {
+                        Text(
+                            text = if (isPreferred) "Aktif" else "Kullan",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                )
+            }
+
+            // Key Field
+            AiKeyField(
+                value = keyValue,
+                onValueChange = {
+                    onKeyChange(it)
+                    testResult = null
+                },
+                label = keyLabel,
+                placeholder = keyPlaceholder,
+                isVisible = showKey,
+                onToggleVisibility = { showKey = !showKey },
+                onClear = {
+                    onClearKey()
+                    discoveryError = null
+                    testResult = null
+                    searchQuery = ""
+                    modelsExpanded = false
+                }
+            )
+
+            // Action Buttons: Fetch Models + Test Connection
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        if (isDiscovering) return@OutlinedButton
+                        scope.launch {
+                            isDiscovering = true
+                            discoveryError = null
+                            val res = onDiscover(keyValue)
+                            isDiscovering = false
+                            if (res.success && res.models.isNotEmpty()) {
+                                onModelsDiscovered(res.models)
+                                modelsExpanded = true
+                            } else {
+                                discoveryError = res.summary
+                            }
+                        }
+                    },
+                    enabled = !isDiscovering && hasConfiguredKey,
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 46.dp)
+                ) {
+                    if (isDiscovering) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Taranıyor...", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    } else {
+                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Modelleri Getir", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        if (isTesting) return@OutlinedButton
+                        scope.launch {
+                            isTesting = true
+                            testResult = null
+                            val res = onTest(keyValue, selectedModel)
+                            testResult = res
+                            isTesting = false
+                        }
+                    },
+                    enabled = !isTesting && (hasConfiguredKey || allowTestWithoutUserKey),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 46.dp)
+                ) {
+                    if (isTesting) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Test Ediliyor...", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Bağlantıyı Test Et", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    }
+                }
+            }
+
+            // Discovery Error Banner
+            discoveryError?.let { errText ->
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = errText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+
+            // Per-provider Connection Test Result Banner
+            testResult?.let { result ->
+                val containerColor = if (result.success) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                } else {
+                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                }
+                val contentColor = if (result.success) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onErrorContainer
+                }
+                Surface(
+                    color = containerColor,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = result.summary,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = contentColor
+                        )
+                        result.details.forEach { detailLine ->
+                            Text(
+                                text = "• $detailLine",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                                color = contentColor.copy(alpha = 0.92f)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Discovered Models Selector (Large, Tablet-Friendly Cards)
+            if (hasConfiguredKey && discoveredModels.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { modelsExpanded = !modelsExpanded }
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Desteklenen Modeller (${discoveredModels.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Icon(
+                        imageVector = if (modelsExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (modelsExpanded) "Gizle" else "Göster",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                if (modelsExpanded) {
+                    if (discoveredModels.size > 6) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text(searchPlaceholder, fontSize = 14.sp) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { searchQuery = "" }) {
+                                        Icon(Icons.Default.Close, contentDescription = "Temizle")
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        filteredModels.forEach { modelOpt ->
+                            val isSelected = selectedModel == modelOpt.id
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                                } else {
+                                    MaterialTheme.colorScheme.surface
+                                },
+                                border = BorderStroke(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.outlineVariant
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onSelectModel(modelOpt.id)
+                                        testResult = null
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    Text(mode.label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = {
+                                            onSelectModel(modelOpt.id)
+                                            testResult = null
+                                        }
+                                    )
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Text(
+                                            text = modelOpt.displayName.ifBlank { modelOpt.id },
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = modelOpt.id,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        if (modelOpt.description.isNotBlank()) {
+                                            Text(
+                                                text = modelOpt.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontSize = 13.sp,
+                                                lineHeight = 18.sp,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = "Seçili",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-
-                // Save & Test Actions
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        onClick = {
-                            userAiPrefs.saveSettings(
-                                geminiKeys = geminiKeysInput,
-                                deepSeekKey = deepSeekInput,
-                                kimiKey = kimiInput,
-                                provider = selectedProvider,
-                                powerMode = selectedPowerMode,
-                                selectedGeminiModel = if (hasCustomGeminiInput) {
-                                    selectedGeminiModel
-                                } else {
-                                    UserAiPreferences.STANDARD_GEMINI_MODEL
-                                },
-                                discoveredModels = if (hasCustomGeminiInput) discoveredModels else emptyList()
-                            )
-                            ApiKeyRotator.invalidateAndReset()
-                            scope.launch {
-                                snackbarHostState.showSnackbar("AI ve API ayarları kaydedildi")
-                            }
-                        },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 52.dp)
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Ayarları Kaydet", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            if (isTestingConnection) return@OutlinedButton
-                            isTestingConnection = true
-                            connectionTestResult = null
-                            scope.launch {
-                                val result = GeminiRestClient.testApiConnection(
-                                    context = context,
-                                    candidateUserKeysRaw = geminiKeysInput,
-                                    candidateModelId = if (hasCustomGeminiInput) selectedGeminiModel else null
-                                )
-                                connectionTestResult = result
-                                isTestingConnection = false
-                            }
-                        },
-                        enabled = !isTestingConnection,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 50.dp)
-                    ) {
-                        if (isTestingConnection) {
-                            val testLabel = if (hasCustomGeminiInput) selectedGeminiModel else UserAiPreferences.STANDARD_GEMINI_MODEL
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text("Bağlantı Test Ediliyor ($testLabel)...", fontSize = 15.sp)
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Bağlantıyı Test Et", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-
-                connectionTestResult?.let { result ->
-                    val containerColor = if (result.success) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                    } else {
-                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
-                    }
-                    val contentColor = if (result.success) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onErrorContainer
-                    }
-                    Surface(
-                        color = containerColor,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = result.summary,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = contentColor
-                            )
-                            result.details.forEach { detailLine ->
-                                Text(
-                                    text = "• $detailLine",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontSize = 13.sp,
-                                    lineHeight = 19.sp,
-                                    color = contentColor.copy(alpha = 0.92f)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }

@@ -108,7 +108,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify APK Signing, 16KB Alignment & Manifest
+      - name: Align (16KB), Re-Sign (v1+v2+v3) & Verify APK
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,19 +121,40 @@ jobs:
           ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
           AAPT2="$BUILD_TOOLS_DIR/aapt2"
 
+          # Align uncompressed .so to 16KB (-P 16) and resources.arsc to 4-byte boundary BEFORE signing
+          "$ZIPALIGN" -f -P 16 4 "$APK" "${APK}.aligned"
+          "$APKSIGNER" sign \
+            --ks app/debug.keystore \
+            --ks-pass pass:android \
+            --ks-key-alias androiddebugkey \
+            --key-pass pass:android \
+            --min-sdk-version 21 \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out "${APK}.signed" \
+            "${APK}.aligned"
+          rm -f "${APK}.aligned"
+          mv "${APK}.signed" "$APK"
+
           APK_BYTES=$(wc -c < "$APK")
           APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')
 
           set +e
-          "$APKSIGNER" verify --verbose --print-certs --min-sdk-version 28 "$APK" > apksigner_out.txt 2>&1
+          "$APKSIGNER" verify --verbose --print-certs --min-sdk-version 21 "$APK" > apksigner_out.txt 2>&1
           APKSIGNER_EXIT=$?
 
           "$ZIPALIGN" -c -P 16 -v 4 "$APK" > zipalign_out.txt 2>&1
           ZIPALIGN_EXIT=$?
           set -e
 
+          V1_OK=$(grep -c "Verified using v1 scheme (JAR signing): true" apksigner_out.txt || true)
+          V2_OK=$(grep -c "Verified using v2 scheme (APK Signature Scheme v2): true" apksigner_out.txt || true)
+          V3_OK=$(grep -c "Verified using v3 scheme (APK Signature Scheme v3): true" apksigner_out.txt || true)
+
           RESOURCES_INFO=$(unzip -v "$APK" | grep -E "resources\.arsc" || echo "resources.arsc not found")
-          TEST_ONLY=$( "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml | grep -E "testOnly|minSdkVersion|targetSdkVersion|versionCode|versionName" || true )
+          TEST_ONLY=$( "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml | grep -E "testOnly|minSdkVersion|targetSdkVersion|versionCode|versionName|extractNativeLibs|isSplitRequired|debuggable" || true )
           BADGING=$("$AAPT2" dump badging "$APK" | head -n 5 || true)
 
           rm -rf /tmp/so_check && mkdir -p /tmp/so_check
@@ -143,7 +164,7 @@ jobs:
           while IFS= read -r -d '' sofile; do
             ALIGNS=$(readelf -lW "$sofile" 2>/dev/null | awk '$1 == "LOAD" {print $NF}' | sort -u | tr '\n' ' ')
             REL_SO=${sofile#/tmp/so_check/}
-            if echo "$ALIGNS" | grep -qE "0x1000([^0-9a-fA-F]|$)|0x800|0x400"; then
+            if echo "$ALIGNS" | grep -qE "0x1000([^0-9a-fA-F]|$)|0x800([^0-9a-fA-F]|$)|0x400([^0-9a-fA-F]|$)"; then
               SO_REPORT="${SO_REPORT}WARN_4KB: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
               UNALIGNED_4KB=1
             else
@@ -159,7 +180,7 @@ jobs:
             echo "### 📦 APK Verification Report"
             echo "- **Size:** ${APK_BYTES} bytes"
             echo "- **SHA-256:** \`${APK_SHA256}\`"
-            echo "- **apksigner exit:** ${APKSIGNER_EXIT}"
+            echo "- **apksigner exit:** ${APKSIGNER_EXIT} (v1=${V1_OK}, v2=${V2_OK}, v3=${V3_OK})"
             echo "- **zipalign -P 16 exit:** ${ZIPALIGN_EXIT}"
             echo "- **Unaligned 4KB .so detected:** ${UNALIGNED_4KB}"
             echo ""
@@ -196,8 +217,12 @@ jobs:
           subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}/comments", "-f", f"body={body}"], check=False)
           PYEOF
 
-          if [ "$APKSIGNER_EXIT" -ne 0 ]; then
-            echo "apksigner verification failed!"
+          if [ "$APKSIGNER_EXIT" -ne 0 ] || [ "$V1_OK" -lt 1 ] || [ "$V2_OK" -lt 1 ] || [ "$V3_OK" -lt 1 ]; then
+            echo "apksigner verification failed! (exit=$APKSIGNER_EXIT, v1=$V1_OK, v2=$V2_OK, v3=$V3_OK)"
+            exit 1
+          fi
+          if [ "$ZIPALIGN_EXIT" -ne 0 ] || [ "$UNALIGNED_4KB" -ne 0 ]; then
+            echo "16KB alignment check failed! (zipalign=$ZIPALIGN_EXIT, unaligned_4kb=$UNALIGNED_4KB)"
             exit 1
           fi
 

@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
 import com.example.sharkmentor.core.ai.GeminiAiFactory
+import com.example.sharkmentor.core.ai.MultiProviderAiClient
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.NoteStyleParser
 import com.example.sharkmentor.core.util.PaperPattern
@@ -444,15 +445,31 @@ KESİN DAVRANIŞ KURALLARI:
                     $effectiveQuery
                 """.trimIndent()
 
-                val shouldTryOpenAiFirst = when (selectedProvider) {
-                    AiProviderChoice.GEMINI -> false
-                    AiProviderChoice.DEEPSEEK, AiProviderChoice.KIMI -> DeepSeekClient.hasAnyOpenAiProviderKey(appContext)
-                    AiProviderChoice.AUTO -> DeepSeekClient.hasAnyOpenAiProviderKey(appContext)
+                val prefs = UserAiPreferences.getOrNull(appContext)
+                val targetExternalProvider: AiProviderChoice? = when (selectedProvider) {
+                    AiProviderChoice.GEMINI -> null
+                    AiProviderChoice.CLAUDE ->
+                        AiProviderChoice.CLAUDE.takeIf { MultiProviderAiClient.getClaudeApiKey(appContext).isNotBlank() }
+                    AiProviderChoice.OPENAI ->
+                        AiProviderChoice.OPENAI.takeIf { MultiProviderAiClient.getOpenAiApiKey(appContext).isNotBlank() }
+                    AiProviderChoice.DEEPSEEK ->
+                        AiProviderChoice.DEEPSEEK.takeIf { DeepSeekClient.getDeepSeekApiKey(appContext).isNotBlank() }
+                    AiProviderChoice.KIMI ->
+                        AiProviderChoice.KIMI.takeIf { DeepSeekClient.getKimiApiKey(appContext).isNotBlank() }
+                    AiProviderChoice.AUTO -> {
+                        val activeAuto = prefs?.getActiveProviderAndModel()?.first ?: AiProviderChoice.GEMINI
+                        if (activeAuto != AiProviderChoice.GEMINI && MultiProviderAiClient.hasAnyExternalProviderKey(appContext)) {
+                            activeAuto
+                        } else {
+                            null
+                        }
+                    }
                 }
 
-                if (shouldTryOpenAiFirst) {
+                if (targetExternalProvider != null) {
                     try {
-                        val streamedResult = DeepSeekClient.streamChatCompletion(
+                        val streamedResult = MultiProviderAiClient.streamChatCompletion(
+                            provider = targetExternalProvider,
                             systemPrompt = ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
                             userPrompt = contextualPrompt,
                             temperature = 0.2f,
@@ -472,7 +489,7 @@ KESİN DAVRANIŞ KURALLARI:
                         _isAiLoading.value = false
                         return@launch
                     } catch (e: Exception) {
-                        Log.w("NoteDetailVM", "DeepSeek/Kimi note analysis failed (${e.message}), trying Gemini...", e)
+                        Log.w("NoteDetailVM", "${targetExternalProvider.shortLabel} note analysis failed (${e.message}), trying Gemini...", e)
                     }
                 }
 

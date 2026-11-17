@@ -128,7 +128,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.sharkmentor.core.ai.UserAiPreferences
-import com.example.sharkmentor.data.repository.AiModelPower
 import com.example.sharkmentor.data.repository.SharkAiEngine
 import com.example.sharkmentor.ui.aichat.ActionChip
 import com.example.sharkmentor.ui.aichat.AiPersona
@@ -166,7 +165,7 @@ fun SharkAiScreen(
     val inputText by viewModel.inputText.collectAsStateWithLifecycle()
     val selectedAttachmentUri by viewModel.selectedAttachmentUri.collectAsStateWithLifecycle()
     val attachmentPreview by viewModel.attachmentPreview.collectAsStateWithLifecycle()
-    val modelPower by viewModel.modelPower.collectAsStateWithLifecycle()
+    val activeModelDisplay by viewModel.activeModelDisplay.collectAsStateWithLifecycle()
     val detectedEngine by viewModel.detectedEngine.collectAsStateWithLifecycle()
     val lockedEngine by viewModel.lockedEngine.collectAsStateWithLifecycle()
     val pendingHandoff by SharkAiHandoffManager.pendingHandoff.collectAsStateWithLifecycle()
@@ -310,14 +309,24 @@ fun SharkAiScreen(
                                     modifier = Modifier.size(16.dp)
                                 )
                             }
-                            Text(
-                                text = "Shark AI",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Column(modifier = Modifier.weight(1f, fill = false)) {
+                                Text(
+                                    text = "Shark AI",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = activeModelDisplay,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
 
                         Row(
@@ -390,10 +399,10 @@ fun SharkAiScreen(
                         }
                     }
 
-                    // 2. Satır: Aktif mod çipi ve Hızlı/Detaylı geçişi
+                    // 2. Satır: Aktif mod çipi
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.Start,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Surface(
@@ -412,8 +421,6 @@ fun SharkAiScreen(
                                 }
                             ),
                             modifier = Modifier
-                                .weight(1f, fill = false)
-                                .padding(end = 8.dp)
                                 .heightIn(min = 30.dp)
                                 .clickable { showPersonaSheet = true }
                         ) {
@@ -438,8 +445,7 @@ fun SharkAiScreen(
                                         MaterialTheme.colorScheme.onSurface
                                     },
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 if (hasNonDefaultMode) {
                                     Icon(
@@ -449,47 +455,6 @@ fun SharkAiScreen(
                                         modifier = Modifier
                                             .size(14.dp)
                                             .clickable { viewModel.resetToDefaultPersona() }
-                                    )
-                                }
-                            }
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(18.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                AiModelPower.entries.forEach { powerOption ->
-                                    val isSelected = modelPower == powerOption
-                                    FilterChip(
-                                        selected = isSelected,
-                                        onClick = {
-                                            viewModel.setModelPower(powerOption)
-                                            val modeHint = if (powerOption == AiModelPower.PRO) "Detaylı mod" else "Hızlı mod"
-                                            Toast.makeText(context, modeHint, Toast.LENGTH_SHORT).show()
-                                        },
-                                        label = {
-                                            Text(
-                                                text = powerOption.label,
-                                                fontSize = 11.sp,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                                maxLines = 1
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                                            containerColor = Color.Transparent,
-                                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                        ),
-                                        border = null,
-                                        modifier = Modifier.height(28.dp)
                                     )
                                 }
                             }

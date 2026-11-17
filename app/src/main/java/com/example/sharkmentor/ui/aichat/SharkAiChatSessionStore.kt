@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.Immutable
-import com.example.sharkmentor.core.ai.PreferredPowerMode
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.data.repository.AiModelPower
 import com.example.sharkmentor.data.repository.SharkAiEngine
@@ -203,16 +202,10 @@ object SharkAiChatSessionStore {
 
     @Synchronized
     private fun ensureLoaded(context: Context) {
-        val userAiPrefs = UserAiPreferences.initialize(context)
         if (inMemorySessions != null && !inMemoryActiveSessionId.isNullOrBlank()) {
             return
         }
-
-        val defaultPower = if (userAiPrefs.getPreferredPowerMode() == PreferredPowerMode.PRO) {
-            AiModelPower.PRO
-        } else {
-            AiModelPower.FLASH
-        }
+        val defaultPower = AiModelPower.FLASH
 
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val rawMultiJson = prefs.getString(KEY_MULTI_SESSIONS_JSON, null)
@@ -390,11 +383,7 @@ object SharkAiChatSessionStore {
         val list = inMemorySessions!!
         val activeIdx = list.indexOfFirst { it.id == inMemoryActiveSessionId }.let { if (it == -1) 0 else it }
         val currentActive = list[activeIdx]
-        val defaultPower = if (UserAiPreferences.getInstance(context).getPreferredPowerMode() == PreferredPowerMode.PRO) {
-            AiModelPower.PRO
-        } else {
-            AiModelPower.FLASH
-        }
+        val defaultPower = AiModelPower.FLASH
         val targetPower = if (keepModelPower) currentActive.modelPower else defaultPower
         val now = System.currentTimeMillis()
 
