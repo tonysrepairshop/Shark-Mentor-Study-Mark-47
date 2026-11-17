@@ -176,6 +176,8 @@ import java.io.File
 import java.util.Locale
 
 private val PDF_PAGE_TAG_REGEX = Regex("\\[PDF_PAGE:([^\\]]+)\\]")
+private val PDF_FILE_TAG_REGEX = Regex("\\[PDF_FILE:([^\\]]+)\\]")
+private val ALL_PDF_TAGS_REGEX = Regex("""\[PDF_(?:PAGE|FILE):[^\]]+\]\r?\n?""")
 
 private fun extractPdfPagePathsFromContent(rawContent: String): List<String> {
     return PDF_PAGE_TAG_REGEX.findAll(rawContent)
@@ -185,16 +187,36 @@ private fun extractPdfPagePathsFromContent(rawContent: String): List<String> {
         .toList()
 }
 
+private fun extractPdfFilePathFromContent(rawContent: String): String? {
+    return PDF_FILE_TAG_REGEX.find(rawContent)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        ?.takeIf { it.isNotBlank() && File(it).exists() }
+}
+
 private fun stripPdfPageTags(rawContent: String): String {
     return rawContent
-        .replace(Regex("""\[PDF_PAGE:[^\]]+\]\r?\n?"""), "")
+        .replace(ALL_PDF_TAGS_REGEX, "")
         .trim()
 }
 
-private fun composeContentWithPdfPageTags(userText: String, pagePaths: List<String>): String {
-    if (pagePaths.isEmpty()) return userText
+private fun composeContentWithPdfPageTags(
+    userText: String,
+    pagePaths: List<String>,
+    pdfFilePath: String? = null
+): String {
     val cleanUserText = stripPdfPageTags(userText)
-    val tagsHeader = pagePaths.joinToString("\n") { "[PDF_PAGE:$it]" }
+    val tags = buildList {
+        if (!pdfFilePath.isNullOrBlank()) {
+            add("[PDF_FILE:$pdfFilePath]")
+        }
+        pagePaths.forEach { path ->
+            add("[PDF_PAGE:$path]")
+        }
+    }
+    if (tags.isEmpty()) return cleanUserText
+    val tagsHeader = tags.joinToString("\n")
     return if (cleanUserText.isBlank()) {
         tagsHeader
     } else {
@@ -256,9 +278,21 @@ fun NoteDetailScreen(
     val aiError by viewModel.aiError.collectAsStateWithLifecycle()
     val aiSavedNewNoteId by viewModel.aiSavedNewNoteId.collectAsStateWithLifecycle()
 
+    val activeNoteId = noteId ?: initialNote?.id
     val drawingScope = rememberCoroutineScope()
     var showDrawingStudioBar by rememberSaveable { mutableStateOf(false) }
-    var localPdfFilePath by remember(incomingFileUri) { mutableStateOf<String?>(null) }
+    var preservedPdfFileTag by remember(activeNoteId, initialContent) {
+        mutableStateOf(extractPdfFilePathFromContent(initialNote?.content ?: initialContent))
+    }
+    var localPdfFilePath by remember(activeNoteId, incomingFileUri) {
+        mutableStateOf(
+            extractPdfFilePathFromContent(initialNote?.content ?: initialContent)
+                ?: incomingFileUri
+                    ?.takeIf { it.scheme == ContentResolver.SCHEME_FILE }
+                    ?.path
+                    ?.takeIf { it.endsWith(".pdf", ignoreCase = true) && File(it).exists() }
+        )
+    }
 
     val drawingController = remember(vmNoteId) {
         DrawingController(
@@ -322,8 +356,6 @@ fun NoteDetailScreen(
     var showMoreMenu by remember { mutableStateOf(false) }
     var showPageStyleDialog by remember { mutableStateOf(false) }
     var showStatsDialog by remember { mutableStateOf(false) }
-
-    val activeNoteId = noteId ?: initialNote?.id
 
     var pdfPreviewBitmap by remember(incomingFileUri, initialPdfPreview) {
         mutableStateOf(initialPdfPreview)
@@ -391,9 +423,14 @@ fun NoteDetailScreen(
             val rawContent = initialNote?.content ?: initialContent
             val extractedPaths = (initialPdfPagePaths + extractPdfPagePathsFromContent(rawContent)).distinct()
             pdfPagePaths = extractedPaths
+            val extractedPdfFile = extractPdfFilePathFromContent(rawContent)
+            if (extractedPdfFile != null) {
+                preservedPdfFileTag = extractedPdfFile
+                localPdfFilePath = extractedPdfFile
+            }
             val cleanDisplayRaw = stripPdfPageTags(rawContent)
             val parsed = NoteRichTextHelper.parseTaggedText(cleanDisplayRaw)
-            val persistedContent = composeContentWithPdfPageTags(cleanDisplayRaw, extractedPaths)
+            val persistedContent = composeContentWithPdfPageTags(cleanDisplayRaw, extractedPaths, preservedPdfFileTag)
             viewModel.initializeNote(
                 initialNote = initialNote?.copy(content = persistedContent),
                 fallbackTitle = initialTitle,
@@ -419,6 +456,11 @@ fun NoteDetailScreen(
         if (extractedPaths.isNotEmpty() && (pdfPagePaths.isEmpty() || pdfPagePaths != extractedPaths)) {
             pdfPagePaths = extractedPaths
         }
+        val extractedPdfFile = extractPdfFilePathFromContent(vmContent)
+        if (extractedPdfFile != null) {
+            preservedPdfFileTag = extractedPdfFile
+            localPdfFilePath = extractedPdfFile
+        }
         if (!isNoteLoaded && vmContent.isNotBlank()) {
             val cleanVmRaw = stripPdfPageTags(vmContent)
             val parsed = NoteRichTextHelper.parseTaggedText(cleanVmRaw)
@@ -434,7 +476,7 @@ fun NoteDetailScreen(
         if (!isNoteLoaded) return@LaunchedEffect
         kotlinx.coroutines.delay(350L)
         val taggedText = NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString)
-        val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths)
+        val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
         viewModel.onContentChanged(fullContent)
     }
 
@@ -505,10 +547,23 @@ fun NoteDetailScreen(
                 val mimeType = resolver.getType(incomingFileUri)
                 val isPdf = mimeType == "application/pdf" || displayName.endsWith(".pdf", ignoreCase = true)
 
-                var copiedPdfPath: String? = null
+                val directLocalFile = if (incomingFileUri.scheme == ContentResolver.SCHEME_FILE) {
+                    incomingFileUri.path?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+                } else {
+                    null
+                }
+
+                if (isPdf && directLocalFile != null && (initialTitle.isNotBlank() || initialContent.isNotBlank())) {
+                    withContext(Dispatchers.Main) {
+                        localPdfFilePath = directLocalFile.absolutePath
+                    }
+                    return@withContext
+                }
+
+                var copiedPdfPath: String? = directLocalFile?.takeIf { isPdf }?.absolutePath
                 var effectiveUri = incomingFileUri
 
-                if (isPdf) {
+                if (isPdf && copiedPdfPath == null) {
                     val copied = PdfBitmapConverter.copyUriToPrivatePdfsDir(context, incomingFileUri)
                     if (copied != null) {
                         copiedPdfPath = copied.localFile.absolutePath
@@ -547,7 +602,7 @@ fun NoteDetailScreen(
                             selection = TextRange(parsed.text.length)
                         )
                         viewModel.onContentChanged(
-                            composeContentWithPdfPageTags(safeContent, pdfPagePaths)
+                            composeContentWithPdfPageTags(safeContent, pdfPagePaths, preservedPdfFileTag)
                         )
                     }
                 }
@@ -629,14 +684,21 @@ fun NoteDetailScreen(
 
     val saveCurrentNote: () -> Unit = {
         val taggedText = NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString)
-        val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths)
-        viewModel.onContentChanged(fullContent)
-        viewModel.saveImmediately()
-        val currentId = vmNoteId
-        val currentStrokes = drawingController.strokes
-        drawingScope.launch(Dispatchers.IO) {
-            DrawingSerializer.saveNoteDrawing(context, currentId, currentStrokes)
+        val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
+        val effectiveTitle = if (vmTitle.isBlank() && fullContent.isBlank() && drawingController.strokes.isNotEmpty()) {
+            "Çizimli Not"
+        } else {
+            vmTitle
         }
+        viewModel.saveImmediately(
+            overrideTitle = effectiveTitle,
+            overrideContent = fullContent
+        )
+        viewModel.saveNoteDrawingImmediately(
+            context = context,
+            targetNoteId = vmNoteId,
+            strokes = drawingController.strokes
+        )
     }
 
     BackHandler {
@@ -747,7 +809,7 @@ fun NoteDetailScreen(
                 IconButton(
                     onClick = {
                         val taggedText = NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString)
-                        val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths)
+                        val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
                         viewModel.onContentChanged(fullContent)
                         viewModel.onPinnedChanged(!isPinned)
                     }
@@ -1346,19 +1408,12 @@ fun NoteDetailScreen(
                                             )
                                         }
                                     }
-                                    Column {
-                                        Text(
-                                            text = "Orijinal PDF Dosyası",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = onSurfaceColor
-                                        )
-                                        Text(
-                                            text = "Tam ekran PDF okuyucu, fosforlu kalem ve sayfa çizim stüdyosunda aç",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = textMutedColor
-                                        )
-                                    }
+                                    Text(
+                                        text = "PDF Belgesi",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = onSurfaceColor
+                                    )
                                 }
                                 TextButton(
                                     onClick = {
@@ -1373,7 +1428,7 @@ fun NoteDetailScreen(
                                     }
                                 ) {
                                     Text(
-                                        text = "PDF Okuyucuda Aç",
+                                        text = "Okuyucuda Aç",
                                         color = primaryColor,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 12.sp
@@ -1528,7 +1583,7 @@ fun NoteDetailScreen(
                             ) {
                                 Column(modifier = Modifier.padding(10.dp)) {
                                     Text(
-                                        text = "PDF 1. Sayfa Önizleme",
+                                        text = "1. Sayfa",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = primaryColor,
@@ -1874,7 +1929,7 @@ fun NoteDetailScreen(
                 )
             },
             text = {
-                Text("Bu not kalıcı olarak silinecek. Onaylıyor musunuz?")
+                Text("Bu not kalıcı olarak silinecek.")
             },
             confirmButton = {
                 TextButton(
@@ -1957,12 +2012,6 @@ fun NoteDetailScreen(
                     )
                 }
 
-                Text(
-                    text = "Yalnızca bu notun içeriğini kaynak alarak kapsamlı analiz yapar; dış bilgi kullanmaz.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = textMutedColor
-                )
-
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1970,10 +2019,10 @@ fun NoteDetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     listOf(
-                        "Detaylı özet çıkar",
-                        "Kavramları derinlemesine açıkla",
-                        "Soru ve cevaplar hazırla",
-                        "Önemli noktaları listele"
+                        "Özet çıkar",
+                        "Kavramları açıkla",
+                        "Soru-cevap",
+                        "Önemli noktalar"
                     ).forEach { quickPrompt ->
                         SuggestionChip(
                             onClick = {
@@ -2001,7 +2050,7 @@ fun NoteDetailScreen(
                         onValueChange = { aiQueryText = it },
                         placeholder = {
                             Text(
-                                text = "Not hakkında soru sor...",
+                                text = "Soru sor...",
                                 color = textMutedColor
                             )
                         },
@@ -2061,7 +2110,7 @@ fun NoteDetailScreen(
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
-                                text = "Özet yeni not olarak kaydedildi",
+                                text = "Özet kaydedildi",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Medium,
                                 color = primaryColor

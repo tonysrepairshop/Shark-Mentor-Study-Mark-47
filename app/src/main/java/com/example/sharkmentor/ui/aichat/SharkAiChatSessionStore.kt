@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.Immutable
+import com.example.sharkmentor.core.ai.PreferredPowerMode
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.data.repository.AiModelPower
 import com.example.sharkmentor.data.repository.SharkAiEngine
 import com.google.gson.Gson
@@ -120,7 +122,7 @@ data class PersistedChatSession(
             } ?: messages.lastOrNull { it.text.isNotBlank() }
 
             if (lastRelevant == null) {
-                return "Henüz mesaj yok — soru sorarak başla"
+                return "Mesaj yok"
             }
 
             val cleaned = lastRelevant.text
@@ -130,7 +132,7 @@ data class PersistedChatSession(
                 .trim()
 
             if (cleaned.isBlank()) {
-                return lastRelevant.attachmentName ?: "Ekli dosya paylaşıldı"
+                return lastRelevant.attachmentName ?: "Ekli dosya"
             }
             return if (cleaned.length > 68) "${cleaned.take(68).trimEnd()}…" else cleaned
         }
@@ -201,8 +203,15 @@ object SharkAiChatSessionStore {
 
     @Synchronized
     private fun ensureLoaded(context: Context) {
+        val userAiPrefs = UserAiPreferences.initialize(context)
         if (inMemorySessions != null && !inMemoryActiveSessionId.isNullOrBlank()) {
             return
+        }
+
+        val defaultPower = if (userAiPrefs.getPreferredPowerMode() == PreferredPowerMode.PRO) {
+            AiModelPower.PRO
+        } else {
+            AiModelPower.FLASH
         }
 
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -232,8 +241,10 @@ object SharkAiChatSessionStore {
 
             val personaId = prefs.getString(KEY_PERSONA_ID, AiPersona.SHARK_COACH.id) ?: AiPersona.SHARK_COACH.id
             val restoredPersona = AiPersona.entries.firstOrNull { it.id == personaId } ?: AiPersona.SHARK_COACH
-            val powerId = prefs.getString(KEY_MODEL_POWER_ID, AiModelPower.FLASH.id) ?: AiModelPower.FLASH.id
-            val restoredPower = AiModelPower.entries.firstOrNull { it.id == powerId } ?: AiModelPower.FLASH
+            val rawPowerId = prefs.getString(KEY_MODEL_POWER_ID, null)
+            val restoredPower = rawPowerId?.let { id ->
+                AiModelPower.entries.firstOrNull { it.id == id }
+            } ?: defaultPower
             val draftInput = prefs.getString(KEY_DRAFT_INPUT, "") ?: ""
             val lockedEngineId = prefs.getString(KEY_LOCKED_ENGINE_ID, null)
             val restoredLockedEngine = lockedEngineId?.let { id -> SharkAiEngine.entries.firstOrNull { it.id == id } }
@@ -251,7 +262,7 @@ object SharkAiChatSessionStore {
         }
 
         if (loadedList.isEmpty()) {
-            loadedList.add(PersistedChatSession())
+            loadedList.add(PersistedChatSession(modelPower = defaultPower))
         }
 
         val sorted = loadedList
@@ -364,22 +375,31 @@ object SharkAiChatSessionStore {
         return buildSnapshot(context)
     }
 
+    private fun isSessionUnused(session: PersistedChatSession): Boolean =
+        session.messages.none { it.sender == "user" || it.sender == "ai" }
+
     /**
-     * Creates and activates a new chat session ("Yeni Sohbet").
-     * If the currently active session has no messages (or an empty session already exists),
-     * reuses/resets that empty session instead of duplicating empty sessions.
+     * Creates and activates a clean new chat session ("Yeni Sohbet").
+     * - If the active session has no user/AI conversation yet, resets its messages, persona,
+     *   draft input, and locked engine in place.
+     * - Otherwise preserves the active conversation and opens/activates a clean session.
      */
     @Synchronized
     fun createNewSession(context: Context, keepModelPower: Boolean = true): PersistedChatSessionSnapshot {
         ensureLoaded(context)
         val list = inMemorySessions!!
-        val currentActive = list.firstOrNull { it.id == inMemoryActiveSessionId } ?: list.first()
-        val targetPower = if (keepModelPower) currentActive.modelPower else AiModelPower.FLASH
+        val activeIdx = list.indexOfFirst { it.id == inMemoryActiveSessionId }.let { if (it == -1) 0 else it }
+        val currentActive = list[activeIdx]
+        val defaultPower = if (UserAiPreferences.getInstance(context).getPreferredPowerMode() == PreferredPowerMode.PRO) {
+            AiModelPower.PRO
+        } else {
+            AiModelPower.FLASH
+        }
+        val targetPower = if (keepModelPower) currentActive.modelPower else defaultPower
         val now = System.currentTimeMillis()
 
-        val existingEmptyIdx = list.indexOfFirst { it.messages.isEmpty() }
-        if (existingEmptyIdx != -1) {
-            val resetEmpty = list[existingEmptyIdx].copy(
+        if (isSessionUnused(currentActive)) {
+            val resetActive = currentActive.copy(
                 title = "Yeni Sohbet",
                 messages = emptyList(),
                 currentPersona = AiPersona.SHARK_COACH,
@@ -388,25 +408,40 @@ object SharkAiChatSessionStore {
                 lockedEngine = null,
                 updatedAtMillis = now
             )
-            list[existingEmptyIdx] = resetEmpty
-            inMemoryActiveSessionId = resetEmpty.id
+            list[activeIdx] = resetActive
+            inMemoryActiveSessionId = resetActive.id
         } else {
-            val freshSession = PersistedChatSession(
-                id = UUID.randomUUID().toString(),
-                title = "Yeni Sohbet",
-                messages = emptyList(),
-                currentPersona = AiPersona.SHARK_COACH,
-                modelPower = targetPower,
-                draftInputText = "",
-                lockedEngine = null,
-                createdAtMillis = now,
-                updatedAtMillis = now
-            )
-            list.add(0, freshSession)
-            if (list.size > MAX_PERSISTED_SESSIONS) {
-                list.subList(MAX_PERSISTED_SESSIONS, list.size).clear()
+            val existingEmptyIdx = list.indexOfFirst { it.id != currentActive.id && isSessionUnused(it) }
+            if (existingEmptyIdx != -1) {
+                val resetEmpty = list[existingEmptyIdx].copy(
+                    title = "Yeni Sohbet",
+                    messages = emptyList(),
+                    currentPersona = AiPersona.SHARK_COACH,
+                    modelPower = targetPower,
+                    draftInputText = "",
+                    lockedEngine = null,
+                    updatedAtMillis = now
+                )
+                list[existingEmptyIdx] = resetEmpty
+                inMemoryActiveSessionId = resetEmpty.id
+            } else {
+                val freshSession = PersistedChatSession(
+                    id = UUID.randomUUID().toString(),
+                    title = "Yeni Sohbet",
+                    messages = emptyList(),
+                    currentPersona = AiPersona.SHARK_COACH,
+                    modelPower = targetPower,
+                    draftInputText = "",
+                    lockedEngine = null,
+                    createdAtMillis = now,
+                    updatedAtMillis = now
+                )
+                list.add(0, freshSession)
+                if (list.size > MAX_PERSISTED_SESSIONS) {
+                    list.subList(MAX_PERSISTED_SESSIONS, list.size).clear()
+                }
+                inMemoryActiveSessionId = freshSession.id
             }
-            inMemoryActiveSessionId = freshSession.id
         }
 
         inMemorySessions = list.sortedByDescending { it.updatedAtMillis }.toMutableList()

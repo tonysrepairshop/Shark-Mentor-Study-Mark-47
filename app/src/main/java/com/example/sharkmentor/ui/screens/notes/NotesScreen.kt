@@ -209,11 +209,12 @@ fun NotesScreen(
                             maxPages = 1
                         ).firstOrNull()
                     }
+                    if (extracted.isBlank()) {
+                        Toast.makeText(context, "Belgede metin bulunamadı", Toast.LENGTH_SHORT).show()
+                    }
                     selectedNoteId = null
                     editorInitialTitle = target.title
-                    editorInitialContent = extracted.ifBlank {
-                        "📄 ${target.title} (${target.pageCount} sayfa)\n\nNotlarınızı ve çizimlerinizi buraya ekleyebilirsiniz."
-                    }
+                    editorInitialContent = extracted.take(30_000)
                     editorIncomingUri = android.net.Uri.fromFile(target.localFile)
                     editorPdfPreview = previewBmp
                     editorPdfPagePaths = emptyList()
@@ -240,6 +241,29 @@ fun NotesScreen(
             }
         )
     } else {
+        val openNoteOrPdf: (NoteEntity) -> Unit = { note ->
+            val linkedPdfPath = extractPdfFilePathFromNote(note.content)
+            val linkedFile = linkedPdfPath?.let { File(it) }
+            if (linkedFile != null && linkedFile.exists() && linkedFile.length() > 0L) {
+                context.startActivity(
+                    PdfReaderActivity.createIntent(
+                        context = context,
+                        pdfFilePath = linkedFile.absolutePath,
+                        title = note.title.ifBlank { linkedFile.nameWithoutExtension },
+                        skipChooser = true
+                    )
+                )
+            } else {
+                selectedNoteId = note.id
+                editorInitialTitle = ""
+                editorInitialContent = ""
+                editorIncomingUri = null
+                editorPdfPreview = null
+                editorPdfPagePaths = emptyList()
+                showEditor = true
+            }
+        }
+
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -320,19 +344,12 @@ fun NotesScreen(
                                 tint = textMutedColor.copy(alpha = 0.4f),
                                 modifier = Modifier.size(56.dp)
                             )
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
                             Text(
-                                text = if (searchQuery.isNotBlank()) "Eşleşen not bulunamadı" else "Henüz bir not eklenmedi",
+                                text = if (searchQuery.isNotBlank()) "Eşleşen not bulunamadı" else "Henüz not yok",
                                 style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = textColor
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = if (searchQuery.isNotBlank()) "Farklı bir arama terimi deneyebilirsiniz." else "Aşağıdaki + butonuna dokunarak yeni bir not oluşturabilir veya PDF simgesiyle PDF açabilirsiniz.",
-                                style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
-                                color = textMutedColor,
-                                textAlign = TextAlign.Center
                             )
                         }
                     }
@@ -364,15 +381,7 @@ fun NotesScreen(
                                     cardColor = cardColor,
                                     textColor = textColor,
                                     textMutedColor = textMutedColor,
-                                    onClick = {
-                                        selectedNoteId = note.id
-                                        editorInitialTitle = ""
-                                        editorInitialContent = ""
-                                        editorIncomingUri = null
-                                        editorPdfPreview = null
-                                        editorPdfPagePaths = emptyList()
-                                        showEditor = true
-                                    },
+                                    onClick = { openNoteOrPdf(note) },
                                     onDelete = { noteToDelete = note },
                                     onTogglePin = { viewModel.togglePin(note) }
                                 )
@@ -396,15 +405,7 @@ fun NotesScreen(
                                     cardColor = cardColor,
                                     textColor = textColor,
                                     textMutedColor = textMutedColor,
-                                    onClick = {
-                                        selectedNoteId = note.id
-                                        editorInitialTitle = ""
-                                        editorInitialContent = ""
-                                        editorIncomingUri = null
-                                        editorPdfPreview = null
-                                        editorPdfPagePaths = emptyList()
-                                        showEditor = true
-                                    },
+                                    onClick = { openNoteOrPdf(note) },
                                     onDelete = { noteToDelete = note },
                                     onTogglePin = { viewModel.togglePin(note) }
                                 )
@@ -430,7 +431,7 @@ fun NotesScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.PictureAsPdf,
-                        contentDescription = "PDF Aç / İçe Aktar"
+                        contentDescription = "PDF Aç"
                     )
                 }
 
@@ -463,7 +464,7 @@ fun NotesScreen(
                 )
             },
             text = {
-                Text("Bu not kalıcı olarak silinecek. Onaylıyor musunuz?")
+                Text("Bu not kalıcı olarak silinecek.")
             },
             confirmButton = {
                 TextButton(
@@ -499,6 +500,17 @@ fun NotesScreen(
     }
 }
 
+private val NOTES_PDF_FILE_TAG_REGEX = Regex("\\[PDF_FILE:([^\\]]+)\\]")
+private val NOTES_ALL_PDF_TAGS_REGEX = Regex("""\[PDF_(?:PAGE|FILE):[^\]]+\]\r?\n?""")
+
+private fun extractPdfFilePathFromNote(rawContent: String): String? {
+    return NOTES_PDF_FILE_TAG_REGEX.find(rawContent)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+}
+
 @Composable
 fun NoteCardItem(
     note: NoteEntity,
@@ -527,6 +539,7 @@ fun NoteCardItem(
     val primaryColor = androidx.compose.material3.MaterialTheme.colorScheme.primary
     val primaryContainer = androidx.compose.material3.MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = androidx.compose.material3.MaterialTheme.colorScheme.onPrimaryContainer
+    val isPdfLinked = remember(note.content) { extractPdfFilePathFromNote(note.content) != null }
 
     Card(
         modifier = Modifier
@@ -589,7 +602,7 @@ fun NoteCardItem(
             Spacer(modifier = Modifier.height(8.dp))
 
             val displayPreview = remember(note.content) {
-                val withoutTags = note.content.replace(Regex("""\[PDF_PAGE:[^\]]+\]\r?\n?"""), "").trim()
+                val withoutTags = note.content.replace(NOTES_ALL_PDF_TAGS_REGEX, "").trim()
                 NoteRichTextHelper.toPlainText(withoutTags)
                     .lineSequence()
                     .map { it.trim() }
@@ -615,11 +628,37 @@ fun NoteCardItem(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                if (isPdfLinked) {
+                    androidx.compose.material3.Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = primaryContainer.copy(alpha = 0.7f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PictureAsPdf,
+                                contentDescription = null,
+                                tint = onPrimaryContainer,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = "PDF",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.weight(1f))
                 IconButton(
                     onClick = {
-                        val cleanShareText = note.content.replace(Regex("""\[PDF_PAGE:[^\]]+\]\r?\n?"""), "").trim()
+                        val cleanShareText = note.content.replace(NOTES_ALL_PDF_TAGS_REGEX, "").trim()
                         val shareIntent = Intent().apply {
                             action = Intent.ACTION_SEND
                             putExtra(Intent.EXTRA_TITLE, note.title)
@@ -639,7 +678,7 @@ fun NoteCardItem(
                 }
                 IconButton(
                     onClick = {
-                        val cleanCopyText = note.content.replace(Regex("""\[PDF_PAGE:[^\]]+\]\r?\n?"""), "").trim()
+                        val cleanCopyText = note.content.replace(NOTES_ALL_PDF_TAGS_REGEX, "").trim()
                         clipboardManager.setText(AnnotatedString(NoteRichTextHelper.toPlainText(cleanCopyText)))
                         Toast.makeText(context, "Kopyalandı", Toast.LENGTH_SHORT).show()
                     },

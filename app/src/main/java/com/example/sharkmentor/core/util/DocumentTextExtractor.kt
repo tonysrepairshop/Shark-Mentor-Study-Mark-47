@@ -42,7 +42,8 @@ object DocumentTextExtractor {
     private fun extractPdfCleanText(context: Context, uri: Uri): String {
         return runCatching {
             val raw = PdfBitmapConverter.extractPdfPlainText(context, uri)
-            sanitizeExtractedText(raw)
+            val cleaned = sanitizeExtractedText(raw)
+            if (PdfBitmapConverter.isExtractedTextReadable(cleaned, cleaned)) cleaned else ""
         }.getOrElse { e ->
             Log.w(TAG, "Failed extracting PDF text: ${e.message}")
             ""
@@ -215,7 +216,7 @@ object DocumentTextExtractor {
                 in '\u202A'..'\u202E' -> {} // Directional embedding overrides
                 in '\u2060'..'\u206F' -> {} // Invisible formatting controls
                 '\uFEFF' -> {} // Byte order mark
-                '\uFFFD' -> {} // Replacement character ()
+                '\uFFFD' -> {} // Replacement character
                 in '\u0000'..'\u0008', in '\u000B'..'\u000C', in '\u000E'..'\u001F', in '\u007F'..'\u009F' -> {} // Control codes (keep \t, \n)
                 else -> sb.append(ch)
             }
@@ -269,7 +270,8 @@ object DocumentTextExtractor {
         return str
     }
 
-    private val VOWEL_REGEX = Regex("""[aeıioöuüAEIİOÖUÜ]""")
+    private val VOWEL_REGEX = Regex("""[aeıioöuüAEIİOÖUÜâîûÂÎÛyY]""")
+    private val CID_ARTIFACT_REGEX = Regex("""\(cid:\d+\)""")
     private val PDF_OPERATOR_LINE_REGEX = Regex("""(?m)^\s*(?:BT|ET|q|Q|stream|endstream|xref|trailer|startxref|endobj|%%EOF|<<|>>)\s*$""")
     private val PDF_STATE_LINE_REGEX = Regex("""(?m)^\s*(?:[0-9.-]+\s+){2,6}(?:cm|Tm|rg|RG|sc|SC|cs|CS|re|m|l|c|v|y|d|w|J|j|M|ri|gs)\s*$""")
     private val PDF_FONT_SELECT_REGEX = Regex("""(?m)^\s*/[A-Za-z0-9_-]+\s+[0-9.]+\s+Tf\s*$""")
@@ -277,18 +279,19 @@ object DocumentTextExtractor {
     private val WORD_FIELD_INSTRUCTION_REGEX = Regex("""(?i)^\s*(?:PAGE|NUMPAGES|PAGEREF|TOC|HYPERLINK|MERGEFORMAT|FORMTEXT|AUTOTEXT|INDEX)\b.*$""")
 
     /**
-     * Strips PDF_PAGE tags, file header junk, unprintable control chars, stream garbage,
+     * Strips PDF_PAGE / PDF_FILE tags, file header junk, unprintable control chars, stream garbage,
      * and corrupted binary tokens from both PDF and Word documents.
      */
     fun sanitizeExtractedText(text: String): String {
         if (text.isBlank()) return ""
 
-        // 1. Strip internal PDF page tags and path markers
+        // 1. Strip internal PDF tags and path markers
         var cleaned = text
-            .replace(Regex("""\[PDF_PAGE:[^\]]+\]\r?\n?"""), "")
+            .replace(Regex("""\[PDF_(?:PAGE|FILE):[^\]]+\]\r?\n?"""), "")
             .replace(Regex("""^[^\n]+\((?:[0-9]+\s*sayfa|PDF Belgesi|DOCX Dosyası|Word Belgesi)[^)]*\)\s*""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\[Not:\s*İçerik[^\]]+\]"""), "")
             .replace(Regex("""^\[DOCX Dosyası:[^\]]+\]\s*""", RegexOption.MULTILINE), "")
+            .replace(CID_ARTIFACT_REGEX, "")
 
         // 2. Clean Private Use Area and invisible control characters
         cleaned = cleanPrivateUseAndControlChars(cleaned)

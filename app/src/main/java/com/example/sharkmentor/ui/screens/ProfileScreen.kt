@@ -1,51 +1,52 @@
 package com.example.sharkmentor.ui.screens
 
 import android.widget.Toast
-import androidx.compose.foundation.Image
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Grade
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
-import androidx.compose.material.icons.filled.CloudSync
-import androidx.compose.material.icons.filled.CloudUpload
-import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.sharkmentor.core.util.AppIconManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharkmentor.core.util.AvatarHelper
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.core.util.SessionManager
-import com.example.sharkmentor.core.util.SharkVisualKit
+import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.data.repository.CoachCodeRepository
 import com.example.sharkmentor.ui.screens.profile.ProfileViewModel
-import java.text.SimpleDateFormat
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,12 +76,29 @@ fun ProfileScreen(
     var linkError by remember { mutableStateOf("") }
     var showUnlinkConfirm by remember { mutableStateOf(false) }
     var showBookingSheet by remember { mutableStateOf(false) }
+    var showAvatarPickerSheet by remember { mutableStateOf(false) }
 
     val activeMeetings by viewModel.studentMeetings.collectAsStateWithLifecycle()
+    val avatarState by viewModel.avatarState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.selectGalleryAvatar(uri)
+            showAvatarPickerSheet = false
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.bookingMessage.collect { msg ->
+            snackbarHostState.showSnackbar(msg)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.avatarMessage.collect { msg ->
             snackbarHostState.showSnackbar(msg)
         }
     }
@@ -93,6 +111,13 @@ fun ProfileScreen(
                     if (!nameInDb.isNullOrBlank()) {
                         studentName = nameInDb
                     }
+
+                    val hasAvatarFields = snapshot.contains("avatarBase64") || snapshot.contains("avatarPresetId")
+                    viewModel.syncAvatarFromCloud(
+                        remoteBase64 = snapshot.getString("avatarBase64"),
+                        remotePresetId = snapshot.getString("avatarPresetId"),
+                        hasCloudFields = hasAvatarFields
+                    )
 
                     val emailInDb = snapshot.getString("email")
                     if (!emailInDb.isNullOrBlank()) studentEmail = emailInDb
@@ -155,8 +180,7 @@ fun ProfileScreen(
         } else {
             studentEmail.ifBlank { "E-posta Belirtilmemiş" }
         }
-
-        val activeShark = remember(context) { AppIconManager.getActiveIcon(context) }
+        val effectiveDisplayName = if (isGuest) "Misafir Öğrenci" else studentName.ifBlank { "Kayıtlı Öğrenci" }
 
         LazyColumn(
             modifier = Modifier
@@ -180,24 +204,55 @@ fun ProfileScreen(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
+                                .size(62.dp)
+                                .clickable { showAvatarPickerSheet = true },
                             contentAlignment = Alignment.Center
                         ) {
-                            Image(
-                                painter = painterResource(id = SharkVisualKit.getBreedDrawable(activeShark.key)),
-                                contentDescription = activeShark.title,
-                                modifier = Modifier.size(36.dp)
+                            SharkAvatar(
+                                avatarBase64 = avatarState.avatarBase64,
+                                avatarPresetId = avatarState.avatarPresetId,
+                                displayName = effectiveDisplayName,
+                                size = 58.dp
                             )
+                            if (avatarState.isUpdating) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(58.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.38f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary)
+                                    .border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CameraAlt,
+                                    contentDescription = "Profil Görseli Seç",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
                         }
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (isGuest) "Misafir Öğrenci" else studentName.ifBlank { "Kayıtlı Öğrenci" },
+                                text = effectiveDisplayName,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
@@ -205,6 +260,12 @@ fun ProfileScreen(
                                 text = if (isGuest) "Geçici Oturum" else "Doğrulanmış Öğrenci Hesabı",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "Görseli değiştirmek için dokun",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 2.dp)
                             )
                         }
                     }
@@ -490,6 +551,165 @@ fun ProfileScreen(
                 }
             }
         )
+    }
+
+    if (showAvatarPickerSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val previewName = if (isGuest) "Misafir Öğrenci" else studentName.ifBlank { "Kayıtlı Öğrenci" }
+
+        ModalBottomSheet(
+            onDismissRequest = { showAvatarPickerSheet = false },
+            sheetState = sheetState,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Profil Görseli Seç",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                SharkAvatar(
+                    avatarBase64 = avatarState.avatarBase64,
+                    avatarPresetId = avatarState.avatarPresetId,
+                    displayName = previewName,
+                    size = 78.dp
+                )
+
+                Button(
+                    onClick = {
+                        photoPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhotoLibrary,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Galeriden Fotoğraf Seç", fontWeight = FontWeight.SemiBold)
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Hazır Avatarlar",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    AvatarHelper.PRESETS.chunked(5).forEach { rowPresets ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowPresets.forEach { preset ->
+                                val isSelected = avatarState.avatarBase64.isBlank() &&
+                                    avatarState.avatarPresetId == preset.id
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            viewModel.selectPresetAvatar(preset.id)
+                                        }
+                                        .padding(vertical = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                Brush.linearGradient(
+                                                    colors = listOf(preset.startColor, preset.endColor)
+                                                )
+                                            )
+                                            .border(
+                                                width = if (isSelected) 2.5.dp else 1.dp,
+                                                color = if (isSelected) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    Color.White.copy(alpha = 0.35f)
+                                                },
+                                                shape = CircleShape
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = preset.icon,
+                                            contentDescription = preset.label,
+                                            tint = preset.iconTint,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = preset.label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.resetAvatar()
+                            showAvatarPickerSheet = false
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Varsayılana Sıfırla", fontSize = 12.sp, maxLines = 1)
+                    }
+
+                    TextButton(
+                        onClick = { showAvatarPickerSheet = false },
+                        modifier = Modifier.weight(0.6f)
+                    ) {
+                        Text("Tamam", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
     }
 
 }

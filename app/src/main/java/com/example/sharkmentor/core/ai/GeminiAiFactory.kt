@@ -1,5 +1,6 @@
 package com.example.sharkmentor.core.ai
 
+import android.content.Context
 import android.util.Log
 import com.example.sharkmentor.BuildConfig
 import com.google.ai.client.generativeai.GenerativeModel
@@ -58,14 +59,24 @@ object GeminiAiFactory {
         return SOLE_GEMINI_MODEL
     }
 
-    fun resolveCleanApiKey(overrideKey: String? = null): String {
+    fun resolveCleanApiKey(overrideKey: String? = null, context: Context? = null): String {
+        if (context != null) {
+            UserAiPreferences.initialize(context)
+        }
         val rawKey = if (!overrideKey.isNullOrBlank()) {
             overrideKey
         } else {
-            try {
-                ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
-            } catch (_: Exception) {
-                BuildConfig.GEMINI_API_KEY.trim()
+            val userFirstKey = runCatching {
+                UserAiPreferences.getOrNull(context)?.getParsedUserGeminiKeys()?.firstOrNull()
+            }.getOrNull()
+            if (!userFirstKey.isNullOrBlank()) {
+                ApiKeyRotator.getActiveKey(context).ifBlank { userFirstKey }
+            } else {
+                try {
+                    ApiKeyRotator.getActiveKey(context).ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
+                } catch (_: Exception) {
+                    BuildConfig.GEMINI_API_KEY.trim()
+                }
             }
         }
         return rawKey.trim().replace("\"", "").replace("'", "")
@@ -75,12 +86,13 @@ object GeminiAiFactory {
         taskType: AiTaskType,
         systemPrompt: String = "",
         generationConfig: GenerationConfig? = null,
-        tools: List<Tool> = emptyList()
+        tools: List<Tool> = emptyList(),
+        context: Context? = null
     ): GenerativeModel {
-        val cleanKey = resolveCleanApiKey()
+        val cleanKey = resolveCleanApiKey(overrideKey = null, context = context)
         if (cleanKey.isBlank() || cleanKey == "null") {
             Log.e("GeminiError", "AI Call Failed: API Key is missing or invalid.")
-            throw IllegalStateException("Gemini API Key is missing or invalid. Check local.properties or BuildConfig.")
+            throw IllegalStateException("Gemini API Key is missing or invalid.")
         }
 
         val resolvedConfig = generationConfig ?: generationConfig {
@@ -108,9 +120,10 @@ object GeminiAiFactory {
      */
     fun createVisionModel(
         systemPrompt: String = "",
-        overrideKey: String? = null
+        overrideKey: String? = null,
+        context: Context? = null
     ): GenerativeModel {
-        val cleanKey = resolveCleanApiKey(overrideKey)
+        val cleanKey = resolveCleanApiKey(overrideKey = overrideKey, context = context)
         if (cleanKey.isBlank() || cleanKey == "null") {
             throw IllegalStateException("Gemini API Key is missing for Vision task.")
         }

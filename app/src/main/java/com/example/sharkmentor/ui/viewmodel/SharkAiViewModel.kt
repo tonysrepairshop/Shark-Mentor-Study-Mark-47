@@ -44,7 +44,12 @@ import com.example.sharkmentor.data.repository.SharkAiCapability
 import com.example.sharkmentor.data.repository.SharkAiEngine
 import com.example.sharkmentor.data.sync.InstitutionScheduleSyncListener
 import com.example.sharkmentor.domain.model.prediction.NetWizardUiState
+import com.example.sharkmentor.core.ai.AiProviderChoice
+import com.example.sharkmentor.core.ai.GeminiCoreService
+import com.example.sharkmentor.core.ai.PreferredPowerMode
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.ai.YksCurriculumCatalog
+import com.example.sharkmentor.data.repository.AiRouterResult
 import com.example.sharkmentor.ui.aichat.AiChatHubUiState
 import com.example.sharkmentor.ui.aichat.AiChatMessage
 import com.example.sharkmentor.ui.aichat.AiPersona
@@ -54,12 +59,14 @@ import com.example.sharkmentor.ui.aichat.SharkAiChatSessionStore
 import com.example.sharkmentor.ui.aichat.isPersonaAvailable
 import com.example.sharkmentor.ui.screens.SelectedAttachmentPreview
 import com.google.gson.Gson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -121,8 +128,10 @@ object SharkAiHandoffManager {
 open class SharkAiViewModel(application: Application) : AndroidViewModel(application) {
 
     private val gson = Gson()
+    private val userAiPrefs = UserAiPreferences.initialize(application)
     private val database = SharkMentorDatabase.getDatabase(application)
     private val aiRouterRepository = AiRouterRepository(application.applicationContext, database)
+    private val geminiCoreService = GeminiCoreService(application.applicationContext)
     private val repository = PlanRepository(
         database.targetDao(),
         database.sessionDao(),
@@ -294,6 +303,10 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
     fun setModelPower(power: AiModelPower) {
         _modelPower.value = power
+        val prefMode = if (power == AiModelPower.PRO) PreferredPowerMode.PRO else PreferredPowerMode.FLASH
+        if (userAiPrefs.getPreferredPowerMode() != prefMode) {
+            userAiPrefs.setPreferredPowerMode(prefMode)
+        }
         val snapshot = SharkAiChatSessionStore.saveModelPower(getApplication(), power)
         _chatSessions.value = snapshot.sessions
     }
@@ -318,14 +331,26 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
     }
 
     /**
-     * Starts a fresh chat session ("Yeni Sohbet") and activates it (without duplicating empty sessions).
+     * Starts a fresh chat session ("Yeni Sohbet"), clears displayed messages, resets draft/attachment/engine,
+     * and resets an unused session in place instead of creating empty duplicates.
      */
     fun startNewChat() {
         activeAiJob?.cancel()
+        activeAiJob = null
         _selectedAttachmentUri.value = null
         _attachmentPreview.value = null
+        _activeCapability.value = null
+        _lockedEngine.value = null
+        _inputText.value = ""
         val snapshot = SharkAiChatSessionStore.createNewSession(getApplication(), keepModelPower = true)
         applySessionSnapshot(snapshot)
+        _uiState.value = _uiState.value.copy(
+            messages = emptyList(),
+            currentPersona = AiPersona.SHARK_COACH,
+            isLoading = false,
+            error = null
+        )
+        refreshAutoDetectedEngine()
     }
 
     /**
@@ -334,6 +359,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
     fun selectChatSession(sessionId: String) {
         if (sessionId == _activeChatSessionId.value && !_uiState.value.isLoading) return
         activeAiJob?.cancel()
+        activeAiJob = null
         _selectedAttachmentUri.value = null
         _attachmentPreview.value = null
         val snapshot = SharkAiChatSessionStore.selectSession(getApplication(), sessionId)
@@ -347,6 +373,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
     fun deleteChatSession(sessionId: String) {
         if (sessionId == _activeChatSessionId.value) {
             activeAiJob?.cancel()
+            activeAiJob = null
             _selectedAttachmentUri.value = null
             _attachmentPreview.value = null
         }
@@ -423,6 +450,16 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch(Dispatchers.IO) {
             SessionManager.isLinkedToInstitution.collect { linked ->
                 _uiState.value = _uiState.value.copy(isInstitutional = linked)
+            }
+        }
+        viewModelScope.launch {
+            userAiPrefs.preferredPowerMode.drop(1).collect { mode ->
+                val targetPower = if (mode == PreferredPowerMode.PRO) AiModelPower.PRO else AiModelPower.FLASH
+                if (_modelPower.value != targetPower) {
+                    _modelPower.value = targetPower
+                    val snapshot = SharkAiChatSessionStore.saveModelPower(getApplication(), targetPower)
+                    _chatSessions.value = snapshot.sessions
+                }
             }
         }
         val prefs = getApplication<Application>().getSharedPreferences("shark_dopamine_prefs", Context.MODE_PRIVATE)
@@ -567,6 +604,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         persistCurrentChatState()
 
         val streamingMsgId = UUID.randomUUID().toString()
+        val originatingSessionId = _activeChatSessionId.value
 
         activeAiJob?.cancel()
         activeAiJob = viewModelScope.launch(Dispatchers.IO) {
@@ -691,7 +729,10 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     text
                 }
 
-                val onStreamChunk: (String) -> Unit = { partialText ->
+                val onStreamChunk: (String) -> Unit = streamCallback@{ partialText ->
+                    if (_activeChatSessionId.value != originatingSessionId) {
+                        return@streamCallback
+                    }
                     // Strip in-progress or completed action tags and markdown json code blocks
                     var cleanPartial = partialText
                         .replace("#ACTION:(\\{.*?\\})#".toRegex(RegexOption.DOT_MATCHES_ALL), "")
@@ -702,11 +743,11 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         .trim()
 
                     val displayText = if (cleanPartial.isEmpty() && (partialText.contains("\"schedule\"") || partialText.contains("CREATE_WEEKLY_PLAN"))) {
-                        "🗓️ 7 Günlük Çalışma Programın hazırlanıyor ve günlere dağıtılıyor..."
+                        "🗓️ Haftalık çalışma planın hazırlanıyor..."
                     } else if (cleanPartial.isEmpty() && partialText.contains("INSERT_TOPICS_BATCH")) {
-                        "📚 Müfredat ve alt konular Konu Hakimiyetine işleniyor..."
+                        "📚 Konu hakimiyeti listesi ekleniyor..."
                     } else if (cleanPartial.startsWith("{") || cleanPartial.startsWith("[")) {
-                        "🗓️ Program ve görevler organize ediliyor..."
+                        "🗓️ Plan ve görevler hazırlanıyor..."
                     } else {
                         cleanPartial
                     }
@@ -733,8 +774,8 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                 }
 
                 // Hybrid Multi-Provider Routing:
-                // If message has an image/PDF attached -> Route directly to Gemini Vision (gemini-3.6-flash).
-                // If message is text-only -> Route via AiRouterRepository (Gemini for autonomous tools, DeepSeek for chat/synthesis, Kimi for long context & fallback).
+                // - Multimodal/PDF/Images always use Gemini Vision (gemini-3.6-flash).
+                // - Text-only honors UserAiPreferences.selectedAiProvider (GEMINI -> GeminiCoreService 3.6 Flash, AUTO/DEEPSEEK/KIMI -> DeepSeekClient/AiRouterRepository).
                 val routerResult = if (attachmentUri != null) {
                     val visionContext = when (resolvedEngine) {
                         SharkAiEngine.SOLVER_ENGINE ->
@@ -765,14 +806,46 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         SharkAiEngine.CONVERSATIONAL_PEER ->
                             compressedSystemPrompt
                     }
-                    aiRouterRepository.executeTextStream(
-                        activeEngine = resolvedEngine,
-                        prompt = effectivePrompt,
-                        systemInstruction = textInstruction,
-                        chatHistory = openAiHistory,
-                        modelPower = activePower,
-                        onPartialText = onStreamChunk
-                    ).getOrThrow()
+                    if (userAiPrefs.getSelectedProvider() == AiProviderChoice.GEMINI) {
+                        val geminiAttempt = geminiCoreService.streamTextChatWithGemini(
+                            systemInstruction = textInstruction + AiRouterRepository.getDepthDirective(activePower),
+                            userPrompt = effectivePrompt,
+                            chatHistory = openAiHistory,
+                            temperature = activePower.temperature,
+                            maxTokens = if (activePower == AiModelPower.PRO) 8192 else 4096,
+                            onPartialText = onStreamChunk
+                        )
+                        if (geminiAttempt.isSuccess) {
+                            AiRouterResult(
+                                text = geminiAttempt.getOrThrow(),
+                                executedToolNotes = emptyList(),
+                                createdPlanFolderId = null,
+                                engineUsed = resolvedEngine
+                            )
+                        } else {
+                            aiRouterRepository.executeTextStream(
+                                activeEngine = resolvedEngine,
+                                prompt = effectivePrompt,
+                                systemInstruction = textInstruction,
+                                chatHistory = openAiHistory,
+                                modelPower = activePower,
+                                onPartialText = onStreamChunk
+                            ).getOrThrow()
+                        }
+                    } else {
+                        aiRouterRepository.executeTextStream(
+                            activeEngine = resolvedEngine,
+                            prompt = effectivePrompt,
+                            systemInstruction = textInstruction,
+                            chatHistory = openAiHistory,
+                            modelPower = activePower,
+                            onPartialText = onStreamChunk
+                        ).getOrThrow()
+                    }
+                }
+
+                if (_activeChatSessionId.value != originatingSessionId) {
+                    return@launch
                 }
 
                 handleAiResponse(
@@ -797,7 +870,12 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         aiResponseText = routerResult.text
                     )
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (e: Exception) {
+                if (_activeChatSessionId.value != originatingSessionId) {
+                    return@launch
+                }
                 if (attachmentUri != null) {
                     Log.e("SharkAiVision", "Vision error: ${e.javaClass.simpleName} - ${e.message}", e)
                 } else {
@@ -819,9 +897,9 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     val errorMsg = AiChatMessage(
                         sender = "ai",
                         text = if (attachmentUri != null) {
-                            "Görsel incelenirken bir sorun oluştu: $errDetail. Lütfen tekrar deneyin."
+                            "Görsel işlenemedi ($errDetail)."
                         } else {
-                            "Şu an bağlantı kurulamadı veya yoğunluk var ($errDetail). Lütfen tekrar deneyin."
+                            "Bağlantı kurulamadı ($errDetail)."
                         },
                         personaTag = currentPersona.id
                     )

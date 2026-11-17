@@ -1,12 +1,15 @@
 package com.example.sharkmentor.ui.screens.profile
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.sharkmentor.core.util.AvatarHelper
 import com.example.sharkmentor.core.util.SessionManager
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.data.model.Meeting
 import com.example.sharkmentor.data.repository.MeetingRepository
+import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -14,6 +17,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.example.sharkmentor.worker.MeetingReminderWorker
+
+data class ProfileAvatarState(
+    val avatarBase64: String = "",
+    val avatarPresetId: String = "",
+    val isUpdating: Boolean = false
+)
 
 class ProfileViewModel @JvmOverloads constructor(
     application: Application,
@@ -23,6 +32,17 @@ class ProfileViewModel @JvmOverloads constructor(
     private val currentUid get() = runCatching {
         com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
     }.getOrNull() ?: GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid ?: ""
+
+    private val _avatarState = MutableStateFlow(
+        ProfileAvatarState(
+            avatarBase64 = AvatarHelper.getSavedAvatarBase64(application),
+            avatarPresetId = AvatarHelper.getSavedAvatarPresetId(application)
+        )
+    )
+    val avatarState: StateFlow<ProfileAvatarState> = _avatarState.asStateFlow()
+
+    private val _avatarMessage = MutableSharedFlow<String>()
+    val avatarMessage = _avatarMessage.asSharedFlow()
 
     // Live list of student's meetings
     val studentMeetings: StateFlow<List<Meeting>> = callbackFlow {
@@ -59,6 +79,85 @@ class ProfileViewModel @JvmOverloads constructor(
 
     private val _bookingMessage = MutableSharedFlow<String>()
     val bookingMessage = _bookingMessage.asSharedFlow()
+
+    fun syncAvatarFromCloud(
+        remoteBase64: String?,
+        remotePresetId: String?,
+        hasCloudFields: Boolean
+    ) {
+        if (!hasCloudFields) return
+        val ctx = getApplication<Application>()
+        val cleanBase64 = remoteBase64.orEmpty()
+        val cleanPreset = if (cleanBase64.isNotBlank()) "" else remotePresetId.orEmpty()
+        AvatarHelper.saveLocalAvatar(ctx, base64 = cleanBase64, presetId = cleanPreset)
+        _avatarState.value = _avatarState.value.copy(
+            avatarBase64 = cleanBase64,
+            avatarPresetId = cleanPreset
+        )
+    }
+
+    fun selectGalleryAvatar(uri: Uri) {
+        val ctx = getApplication<Application>()
+        viewModelScope.launch {
+            _avatarState.value = _avatarState.value.copy(isUpdating = true)
+            val encoded = AvatarHelper.encodeUriToAvatarBase64(ctx, uri)
+            if (!encoded.isNullOrBlank()) {
+                AvatarHelper.saveLocalAvatar(ctx, base64 = encoded, presetId = "")
+                _avatarState.value = ProfileAvatarState(
+                    avatarBase64 = encoded,
+                    avatarPresetId = "",
+                    isUpdating = false
+                )
+                persistAvatarToFirestore(base64 = encoded, presetId = "")
+                _avatarMessage.emit("Profil fotoğrafı güncellendi.")
+            } else {
+                _avatarState.value = _avatarState.value.copy(isUpdating = false)
+                _avatarMessage.emit("Görsel işlenemedi, lütfen başka bir fotoğraf seçin.")
+            }
+        }
+    }
+
+    fun selectPresetAvatar(presetId: String) {
+        val ctx = getApplication<Application>()
+        AvatarHelper.saveLocalAvatar(ctx, base64 = "", presetId = presetId)
+        _avatarState.value = ProfileAvatarState(
+            avatarBase64 = "",
+            avatarPresetId = presetId,
+            isUpdating = false
+        )
+        persistAvatarToFirestore(base64 = "", presetId = presetId)
+        viewModelScope.launch {
+            _avatarMessage.emit("Profil avatarı güncellendi.")
+        }
+    }
+
+    fun resetAvatar() {
+        val ctx = getApplication<Application>()
+        AvatarHelper.clearLocalAvatar(ctx)
+        _avatarState.value = ProfileAvatarState(
+            avatarBase64 = "",
+            avatarPresetId = "",
+            isUpdating = false
+        )
+        persistAvatarToFirestore(base64 = "", presetId = "")
+        viewModelScope.launch {
+            _avatarMessage.emit("Profil görseli varsayılana sıfırlandı.")
+        }
+    }
+
+    private fun persistAvatarToFirestore(base64: String, presetId: String) {
+        val ctx = getApplication<Application>()
+        val uid = currentUid
+        if (uid.isBlank() || uid == "local_student") return
+        val db = GoogleServicesHelper.getFirebaseFirestore(ctx) ?: return
+        db.collection("students").document(uid).set(
+            mapOf(
+                "avatarBase64" to base64,
+                "avatarPresetId" to presetId
+            ),
+            SetOptions.merge()
+        )
+    }
 
     fun updateUserMode(mode: String) {
         val ctx = getApplication<Application>()

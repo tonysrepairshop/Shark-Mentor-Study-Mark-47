@@ -9,12 +9,14 @@ import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.GenerateContentResponse
 import com.google.ai.client.generativeai.type.QuotaExceededException
 import com.google.ai.client.generativeai.type.RequestOptions
+import com.google.ai.client.generativeai.type.ResponseStoppedException
 import com.google.ai.client.generativeai.type.content
+import com.google.ai.client.generativeai.type.generationConfig
 import com.example.sharkmentor.BuildConfig
 import com.example.sharkmentor.core.model.TwinQuestionData
 import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.core.analytics.SubjectMastery
-import com.example.sharkmentor.data.remote.GeminiRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -35,6 +37,10 @@ data class PlanTaskDto(
 
 class GeminiCoreService(private val context: Context) {
 
+    init {
+        UserAiPreferences.initialize(context)
+    }
+
     companion object {
         const val SYSTEM_PERSONA_RULES = """
 KESİN KURALLAR:
@@ -48,12 +54,20 @@ KESİN KURALLAR:
         return GeminiAiFactory.SOLE_GEMINI_MODEL
     }
 
-    private fun createModel(apiKey: String, modelName: String = GeminiRepository.ACTIVE_MODEL_NAME): GenerativeModel {
-        if (apiKey.isBlank() || apiKey == "null") {
-            Log.e("GeminiError", "AI Call Failed: API Key is missing or invalid.")
-            throw IllegalStateException("Gemini API Key is missing or invalid. Check local.properties or BuildConfig.")
-        }
+    private fun resolveActiveOrFallbackKey(): String {
+        val fromRotator = ApiKeyRotator.getActiveKey(context)
+        if (fromRotator.isNotBlank() && fromRotator != "null") return fromRotator
+        val fromUser = UserAiPreferences.getInstance(context).getParsedUserGeminiKeys().firstOrNull()
+        if (!fromUser.isNullOrBlank()) return fromUser
+        return BuildConfig.GEMINI_API_KEY.trim().replace("\"", "").replace("'", "")
+    }
+
+    private fun createModel(apiKey: String, modelName: String = GeminiAiFactory.SOLE_GEMINI_MODEL): GenerativeModel {
         val cleanKey = apiKey.trim().replace("\"", "").replace("'", "")
+        if (cleanKey.isBlank() || cleanKey == "null") {
+            Log.e("GeminiError", "AI Call Failed: API Key is missing or invalid.")
+            throw IllegalStateException("Gemini API Key is missing or invalid.")
+        }
         val cleanModelName = sanitizeModelName(modelName)
         return GenerativeModel(
             modelName = cleanModelName,
@@ -65,20 +79,20 @@ KESİN KURALLAR:
         )
     }
 
-    // Failover Execution: Cycles through all available accounts and fallback models before returning failure
+    // Failover Execution: Cycles through user & fallback Gemini keys on gemini-3.6-flash before returning failure
     private suspend fun <T> executeWithKeyFailover(
         action: suspend (GenerativeModel) -> T
     ): Result<T> = withContext(Dispatchers.IO) {
-        val totalKeys = ApiKeyRotator.getKeyCount().coerceAtLeast(1)
-        val modelName = "gemini-3.6-flash"
+        val totalKeys = ApiKeyRotator.getKeyCount(context).coerceAtLeast(1)
+        val modelName = GeminiAiFactory.SOLE_GEMINI_MODEL
         var lastException: Exception? = null
         val maxRetries = 2
         var currentDelay = 600L
 
         for (attempt in 0 until totalKeys) {
-            val activeKey = ApiKeyRotator.getActiveKey()
+            val activeKey = resolveActiveOrFallbackKey()
             if (activeKey.isBlank() || activeKey == "null") {
-                ApiKeyRotator.rotateToNextKey()
+                ApiKeyRotator.rotateToNextKey(context)
                 continue
             }
 
@@ -87,36 +101,122 @@ KESİN KURALLAR:
                     val model = createModel(activeKey, modelName)
                     val result = action(model)
                     return@withContext Result.success(result)
+                } catch (ce: CancellationException) {
+                    throw ce
                 } catch (e: Exception) {
                     Log.e("GeminiError", "AI Call Failed ($modelName): ${e.javaClass.simpleName} - ${e.message}", e)
                     lastException = Exception("AI Hatası: ${e.localizedMessage ?: "Sunucu bağlantısı kurulamadı"}")
-                    
+
                     if (ApiKeyRotator.shouldRotateKey(e)) {
                         Log.w("GeminiCoreService", "Quota/Key limit reached on current key. Rotating key...")
-                        break // Break inner retry loop to trigger key rotation in outer loop
+                        break
                     }
 
-                    val isUnavailable = e.message?.contains("503") == true || 
-                                        e.message?.contains("high demand", ignoreCase = true) == true ||
-                                        e.message?.contains("UNAVAILABLE", ignoreCase = true) == true
-                    
+                    val isUnavailable = e.message?.contains("503") == true ||
+                        e.message?.contains("high demand", ignoreCase = true) == true ||
+                        e.message?.contains("UNAVAILABLE", ignoreCase = true) == true
+
                     if (isUnavailable && retry < maxRetries) {
                         Log.i("GeminiCoreService", "Server busy (503). Retrying in ${currentDelay}ms...")
-                        kotlinx.coroutines.delay(currentDelay)
+                        delay(currentDelay)
                         currentDelay *= 2
                     } else if (retry == maxRetries && isUnavailable) {
-                        lastException = Exception("Yapay zeka sunucularında anlık yoğunluk yaşanıyor (503). Lütfen birkaç saniye sonra tekrar deneyin.")
-                        break // Break to trigger rotation, though usually 503 is per-model not per-key
+                        lastException = Exception("Sunucu yoğun (503). Lütfen tekrar deneyin.")
+                        break
                     }
                 }
             }
 
-            Log.w("GeminiCoreService", "AI Deneme ${attempt + 1}/$totalKeys tüm modellerde başarısız. Sonraki anahtara devrediliyor...")
-            ApiKeyRotator.rotateToNextKey()
+            Log.w("GeminiCoreService", "AI Deneme ${attempt + 1}/$totalKeys başarısız. Sonraki anahtara devrediliyor...")
+            ApiKeyRotator.rotateToNextKey(context)
             delay(400)
         }
 
         Result.failure(lastException ?: Exception("Mevcut API anahtarlarıyla işlem tamamlanamadı."))
+    }
+
+    /**
+     * Streams a text chat completion strictly via `gemini-3.6-flash` using user keys first and BuildConfig fallback.
+     */
+    suspend fun streamTextChatWithGemini(
+        systemInstruction: String,
+        userPrompt: String,
+        chatHistory: List<OpenAiChatMessage> = emptyList(),
+        temperature: Float = 0.35f,
+        maxTokens: Int = 4096,
+        onPartialText: (String) -> Unit = {}
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val totalKeys = ApiKeyRotator.getKeyCount(context).coerceAtLeast(1)
+        var lastException: Exception? = null
+
+        val effectiveSystem = buildString {
+            append(systemInstruction.trim())
+            if (chatHistory.isNotEmpty() && !systemInstruction.contains("[SON SOHBET DİYALOĞU GEÇMİŞİ]")) {
+                append("\n\n[SON SOHBET GEÇMİŞİ]:\n")
+                chatHistory.takeLast(6).forEach { msg ->
+                    val label = if (msg.role == "user") "ÖĞRENCİ" else "SHARK AI"
+                    appendLine("[$label]: ${msg.content}")
+                }
+            }
+        }.trim()
+
+        val config = generationConfig {
+            this.temperature = temperature
+            this.maxOutputTokens = maxTokens
+            this.topP = 0.85f
+        }
+
+        for (attempt in 0 until totalKeys) {
+            val activeKey = resolveActiveOrFallbackKey()
+            if (activeKey.isBlank() || activeKey == "null") {
+                ApiKeyRotator.rotateToNextKey(context)
+                continue
+            }
+
+            try {
+                val model = GenerativeModel(
+                    modelName = GeminiAiFactory.SOLE_GEMINI_MODEL,
+                    apiKey = activeKey,
+                    generationConfig = config,
+                    tools = emptyList(),
+                    systemInstruction = if (effectiveSystem.isNotBlank()) content { text(effectiveSystem) } else null,
+                    requestOptions = RequestOptions(timeout = 45_000L)
+                )
+
+                val accumulated = StringBuilder()
+                try {
+                    model.generateContentStream(userPrompt).collect { chunk ->
+                        val chunkText = runCatching { chunk.text }.getOrNull()
+                        if (!chunkText.isNullOrEmpty()) {
+                            accumulated.append(chunkText)
+                            onPartialText(accumulated.toString())
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (rse: ResponseStoppedException) {
+                    if (accumulated.isBlank()) throw rse
+                } catch (e: Exception) {
+                    if (accumulated.length <= 40) throw e
+                }
+
+                val resultText = accumulated.toString().trim()
+                if (resultText.isNotBlank()) {
+                    onPartialText(resultText)
+                    return@withContext Result.success(resultText)
+                }
+                lastException = IllegalStateException("Boş yanıt alındı.")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                Log.w("GeminiCoreService", "Gemini text chat attempt ${attempt + 1}/$totalKeys failed: ${e.message}")
+                lastException = e
+                ApiKeyRotator.rotateToNextKey(context)
+                delay(200L)
+            }
+        }
+
+        Result.failure(lastException ?: IllegalStateException("Gemini yanıt vermedi."))
     }
 
     private suspend fun generateContentForUri(model: GenerativeModel, uriString: String, prompt: String, errorMsg: String): GenerateContentResponse {

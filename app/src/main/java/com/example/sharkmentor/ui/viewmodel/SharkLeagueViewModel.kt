@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.sharkmentor.core.util.AvatarHelper
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.preferences.UserPreferences
@@ -17,6 +18,9 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -97,7 +101,9 @@ data class LeagueEntry(
     val isCurrentUser: Boolean = false,
     val isStudyingNow: Boolean = false,
     val activeSubject: String? = null,
-    val lastNudgeSentMillis: Long = 0L
+    val lastNudgeSentMillis: Long = 0L,
+    val avatarBase64: String = "",
+    val avatarPresetId: String = ""
 ) {
     fun canBeNudged(nowMillis: Long = System.currentTimeMillis()): Boolean {
         if (isCurrentUser || studentId.isBlank()) return false
@@ -241,6 +247,24 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val remoteStreak = studentDoc?.getLong("streakDays")?.toInt() ?: 0
                 val streakDays = maxOf(localStreakDays, remoteStreak)
 
+                val hasCloudAvatarFields = studentDoc != null &&
+                    (studentDoc.contains("avatarBase64") || studentDoc.contains("avatarPresetId"))
+                val myAvatarBase64 = if (hasCloudAvatarFields) {
+                    studentDoc?.getString("avatarBase64").orEmpty()
+                } else {
+                    AvatarHelper.getSavedAvatarBase64(appContext)
+                }
+                val myAvatarPresetId = if (myAvatarBase64.isNotBlank()) {
+                    ""
+                } else if (hasCloudAvatarFields) {
+                    studentDoc?.getString("avatarPresetId").orEmpty()
+                } else {
+                    AvatarHelper.getSavedAvatarPresetId(appContext)
+                }
+                if (hasCloudAvatarFields) {
+                    AvatarHelper.saveLocalAvatar(appContext, myAvatarBase64, myAvatarPresetId)
+                }
+
                 // 4. Register friendCode & upsert into GLOBAL_INDIVIDUAL (and institution league if any)
                 registerFriendCodeAndProfile(
                     uid = uid,
@@ -248,7 +272,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     friendCode = effectiveFriendCode,
                     weeklyFocusSeconds = weeklySeconds,
                     streakDays = streakDays,
-                    branchCode = branchCode
+                    branchCode = branchCode,
+                    avatarBase64 = myAvatarBase64,
+                    avatarPresetId = myAvatarPresetId
                 )
 
                 val myEntry = buildMyLeagueEntry(
@@ -256,7 +282,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     name = myName,
                     friendCode = effectiveFriendCode,
                     weeklySeconds = weeklySeconds,
-                    streakDays = streakDays
+                    streakDays = streakDays,
+                    avatarBase64 = myAvatarBase64,
+                    avatarPresetId = myAvatarPresetId
                 )
 
                 // 5. Fetch Global Individual League (or Institution League if user toggled it)
@@ -669,10 +697,13 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         name: String,
         friendCode: String,
         weeklySeconds: Long,
-        streakDays: Int
+        streakDays: Int,
+        avatarBase64: String = AvatarHelper.getSavedAvatarBase64(appContext),
+        avatarPresetId: String = AvatarHelper.getSavedAvatarPresetId(appContext)
     ): LeagueEntry {
         val cleanName = SyncWorker.sanitizeTurkishText(name.ifBlank { "Öğrenci" })
         val dailyAvgMin = ((weeklySeconds / 60L) / 7L).toInt()
+        val effectivePresetId = if (avatarBase64.isNotBlank()) "" else avatarPresetId
         return LeagueEntry(
             studentId = uid,
             displayName = "Sen ($cleanName)",
@@ -682,7 +713,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             dailyAverageMinutes = dailyAvgMin,
             streakDays = streakDays,
             tier = weeklySeconds.toTier(),
-            isCurrentUser = true
+            isCurrentUser = true,
+            avatarBase64 = avatarBase64,
+            avatarPresetId = effectivePresetId
         )
     }
 
@@ -764,11 +797,14 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         friendCode: String,
         weeklyFocusSeconds: Long,
         streakDays: Int,
-        branchCode: String
+        branchCode: String,
+        avatarBase64: String = "",
+        avatarPresetId: String = ""
     ) {
         try {
             val database = db ?: return
             val dailyAverageMinutes = ((weeklyFocusSeconds / 60L) / 7L).toInt()
+            val effectivePresetId = if (avatarBase64.isNotBlank()) "" else avatarPresetId
             val leaguePayload = hashMapOf<String, Any>(
                 "studentId" to uid,
                 "displayName" to name,
@@ -777,6 +813,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 "dailyAverageMinutes" to dailyAverageMinutes,
                 "streakDays" to streakDays,
                 "tier" to weeklyFocusSeconds.toTier().name,
+                "avatarBase64" to avatarBase64,
+                "avatarPresetId" to effectivePresetId,
                 "lastSessionAt" to FieldValue.serverTimestamp()
             )
 
@@ -843,27 +881,53 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 .get()
                 .await()
 
-            val mapped = leagueSnap.documents.mapIndexed { idx, doc ->
-                val id = doc.id
-                val isMe = (id == currentUid)
-                val secs = if (isMe) maxOf(myEntry.weeklyFocusSeconds, doc.getLong("weeklyFocusSeconds") ?: 0L)
-                else (doc.getLong("weeklyFocusSeconds") ?: 0L)
-                val rawName = SyncWorker.sanitizeTurkishText(doc.getString("displayName") ?: "Öğrenci")
-                val streak = if (isMe) maxOf(myEntry.streakDays, doc.getLong("streakDays")?.toInt() ?: 0)
-                else (doc.getLong("streakDays")?.toInt() ?: 0)
-                val fCode = doc.getString("friendCode") ?: ""
-                LeagueEntry(
-                    studentId = id,
-                    displayName = formatLeaderboardCallSign(rawName, idx + 1, isMe, showFullForFriends = false),
-                    rawName = rawName,
-                    friendCode = fCode,
-                    weeklyFocusSeconds = secs,
-                    dailyAverageMinutes = ((secs / 60L) / 7L).toInt(),
-                    streakDays = streak,
-                    tier = secs.toTier(),
-                    isCurrentUser = isMe,
-                    lastNudgeSentMillis = userPrefs.getLastNudgeMillis(id)
-                )
+            val mapped = coroutineScope {
+                leagueSnap.documents.mapIndexed { idx, doc ->
+                    async {
+                        val id = doc.id
+                        val isMe = (id == currentUid)
+                        val secs = if (isMe) maxOf(myEntry.weeklyFocusSeconds, doc.getLong("weeklyFocusSeconds") ?: 0L)
+                        else (doc.getLong("weeklyFocusSeconds") ?: 0L)
+                        val rawName = SyncWorker.sanitizeTurkishText(doc.getString("displayName") ?: "Öğrenci")
+                        val streak = if (isMe) maxOf(myEntry.streakDays, doc.getLong("streakDays")?.toInt() ?: 0)
+                        else (doc.getLong("streakDays")?.toInt() ?: 0)
+                        val fCode = doc.getString("friendCode") ?: ""
+
+                        val studentAvatarPair = if (isMe) {
+                            myEntry.avatarBase64 to myEntry.avatarPresetId
+                        } else {
+                            val studentSnap = runCatching {
+                                database.collection("students").document(id).get().await()
+                            }.getOrNull()
+                            val docBase64 = doc.getString("avatarBase64").orEmpty()
+                            val docPreset = doc.getString("avatarPresetId").orEmpty()
+                            val studentBase64 = studentSnap?.getString("avatarBase64").orEmpty()
+                            val studentPreset = studentSnap?.getString("avatarPresetId").orEmpty()
+                            val resolvedBase64 = studentBase64.ifBlank { docBase64 }
+                            val resolvedPreset = if (resolvedBase64.isNotBlank()) {
+                                ""
+                            } else {
+                                studentPreset.ifBlank { docPreset }
+                            }
+                            resolvedBase64 to resolvedPreset
+                        }
+
+                        LeagueEntry(
+                            studentId = id,
+                            displayName = formatLeaderboardCallSign(rawName, idx + 1, isMe, showFullForFriends = false),
+                            rawName = rawName,
+                            friendCode = fCode,
+                            weeklyFocusSeconds = secs,
+                            dailyAverageMinutes = ((secs / 60L) / 7L).toInt(),
+                            streakDays = streak,
+                            tier = secs.toTier(),
+                            isCurrentUser = isMe,
+                            lastNudgeSentMillis = userPrefs.getLastNudgeMillis(id),
+                            avatarBase64 = studentAvatarPair.first,
+                            avatarPresetId = studentAvatarPair.second
+                        )
+                    }
+                }.awaitAll()
             }
 
             val withMe = if (mapped.any { it.isCurrentUser }) {
@@ -965,6 +1029,14 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     ?: ""
                 val isStudying = studentSnap.getBoolean("isStudying") ?: false
                 val activeSubj = studentSnap.getString("activeSubject")
+                val avatarBase64 = studentSnap.getString("avatarBase64")?.takeIf { it.isNotBlank() }
+                    ?: globalLeagueSnap?.getString("avatarBase64").orEmpty()
+                val avatarPresetId = if (avatarBase64.isNotBlank()) {
+                    ""
+                } else {
+                    studentSnap.getString("avatarPresetId")?.takeIf { it.isNotBlank() }
+                        ?: globalLeagueSnap?.getString("avatarPresetId").orEmpty()
+                }
 
                 entries.add(
                     LeagueEntry(
@@ -979,7 +1051,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         isCurrentUser = false,
                         isStudyingNow = isStudying,
                         activeSubject = activeSubj,
-                        lastNudgeSentMillis = userPrefs.getLastNudgeMillis(memberId)
+                        lastNudgeSentMillis = userPrefs.getLastNudgeMillis(memberId),
+                        avatarBase64 = avatarBase64,
+                        avatarPresetId = avatarPresetId
                     )
                 )
             } catch (e: Exception) {

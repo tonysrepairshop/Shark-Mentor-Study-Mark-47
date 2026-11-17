@@ -17,6 +17,8 @@ import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.NoteEntity
 import com.example.sharkmentor.data.repository.NoteRepository
 import com.example.sharkmentor.data.repository.NoteRepositoryImpl
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStroke
 import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.QuotaExceededException
 import com.google.ai.client.generativeai.type.RequestOptions
@@ -24,8 +26,10 @@ import com.google.ai.client.generativeai.type.ResponseStoppedException
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,7 +62,7 @@ KESİN DAVRANIŞ KURALLARI:
         )
 
         private val BASE64_OR_PATH_REGEX = Regex(
-            pattern = "(\\[PDF_PAGE:[^\\]]+\\]|data:image/[^;]+;base64,[A-Za-z0-9+/=]+|file:///[^\\s]+|/data/user/[^\\s]+|[A-Za-z0-9+/=]{160,})"
+            pattern = "(\\[PDF_(?:PAGE|FILE):[^\\]]+\\]|data:image/[^;]+;base64,[A-Za-z0-9+/=]+|file:///[^\\s]+|/data/user/[^\\s]+|[A-Za-z0-9+/=]{160,})"
         )
 
         private val PDF_PAGE_TAG_REGEX = Regex("\\[PDF_PAGE:([^\\]]+)\\]")
@@ -112,6 +116,8 @@ KESİN DAVRANIŞ KURALLARI:
     fun resetAiSavedNewNoteStatus() {
         _aiSavedNewNoteId.value = null
     }
+
+    private val persistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
         observeAutoSaveDebounce()
@@ -274,21 +280,57 @@ KESİN DAVRANIŞ KURALLARI:
         }
     }
 
-    fun saveImmediately() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val currentTitle = _noteTitle.value
-            val currentContent = _noteContent.value
-            if (currentTitle.isNotBlank() || currentContent.isNotBlank() || _isPinned.value) {
-                val entity = NoteEntity(
-                    id = _noteId.value,
-                    title = currentTitle,
-                    content = currentContent,
-                    colorHex = _colorHex.value,
-                    isPinned = _isPinned.value,
-                    createdAt = _createdAt.value,
-                    updatedAt = System.currentTimeMillis()
-                )
-                noteRepository.insertOrUpdateNote(entity)
+    fun saveImmediately(
+        overrideTitle: String? = null,
+        overrideContent: String? = null
+    ) {
+        if (overrideTitle != null) {
+            _noteTitle.value = overrideTitle
+        }
+        if (overrideContent != null) {
+            _noteContent.value = overrideContent
+        }
+
+        val currentId = _noteId.value
+        val currentTitle = overrideTitle ?: _noteTitle.value
+        val currentContent = overrideContent ?: _noteContent.value
+        val currentColorHex = _colorHex.value
+        val currentPinned = _isPinned.value
+        val currentCreatedAt = _createdAt.value
+
+        if (currentTitle.isNotBlank() || currentContent.isNotBlank() || currentPinned) {
+            persistenceScope.launch {
+                runCatching {
+                    val entity = NoteEntity(
+                        id = currentId,
+                        title = currentTitle,
+                        content = currentContent,
+                        colorHex = currentColorHex,
+                        isPinned = currentPinned,
+                        createdAt = currentCreatedAt,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    noteRepository.insertOrUpdateNote(entity)
+                }.onFailure { e ->
+                    Log.e("NoteDetailVM", "saveImmediately failed for $currentId", e)
+                }
+            }
+        }
+    }
+
+    fun saveNoteDrawingImmediately(
+        context: Context,
+        targetNoteId: String,
+        strokes: List<DrawingStroke>
+    ) {
+        if (targetNoteId.isBlank()) return
+        val appContext = context.applicationContext
+        val snapshot = strokes.toList()
+        persistenceScope.launch {
+            runCatching {
+                DrawingSerializer.saveNoteDrawing(appContext, targetNoteId, snapshot)
+            }.onFailure { e ->
+                Log.e("NoteDetailVM", "saveNoteDrawingImmediately failed for $targetNoteId", e)
             }
         }
     }

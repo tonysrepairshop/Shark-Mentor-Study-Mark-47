@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.blocker.BlockerPreferences
 import com.example.sharkmentor.core.data.ThemePreferences
 import com.example.sharkmentor.core.theme.ThemeManager
@@ -26,6 +27,7 @@ class SharkMentorApplication : Application() {
 
         // ── Fast Light Initialization on Main Thread ─────────────────────
         ThemePreferences.initialize(this)
+        UserAiPreferences.initialize(this)
         ThemeManager.init(this)
         SessionManager.init(this)
         BlockerPreferences.initialize(this)

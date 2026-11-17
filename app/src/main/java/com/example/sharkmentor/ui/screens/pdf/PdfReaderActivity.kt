@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Share
@@ -140,12 +141,19 @@ import com.google.ai.client.generativeai.type.ResponseStoppedException
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 import kotlin.math.roundToInt
+
+private val pdfNotesPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
 enum class PdfOpenMode {
     CHOOSER,
@@ -229,7 +237,7 @@ class PdfReaderActivity : ComponentActivity() {
                                 ) {
                                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                                     Text(
-                                        text = if (isExtractingText) "PDF metni düzenlenebilir nota aktarılıyor..." else "PDF güvenli depolamaya hazırlanıyor...",
+                                        text = if (isExtractingText) "Metin çıkarılıyor..." else "PDF yükleniyor...",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
@@ -284,11 +292,14 @@ class PdfReaderActivity : ComponentActivity() {
                                             )
                                         }.getOrDefault("")
                                         withContext(Dispatchers.Main) {
-                                            editableNoteText = if (cleanText.isNotBlank()) {
-                                                cleanText.take(30_000)
-                                            } else {
-                                                "${pdfDoc.title}\n\n[Not: Bu PDF görüntü tabanlı olduğu için doğrudan metin çıkarılamadı. Notlarınızı buraya yazabilir veya üst menüden AI Not Asistanı'nı kullanabilirsiniz.]"
+                                            if (cleanText.isBlank()) {
+                                                Toast.makeText(
+                                                    this@PdfReaderActivity,
+                                                    "Belgede metin bulunamadı",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
                                             }
+                                            editableNoteText = cleanText.take(30_000)
                                             isExtractingText = false
                                             activeMode = PdfOpenMode.EDITABLE_NOTE
                                         }
@@ -302,7 +313,7 @@ class PdfReaderActivity : ComponentActivity() {
                                 noteId = null,
                                 initialTitle = pdfDoc.title,
                                 initialContent = editableNoteText,
-                                incomingFileUri = null,
+                                incomingFileUri = pdfDoc.localUri,
                                 initialPdfPreview = null,
                                 initialPdfPagePaths = emptyList(),
                                 onDismiss = { finish() },
@@ -312,7 +323,6 @@ class PdfReaderActivity : ComponentActivity() {
                                         "Not kaydedildi",
                                         Toast.LENGTH_SHORT
                                     ).show()
-                                    finish()
                                 }
                             )
                         }
@@ -332,6 +342,13 @@ class PdfReaderActivity : ComponentActivity() {
                                             )
                                         }.getOrDefault("")
                                         withContext(Dispatchers.Main) {
+                                            if (cleanText.isBlank()) {
+                                                Toast.makeText(
+                                                    this@PdfReaderActivity,
+                                                    "Belgede metin bulunamadı",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
                                             editableNoteText = cleanText.take(30_000)
                                             isExtractingText = false
                                             activeMode = PdfOpenMode.EDITABLE_NOTE
@@ -400,6 +417,13 @@ class PdfReaderActivity : ComponentActivity() {
                                 )
                             }.getOrDefault("").take(30_000)
                             withContext(Dispatchers.Main) {
+                                if (extracted.isBlank()) {
+                                    Toast.makeText(
+                                        this@PdfReaderActivity,
+                                        "Belgede metin bulunamadı",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
                                 editableNoteText = extracted
                             }
                         }
@@ -514,19 +538,13 @@ fun PdfOpenChoiceDialog(
                         )
                         if (pageCount > 0) {
                             Text(
-                                text = "$pageCount Sayfa • PDF Belgesi",
+                                text = "$pageCount sayfa",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = colorScheme.onSurface.copy(alpha = 0.65f)
                             )
                         }
                     }
                 }
-
-                Text(
-                    text = "Bu PDF belgesini nasıl açmak istersiniz?",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colorScheme.onSurface.copy(alpha = 0.8f)
-                )
 
                 // Option 1: PDF Olarak Aç
                 Surface(
@@ -564,7 +582,7 @@ fun PdfOpenChoiceDialog(
                                 color = colorScheme.onSurface
                             )
                             Text(
-                                text = "Orijinal sayfa görünümü, yakınlaştırma, fosforlu vurgu, kalemle çizim stüdyosu ve AI asistanı",
+                                text = "Yakınlaştırma, çizim ve vurgu",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colorScheme.onSurface.copy(alpha = 0.72f),
                                 lineHeight = 16.sp
@@ -609,7 +627,7 @@ fun PdfOpenChoiceDialog(
                                 color = colorScheme.onSurface
                             )
                             Text(
-                                text = "Belgedeki metni temiz çıkarıp zengin metin ve kalem editöründe düzenlenebilir not olarak aç",
+                                text = "Metni düzenlenebilir nota aktar",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colorScheme.onSurface.copy(alpha = 0.72f),
                                 lineHeight = 16.sp
@@ -800,6 +818,123 @@ fun PdfReaderScreen(
     var aiError by remember { mutableStateOf<String?>(null) }
     var aiSavedAsNote by remember { mutableStateOf(false) }
 
+    // Note persistence state for this PDF
+    var isSavedToNotes by remember(pdfIdentifier) { mutableStateOf(false) }
+    var isSavingToNotes by remember(pdfIdentifier) { mutableStateOf(false) }
+
+    LaunchedEffect(pdfIdentifier) {
+        val alreadySaved = withContext(Dispatchers.IO) {
+            runCatching {
+                val db = SharkMentorDatabase.getDatabase(context.applicationContext)
+                val repo = NoteRepositoryImpl(db.noteDao(), context.applicationContext)
+                val allNotes = withTimeoutOrNull(1500L) { repo.getAllNotesFlow().first() }.orEmpty()
+                val pdfTag = "[PDF_FILE:$pdfIdentifier]"
+                allNotes.any { it.content.contains(pdfTag) }
+            }.getOrDefault(false)
+        }
+        isSavedToNotes = alreadySaved
+    }
+
+    fun savePdfDocumentToNotes() {
+        if (isSavingToNotes) return
+        isSavingToNotes = true
+        val appContext = context.applicationContext
+        val pdfAbsPath = pdfFile.localFile.absolutePath
+        val noteTitle = pdfFile.title.ifBlank { pdfFile.displayName.substringBeforeLast('.', "PDF Belgesi") }
+        val pageCountSnapshot = totalPages
+
+        pdfNotesPersistenceScope.launch {
+            val savedOk = runCatching {
+                val db = SharkMentorDatabase.getDatabase(appContext)
+                val repo = NoteRepositoryImpl(db.noteDao(), appContext)
+                val pdfTag = "[PDF_FILE:$pdfAbsPath]"
+
+                val existingNotes = withTimeoutOrNull(1500L) { repo.getAllNotesFlow().first() }.orEmpty()
+                val existingNote = existingNotes.firstOrNull { it.content.contains(pdfTag) }
+
+                // Do NOT recycle thumbBitmap because LruCache in LazyPdfPageRenderer owns it
+                var thumbPath: String? = null
+                val thumbBitmap = runCatching {
+                    lazyRenderer.renderPage(
+                        pageIndex = 0,
+                        maxWidthPx = 720,
+                        visiblePageHint = currentPageIndex
+                    )
+                }.getOrNull()
+                if (thumbBitmap != null && !thumbBitmap.isRecycled) {
+                    runCatching {
+                        val thumbDir = File(appContext.filesDir, "rendered_pdf_pages").apply {
+                            if (!exists()) mkdirs()
+                        }
+                        val docKey = DrawingSerializer.computePdfDocKey(pdfAbsPath)
+                        val thumbFile = File(thumbDir, "pdf_thumb_${docKey}_p1.jpg")
+                        FileOutputStream(thumbFile).use { out ->
+                            thumbBitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+                            out.flush()
+                        }
+                        if (thumbFile.exists() && thumbFile.length() > 0L) {
+                            thumbPath = thumbFile.absolutePath
+                        }
+                    }
+                }
+
+                val noteContent = buildString {
+                    append(pdfTag)
+                    if (!thumbPath.isNullOrBlank()) {
+                        append("\n[PDF_PAGE:")
+                        append(thumbPath)
+                        append("]")
+                    }
+                    append("\n\n")
+                    append("$pageCountSnapshot sayfa")
+                }
+
+                val now = System.currentTimeMillis()
+                val entity = if (existingNote != null) {
+                    val hasThumbTag = existingNote.content.contains("[PDF_PAGE:")
+                    val updatedBody = when {
+                        existingNote.content.isBlank() -> noteContent
+                        !hasThumbTag && !thumbPath.isNullOrBlank() -> existingNote.content.replaceFirst(
+                            pdfTag,
+                            "$pdfTag\n[PDF_PAGE:$thumbPath]"
+                        )
+                        else -> existingNote.content
+                    }
+                    existingNote.copy(
+                        title = existingNote.title.ifBlank { noteTitle },
+                        content = updatedBody,
+                        updatedAt = now
+                    )
+                } else {
+                    NoteEntity(
+                        id = UUID.randomUUID().toString(),
+                        title = noteTitle,
+                        content = noteContent,
+                        colorHex = "#F8FAFC",
+                        isPinned = false,
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                }
+                repo.insertOrUpdateNote(entity)
+                true
+            }.getOrElse { e ->
+                Log.e("PdfReaderActivity", "Failed saving PDF note", e)
+                false
+            }
+
+            withContext(Dispatchers.Main) {
+                isSavingToNotes = false
+                if (savedOk) {
+                    isSavedToNotes = true
+                    Toast.makeText(context, "Notlara kaydedildi", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Not kaydedilemedi", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     fun runPdfAiAnalysis(promptQuery: String) {
         isAiLoading = true
         aiError = null
@@ -974,7 +1109,7 @@ fun PdfReaderScreen(
                 repo.insertOrUpdateNote(note)
                 withContext(Dispatchers.Main) {
                     aiSavedAsNote = true
-                    Toast.makeText(context, "Notlar sekmesine kaydedildi", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Notlara kaydedildi", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -1012,7 +1147,7 @@ fun PdfReaderScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Sayfa ${currentPageIndex + 1} / $totalPages" +
+                        text = "S.${currentPageIndex + 1}/$totalPages" +
                             if (zoomScale > 1.02f) " • %${(zoomScale * 100).roundToInt()}" else "",
                         style = MaterialTheme.typography.labelSmall,
                         color = primaryColor,
@@ -1030,6 +1165,44 @@ fun PdfReaderScreen(
                 }
             },
             actions = {
+                // Prominent Save PDF to Notes pill button
+                Surface(
+                    onClick = { savePdfDocumentToNotes() },
+                    enabled = !isSavingToNotes,
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (isSavedToNotes) primaryColor.copy(alpha = 0.16f) else primaryColor,
+                    border = if (isSavedToNotes) BorderStroke(1.dp, primaryColor.copy(alpha = 0.5f)) else null,
+                    modifier = Modifier.padding(end = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (isSavingToNotes) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(13.dp),
+                                strokeWidth = 1.8.dp,
+                                color = if (isSavedToNotes) primaryColor else colorScheme.onPrimary
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (isSavedToNotes) Icons.Default.CheckCircle else Icons.Default.NoteAdd,
+                                contentDescription = "Notlara Kaydet",
+                                tint = if (isSavedToNotes) primaryColor else colorScheme.onPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                        Text(
+                            text = if (isSavedToNotes) "Kaydedildi" else "Notlara Kaydet",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSavedToNotes) primaryColor else colorScheme.onPrimary,
+                            maxLines = 1
+                        )
+                    }
+                }
+
                 // Quick Highlighter toggle
                 IconButton(
                     onClick = {
@@ -1039,7 +1212,8 @@ fun PdfReaderScreen(
                         } else {
                             activePageController.selectTool(DrawingTool.HIGHLIGHTER)
                         }
-                    }
+                    },
+                    modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.BorderColor,
@@ -1048,7 +1222,8 @@ fun PdfReaderScreen(
                             Color(0xFFFBC02D)
                         } else {
                             onSurfaceColor
-                        }
+                        },
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
@@ -1061,7 +1236,8 @@ fun PdfReaderScreen(
                         } else {
                             activePageController.selectTool(DrawingTool.UNDERLINE_MARKER)
                         }
-                    }
+                    },
+                    modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.FormatUnderlined,
@@ -1070,7 +1246,8 @@ fun PdfReaderScreen(
                             primaryColor
                         } else {
                             onSurfaceColor
-                        }
+                        },
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
@@ -1083,7 +1260,8 @@ fun PdfReaderScreen(
                         } else if (!showStudioToolbar) {
                             activePageController.selectTool(DrawingTool.NONE)
                         }
-                    }
+                    },
+                    modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Edit,
@@ -1092,32 +1270,56 @@ fun PdfReaderScreen(
                             primaryColor
                         } else {
                             onSurfaceColor
-                        }
+                        },
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
                 // AI Note Assistant button
-                IconButton(onClick = { showAiSheet = true }) {
+                IconButton(
+                    onClick = { showAiSheet = true },
+                    modifier = Modifier.size(32.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.AutoAwesome,
                         contentDescription = "PDF AI Asistanı",
-                        tint = primaryColor
+                        tint = primaryColor,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
                 // More Menu
                 Box {
-                    IconButton(onClick = { showMoreMenu = true }) {
+                    IconButton(
+                        onClick = { showMoreMenu = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "Diğer Seçenekler",
-                            tint = onSurfaceColor
+                            tint = onSurfaceColor,
+                            modifier = Modifier.size(19.dp)
                         )
                     }
                     DropdownMenu(
                         expanded = showMoreMenu,
                         onDismissRequest = { showMoreMenu = false }
                     ) {
+                        DropdownMenuItem(
+                            text = { Text(if (isSavedToNotes) "Notlara Kaydedildi" else "Notlara Kaydet") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (isSavedToNotes) Icons.Default.CheckCircle else Icons.Default.NoteAdd,
+                                    contentDescription = null,
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                savePdfDocumentToNotes()
+                            }
+                        )
                         DropdownMenuItem(
                             text = { Text("Not Olarak Aç (Düzenlenebilir)") },
                             leadingIcon = {
@@ -1441,18 +1643,12 @@ fun PdfReaderScreen(
                         tint = primaryColor
                     )
                     Text(
-                        text = "PDF AI Çalışma Asistanı (Sayfa ${currentPageIndex + 1})",
+                        text = "PDF Asistanı • S.${currentPageIndex + 1}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = onSurfaceColor
                     )
                 }
-
-                Text(
-                    text = "Aktif PDF sayfasını görsel ve metinsel olarak analiz eder, özet çıkarır ve sorularınızı yanıtlar.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = textMutedColor
-                )
 
                 Row(
                     modifier = Modifier
@@ -1461,10 +1657,10 @@ fun PdfReaderScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     listOf(
-                        "Bu sayfayı detaylı özetle",
-                        "Kavramları ve formülleri açıkla",
-                        "Bu sayfadan soru-cevap hazırla",
-                        "Önemli sınav noktalarını çıkar"
+                        "Sayfayı özetle",
+                        "Kavramları açıkla",
+                        "Soru-cevap",
+                        "Önemli noktalar"
                     ).forEach { quickPrompt ->
                         SuggestionChip(
                             onClick = {
@@ -1491,7 +1687,7 @@ fun PdfReaderScreen(
                         value = aiQueryText,
                         onValueChange = { aiQueryText = it },
                         placeholder = {
-                            Text("PDF sayfası hakkında soru sor...", color = textMutedColor)
+                            Text("Soru sor...", color = textMutedColor)
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(14.dp),
@@ -1550,7 +1746,7 @@ fun PdfReaderScreen(
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Text(
-                                    text = "Notlar sekmesine yeni not olarak kaydedildi",
+                                    text = "Notlara kaydedildi",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Medium,
                                     color = primaryColor
@@ -1669,20 +1865,10 @@ private fun LazyPdfPageCard(
                         .background(Color.White),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(28.dp),
-                            strokeWidth = 2.5.dp
-                        )
-                        Text(
-                            text = "Sayfa ${pageIndex + 1} yükleniyor...",
-                            fontSize = 12.sp,
-                            color = Color(0xFF64748B)
-                        )
-                    }
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        strokeWidth = 2.5.dp
+                    )
                 }
             }
 

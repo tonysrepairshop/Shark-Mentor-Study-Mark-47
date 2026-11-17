@@ -4,12 +4,14 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import java.util.UUID
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -331,11 +333,20 @@ class DrawingController(
     var canRedo by mutableStateOf(false)
         private set
 
-    // Lasso Selection & Clipboard State
+    // Lasso Selection, Free-Region Crop & Clipboard State
     var selectedStrokeIds by mutableStateOf<Set<String>>(emptySet())
         private set
 
+    var lassoPolygon by mutableStateOf<List<DrawingPoint>>(emptyList())
+        private set
+
+    var lassoRegionBounds by mutableStateOf<DrawingBounds?>(null)
+        private set
+
     var clipboardStrokes by mutableStateOf<List<DrawingStroke>>(emptyList())
+        private set
+
+    var screenshotRequestCounter by mutableIntStateOf(0)
         private set
 
     private var preMoveSnapshot: List<DrawingStroke>? = null
@@ -347,8 +358,20 @@ class DrawingController(
     val hasSelection: Boolean
         get() = selectedStrokeIds.isNotEmpty()
 
+    val hasLassoRegion: Boolean
+        get() = lassoRegionBounds != null && lassoPolygon.size >= 3
+
+    val hasActiveLasso: Boolean
+        get() = hasSelection || hasLassoRegion
+
     val hasClipboard: Boolean
         get() = clipboardStrokes.isNotEmpty()
+
+    fun requestLassoScreenshot() {
+        if (selectionBounds() != null) {
+            screenshotRequestCounter++
+        }
+    }
 
     fun selectTool(tool: DrawingTool) {
         // Save current tool settings
@@ -410,7 +433,7 @@ class DrawingController(
         strokes = loaded
         undoStack.clear()
         redoStack.clear()
-        selectedStrokeIds = emptySet()
+        clearSelection()
         syncHistoryFlags()
     }
 
@@ -466,7 +489,7 @@ class DrawingController(
     fun clearAll() {
         if (strokes.isEmpty()) return
         pushUndoSnapshot()
-        selectedStrokeIds = emptySet()
+        clearSelection()
         updateStrokesAndNotify(emptyList())
     }
 
@@ -587,37 +610,94 @@ class DrawingController(
         return modified
     }
 
+    /**
+     * Scribble-to-Erase: deletes all existing strokes intersecting [scribblePoints]
+     * in one batch while recording a single Undo snapshot.
+     * Returns the count of erased strokes.
+     */
+    fun eraseStrokesByScribble(
+        scribblePoints: List<DrawingPoint>,
+        hitPadding: Float = 16f
+    ): Int {
+        if (strokes.isEmpty() || scribblePoints.size < 2) return 0
+
+        val rawBounds = computePointsBounds(scribblePoints) ?: return 0
+        val inflatedBounds = rawBounds.inflate(hitPadding)
+        val denseScribble = interpolatePolyline(scribblePoints, stepPx = 10f)
+        if (denseScribble.isEmpty()) return 0
+
+        val remaining = ArrayList<DrawingStroke>(strokes.size)
+        val removedIds = mutableSetOf<String>()
+
+        for (stroke in strokes) {
+            if (!stroke.boundingBox().intersects(inflatedBounds)) {
+                remaining.add(stroke)
+                continue
+            }
+
+            val sampledStroke = stroke.toSampledPolyline(stepPx = 8f)
+            val hitRadius = hitPadding + stroke.strokeWidth * 0.5f
+            val isHit = sampledStroke.any { sp ->
+                denseScribble.any { qp -> sp.distanceTo(qp) <= hitRadius }
+            }
+
+            if (isHit) {
+                removedIds.add(stroke.id)
+            } else {
+                remaining.add(stroke)
+            }
+        }
+
+        if (removedIds.isEmpty()) return 0
+
+        pushUndoSnapshot()
+        selectedStrokeIds = selectedStrokeIds - removedIds
+        updateStrokesAndNotify(remaining)
+        return removedIds.size
+    }
+
     // ── Lasso Selection & Manipulation ───────────────────────────────────────
 
     fun clearSelection() {
         selectedStrokeIds = emptySet()
+        lassoPolygon = emptyList()
+        lassoRegionBounds = null
     }
 
     fun selectionBounds(): DrawingBounds? {
-        if (selectedStrokeIds.isEmpty()) return null
-        val selected = strokes.filter { it.id in selectedStrokeIds }
-        if (selected.isEmpty()) return null
-
-        var minX = Float.MAX_VALUE
-        var minY = Float.MAX_VALUE
-        var maxX = -Float.MAX_VALUE
-        var maxY = -Float.MAX_VALUE
-        for (s in selected) {
-            val b = s.boundingBox()
-            if (b.left < minX) minX = b.left
-            if (b.top < minY) minY = b.top
-            if (b.right > maxX) maxX = b.right
-            if (b.bottom > maxY) maxY = b.bottom
+        if (selectedStrokeIds.isNotEmpty()) {
+            val selected = strokes.filter { it.id in selectedStrokeIds }
+            if (selected.isNotEmpty()) {
+                var minX = Float.MAX_VALUE
+                var minY = Float.MAX_VALUE
+                var maxX = -Float.MAX_VALUE
+                var maxY = -Float.MAX_VALUE
+                for (s in selected) {
+                    val b = s.boundingBox()
+                    if (b.left < minX) minX = b.left
+                    if (b.top < minY) minY = b.top
+                    if (b.right > maxX) maxX = b.right
+                    if (b.bottom > maxY) maxY = b.bottom
+                }
+                return DrawingBounds(minX, minY, maxX, maxY).inflate(6f)
+            }
         }
-        return DrawingBounds(minX, minY, maxX, maxY).inflate(6f)
+        return lassoRegionBounds
     }
 
     /**
-     * Selects all strokes that have points inside [lassoPolygon] (ray-casting algorithm).
+     * Selects all strokes inside [lassoPolygon] AND retains the drawn lasso polygon + bounding box
+     * as an active lasso region even when zero strokes lie inside (for PDF/note screenshot cropping).
      */
     fun selectByLassoPolygon(lassoPolygon: List<DrawingPoint>) {
         if (lassoPolygon.size < 3) {
-            selectedStrokeIds = emptySet()
+            clearSelection()
+            return
+        }
+
+        val polyBounds = computePointsBounds(lassoPolygon)
+        if (polyBounds == null) {
+            clearSelection()
             return
         }
 
@@ -626,26 +706,49 @@ class DrawingController(
             val sampled = stroke.toSampledPolyline(stepPx = 10f)
             if (sampled.isEmpty()) continue
             val insideCount = sampled.count { pt -> isPointInPolygon(pt, lassoPolygon) }
-            // Select if at least 25% of sampled points or any endpoint/center is inside the lasso loop
             val bbox = stroke.boundingBox()
             val centerPt = DrawingPoint(bbox.centerX, bbox.centerY)
             if (insideCount > 0 && (insideCount >= max(1, sampled.size / 4) || isPointInPolygon(centerPt, lassoPolygon))) {
                 matchedIds.add(stroke.id)
             }
         }
-        selectedStrokeIds = matchedIds
+
+        val isMeaningfulRegion = polyBounds.width >= 16f && polyBounds.height >= 16f
+        if (!isMeaningfulRegion && matchedIds.isEmpty()) {
+            clearSelection()
+            return
+        }
+
+        this.lassoPolygon = lassoPolygon
+        this.lassoRegionBounds = polyBounds
+        this.selectedStrokeIds = matchedIds
     }
 
     fun beginMoveSelection() {
-        preMoveSnapshot = strokes
+        preMoveSnapshot = if (selectedStrokeIds.isNotEmpty()) strokes else null
         hasMovedSelectionInGesture = false
     }
 
     fun moveSelectionBy(dx: Float, dy: Float) {
-        if (selectedStrokeIds.isEmpty() || (dx == 0f && dy == 0f)) return
-        hasMovedSelectionInGesture = true
-        strokes = strokes.map { stroke ->
-            if (stroke.id in selectedStrokeIds) stroke.translated(dx, dy) else stroke
+        if (dx == 0f && dy == 0f) return
+        if (selectedStrokeIds.isEmpty() && lassoRegionBounds == null) return
+
+        if (selectedStrokeIds.isNotEmpty()) {
+            hasMovedSelectionInGesture = true
+            strokes = strokes.map { stroke ->
+                if (stroke.id in selectedStrokeIds) stroke.translated(dx, dy) else stroke
+            }
+        }
+        if (lassoPolygon.isNotEmpty()) {
+            lassoPolygon = lassoPolygon.map { it.offset(dx, dy) }
+        }
+        lassoRegionBounds?.let { b ->
+            lassoRegionBounds = DrawingBounds(
+                left = b.left + dx,
+                top = b.top + dy,
+                right = b.right + dx,
+                bottom = b.bottom + dy
+            )
         }
     }
 
@@ -663,7 +766,7 @@ class DrawingController(
         if (selectedStrokeIds.isEmpty()) return
         pushUndoSnapshot()
         val remaining = strokes.filterNot { it.id in selectedStrokeIds }
-        selectedStrokeIds = emptySet()
+        clearSelection()
         updateStrokesAndNotify(remaining)
     }
 
@@ -681,7 +784,7 @@ class DrawingController(
             .map { it.withNewIdentity() }
         pushUndoSnapshot()
         val remaining = strokes.filterNot { it.id in selectedStrokeIds }
-        selectedStrokeIds = emptySet()
+        clearSelection()
         updateStrokesAndNotify(remaining)
     }
 
@@ -692,6 +795,8 @@ class DrawingController(
         // Advance clipboard slightly so repeated pastes cascade nicely
         clipboardStrokes = pasted.map { it.withNewIdentity() }
         val updated = strokes + pasted
+        lassoPolygon = emptyList()
+        lassoRegionBounds = null
         selectedStrokeIds = pasted.map { it.id }.toSet()
         activeTool = DrawingTool.LASSO
         updateStrokesAndNotify(updated)
@@ -709,6 +814,46 @@ class DrawingController(
     }
 
     companion object {
+        private fun computePointsBounds(points: List<DrawingPoint>): DrawingBounds? {
+            if (points.isEmpty()) return null
+            var minX = Float.MAX_VALUE
+            var minY = Float.MAX_VALUE
+            var maxX = -Float.MAX_VALUE
+            var maxY = -Float.MAX_VALUE
+            for (p in points) {
+                if (p.x < minX) minX = p.x
+                if (p.y < minY) minY = p.y
+                if (p.x > maxX) maxX = p.x
+                if (p.y > maxY) maxY = p.y
+            }
+            return DrawingBounds(minX, minY, maxX, maxY)
+        }
+
+        private fun interpolatePolyline(
+            points: List<DrawingPoint>,
+            stepPx: Float
+        ): List<DrawingPoint> {
+            if (points.isEmpty()) return emptyList()
+            if (points.size == 1) return points
+            val out = ArrayList<DrawingPoint>(points.size * 2)
+            out.add(points.first())
+            for (i in 0 until points.lastIndex) {
+                val a = points[i]
+                val b = points[i + 1]
+                val dist = a.distanceTo(b)
+                if (dist > stepPx) {
+                    val steps = (dist / stepPx).toInt().coerceIn(1, 100)
+                    for (s in 1..steps) {
+                        val t = s.toFloat() / steps.toFloat()
+                        out.add(DrawingPoint(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t))
+                    }
+                } else {
+                    out.add(b)
+                }
+            }
+            return out
+        }
+
         private fun isPointInPolygon(point: DrawingPoint, polygon: List<DrawingPoint>): Boolean {
             var inside = false
             var j = polygon.lastIndex
@@ -722,5 +867,135 @@ class DrawingController(
             }
             return inside
         }
+    }
+}
+
+/**
+ * Heuristic detector for rapid back-and-forth zigzag / scribble-to-erase gestures.
+ * Triggers when at least [MIN_SHARP_REVERSALS] sharp turns (>= 110 degrees) happen
+ * inside a compact bounding box within a short gesture duration.
+ */
+object ScribbleDetector {
+    private const val MIN_POINTS = 6
+    private const val MIN_DURATION_MS = 50L
+    private const val MAX_DURATION_MS = 2600L
+    private const val MIN_DIAGONAL_PX = 24f
+    private const val MIN_PATH_LENGTH_PX = 75f
+    private const val MAX_WIDTH_PX = 460f
+    private const val MAX_HEIGHT_PX = 380f
+    private const val MIN_LENGTH_TO_DIAG_RATIO = 2.0f
+    private const val RDP_EPSILON_PX = 5.5f
+    private const val MIN_SEGMENT_LEN_PX = 10f
+    // cos(110°) = -0.34202014; angle >= 110° means dot product <= SHARP_TURN_COS_THRESHOLD
+    private const val SHARP_TURN_COS_THRESHOLD = -0.342f
+    private const val MIN_SHARP_REVERSALS = 3
+
+    fun isScribbleGesture(
+        points: List<DrawingPoint>,
+        durationMs: Long
+    ): Boolean {
+        if (points.size < MIN_POINTS) return false
+        if (durationMs !in MIN_DURATION_MS..MAX_DURATION_MS) return false
+
+        var minX = Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var maxY = -Float.MAX_VALUE
+        var totalLength = 0f
+
+        for (i in points.indices) {
+            val p = points[i]
+            if (p.x < minX) minX = p.x
+            if (p.y < minY) minY = p.y
+            if (p.x > maxX) maxX = p.x
+            if (p.y > maxY) maxY = p.y
+            if (i > 0) {
+                totalLength += points[i - 1].distanceTo(p)
+            }
+        }
+
+        val width = maxX - minX
+        val height = maxY - minY
+        val diagonal = hypot(width, height)
+
+        if (diagonal < MIN_DIAGONAL_PX || totalLength < MIN_PATH_LENGTH_PX) return false
+        if (width > MAX_WIDTH_PX || height > MAX_HEIGHT_PX) return false
+        if ((totalLength / diagonal) < MIN_LENGTH_TO_DIAG_RATIO) return false
+
+        val simplified = simplifyDouglasPeucker(points, RDP_EPSILON_PX)
+        val filtered = ArrayList<DrawingPoint>(simplified.size)
+        for (pt in simplified) {
+            val prev = filtered.lastOrNull()
+            if (prev == null || prev.distanceTo(pt) >= MIN_SEGMENT_LEN_PX) {
+                filtered.add(pt)
+            }
+        }
+        if (filtered.size < 4) return false
+
+        var sharpReversals = 0
+        for (i in 1 until filtered.lastIndex) {
+            val a = filtered[i - 1]
+            val b = filtered[i]
+            val c = filtered[i + 1]
+
+            val v1x = b.x - a.x
+            val v1y = b.y - a.y
+            val v2x = c.x - b.x
+            val v2y = c.y - b.y
+
+            val len1 = hypot(v1x, v1y)
+            val len2 = hypot(v2x, v2y)
+            if (len1 < MIN_SEGMENT_LEN_PX || len2 < MIN_SEGMENT_LEN_PX) continue
+
+            val dot = ((v1x * v2x) + (v1y * v2y)) / (len1 * len2)
+            if (dot <= SHARP_TURN_COS_THRESHOLD) {
+                sharpReversals++
+                if (sharpReversals >= MIN_SHARP_REVERSALS) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    private fun simplifyDouglasPeucker(
+        points: List<DrawingPoint>,
+        epsilon: Float
+    ): List<DrawingPoint> {
+        if (points.size <= 2) return points
+        var maxDist = 0f
+        var index = 0
+        val start = points.first()
+        val end = points.last()
+
+        for (i in 1 until points.lastIndex) {
+            val d = perpendicularDistance(points[i], start, end)
+            if (d > maxDist) {
+                maxDist = d
+                index = i
+            }
+        }
+
+        return if (maxDist > epsilon) {
+            val left = simplifyDouglasPeucker(points.subList(0, index + 1), epsilon)
+            val right = simplifyDouglasPeucker(points.subList(index, points.size), epsilon)
+            left.dropLast(1) + right
+        } else {
+            listOf(start, end)
+        }
+    }
+
+    private fun perpendicularDistance(
+        point: DrawingPoint,
+        lineStart: DrawingPoint,
+        lineEnd: DrawingPoint
+    ): Float {
+        val dx = lineEnd.x - lineStart.x
+        val dy = lineEnd.y - lineStart.y
+        val lenSq = dx * dx + dy * dy
+        if (lenSq < 0.0001f) return point.distanceTo(lineStart)
+        val cross = abs(dy * point.x - dx * point.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x)
+        return cross / hypot(dx, dy)
     }
 }

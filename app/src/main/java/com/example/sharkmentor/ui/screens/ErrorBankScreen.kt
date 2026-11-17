@@ -121,7 +121,7 @@ fun ErrorBankScreen(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Box(modifier = Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
-                            Text("Odak Seansı Devam Ediyor", style = MaterialTheme.typography.labelMedium)
+                            Text("Odak Seansı", style = MaterialTheme.typography.labelMedium)
                         }
                         Text(formatAdaptiveTime(timerState.displayMillis), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     }
@@ -156,7 +156,7 @@ fun ErrorBankScreen(
                                     "$selectedSubject • $displayTopic"
                                 }
                                 selectedSubject != null -> "$selectedSubject: ${folders.find { it.subjectName == selectedSubject }?.dueCount ?: 0} Tekrar"
-                                else -> "Bugün Tekrar Edilecek: $dueQuestionsCount Soru"
+                                else -> "Tekrar Bekleyen: $dueQuestionsCount"
                             },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
@@ -195,9 +195,9 @@ fun ErrorBankScreen(
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = when {
-                            selectedSubject != null && selectedTopic != null -> "Konu Soru Sayısı: ${subjectQuestions.size}"
-                            selectedSubject != null -> "Ders Hata Havuzu: ${subjectQuestions.size}"
-                            else -> "Toplam Hata Havuzu: ${uiState.allQuestions.size}"
+                            selectedSubject != null && selectedTopic != null -> "${subjectQuestions.size} soru"
+                            selectedSubject != null -> "${subjectQuestions.size} soru"
+                            else -> "Toplam ${uiState.allQuestions.size} soru"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -244,12 +244,12 @@ fun ErrorBankScreen(
                             text = when {
                                 selectedSubject != null && selectedTopic != null -> {
                                     val displayTopic = if (selectedTopic == "__ALL__") "Tüm $selectedSubject" else selectedTopic
-                                    "$displayTopic Testini Başlat"
+                                    "$displayTopic Başlat"
                                 }
                                 selectedSubject != null ->
-                                    "$selectedSubject Testi Başlat"
+                                    "$selectedSubject Başlat"
                                 else ->
-                                    "Tüm Hatalarla Testi Başlat"
+                                    "Testi Başlat"
                             },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
@@ -261,7 +261,7 @@ fun ErrorBankScreen(
             // ── SEVİYE 1: DERSLER ANA EKRANI (Konu klasörleri burada gizli, sade ve ferah) ──
             if (selectedSubject == null) {
                 Text(
-                    text = "Ders Klasörleri",
+                    text = "Dersler",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -302,7 +302,7 @@ fun ErrorBankScreen(
                 }
                 if (relevantAiFolders.isNotEmpty()) {
                     Text(
-                        text = "Özel / AI Çalışma Klasörleri",
+                        text = "Özel Klasörler",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -326,7 +326,7 @@ fun ErrorBankScreen(
                 }
 
                 Text(
-                    text = "$selectedSubject Konu Klasörleri",
+                    text = "$selectedSubject • Konular",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -694,7 +694,7 @@ fun ErrorQuestionCard(
                         )
                         HorizontalDivider()
                         Text(
-                            text = "Hızlı Konu Değiştir (${question.subject})",
+                            text = "Konu (${question.subject})",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -821,7 +821,7 @@ fun AddErrorQuestionDialog(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Question Image
-                Text("Soru Fotoğrafı (Zorunlu)", style = MaterialTheme.typography.labelMedium)
+                Text("Soru Fotoğrafı *", style = MaterialTheme.typography.labelMedium)
                 Spacer(modifier = Modifier.height(4.dp))
                 QuestionImagePickerWithCrop(
                     selectedImageUri = questionUri,
@@ -831,7 +831,7 @@ fun AddErrorQuestionDialog(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Solution Image
-                Text("Çözüm Fotoğrafı (İsteğe Bağlı)", style = MaterialTheme.typography.labelMedium)
+                Text("Çözüm Fotoğrafı", style = MaterialTheme.typography.labelMedium)
                 Spacer(modifier = Modifier.height(4.dp))
                 QuestionImagePickerWithCrop(
                     selectedImageUri = solutionUri,
@@ -961,7 +961,7 @@ fun SubjectFolderCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Toplam: ${folder.totalCount}",
+                    text = "${folder.totalCount} soru",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -972,7 +972,7 @@ fun SubjectFolderCard(
                             .padding(horizontal = 8.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "[${folder.dueCount}] Tekrar",
+                            text = "${folder.dueCount} Tekrar",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onError,
                             fontWeight = FontWeight.Bold
@@ -1062,7 +1062,7 @@ fun TopicFolderCard(
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "[${folder.dueCount}] Tekrar",
+                            text = "${folder.dueCount} Tekrar",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onError,
                             fontWeight = FontWeight.Bold

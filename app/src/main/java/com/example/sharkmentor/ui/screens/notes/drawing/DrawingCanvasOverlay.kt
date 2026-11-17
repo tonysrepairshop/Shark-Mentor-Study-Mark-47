@@ -1,64 +1,100 @@
 package com.example.sharkmentor.ui.screens.notes.drawing
 
+import android.os.SystemClock
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.StickyNote2
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingScreenshotHelper.findActivity
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -83,21 +119,87 @@ private val QUICK_LASSO_COLORS = listOf(
  * Interactive drawing & annotation overlay that works both over the Rich Note Editor
  * and over individual PDF Reader pages.
  *
- * When [controller.activeTool] == [DrawingTool.NONE], pointer events pass straight through
- * to underlying text fields or scrollable/zoomable containers.
+ * Supports:
+ * - Freehand pens with automatic Scribble-to-Erase (zigzag >= 3 sharp reversals)
+ * - Free-region Lasso selection & PixelCopy screenshot cropping (Notes / Gallery / Share)
+ * - Pass-through when [controller.activeTool] == [DrawingTool.NONE]
  */
 @Composable
 fun DrawingCanvasOverlay(
     controller: DrawingController,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
+    val window = remember(context) { context.findActivity()?.window }
+
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var canvasWindowBounds by remember { mutableStateOf<Rect?>(null) }
 
     val inProgressPoints = remember { mutableStateListOf<DrawingPoint>() }
     var eraserCursorPos by remember { mutableStateOf<Offset?>(null) }
     var isMovingLassoSelection by remember { mutableStateOf(false) }
     var showLassoColorRow by remember { mutableStateOf(false) }
+
+    var isCapturingScreenshot by remember { mutableStateOf(false) }
+    var capturedCrop by remember { mutableStateOf<CapturedCropResult?>(null) }
+    var usePolygonCrop by remember { mutableStateOf(true) }
+    var isSavingCrop by remember { mutableStateOf(false) }
+    var feedbackMessage by remember { mutableStateOf<String?>(null) }
+
+    // Auto-clear subtle toast/feedback pill
+    LaunchedEffect(feedbackMessage) {
+        if (feedbackMessage != null) {
+            delay(1800L)
+            feedbackMessage = null
+        }
+    }
+
+    fun triggerLassoScreenshot() {
+        val win = window
+        val winBounds = canvasWindowBounds
+        val selBounds = controller.selectionBounds()
+        if (win == null || winBounds == null || selBounds == null || isCapturingScreenshot) {
+            if (win == null || winBounds == null) {
+                feedbackMessage = "Ekran bölgesi henüz hazır değil"
+            }
+            return
+        }
+        val polygonSnapshot = controller.lassoPolygon.toList()
+        coroutineScope.launch {
+            isCapturingScreenshot = true
+            try {
+                // Wait 2 UI frames so dashed lasso border & action bar disappear before PixelCopy
+                withFrameNanos { }
+                withFrameNanos { }
+                delay(40L)
+
+                val result = DrawingScreenshotHelper.captureLassoRegion(
+                    window = win,
+                    canvasWindowBounds = winBounds,
+                    localBounds = selBounds,
+                    lassoPolygon = polygonSnapshot
+                )
+                if (result != null) {
+                    usePolygonCrop = result.polygonBitmap != null
+                    capturedCrop = result
+                } else {
+                    feedbackMessage = "Ekran görüntüsü alınamadı"
+                }
+            } finally {
+                isCapturingScreenshot = false
+            }
+        }
+    }
+
+    // Listen to toolbar screenshot triggers
+    LaunchedEffect(controller.screenshotRequestCounter) {
+        if (controller.screenshotRequestCounter > 0) {
+            triggerLassoScreenshot()
+        }
+    }
 
     // Adapt strokes if loaded from a different canvas width (e.g. orientation change or PDF resize)
     LaunchedEffect(canvasSize.width, controller.strokes.size) {
@@ -143,6 +245,7 @@ fun DrawingCanvasOverlay(
                 val down = awaitFirstDown(requireUnconsumed = false)
                 down.consume()
 
+                val gestureStartMs = SystemClock.elapsedRealtime()
                 val startX = down.position.x
                 val startY = down.position.y
                 val startPoint = DrawingPoint(startX, startY)
@@ -294,24 +397,45 @@ fun DrawingCanvasOverlay(
                         }
                         activeTool.isPenTool -> {
                             if (inProgressPoints.isNotEmpty()) {
-                                val finalPoints = if (inProgressPoints.size == 1) {
-                                    val p = inProgressPoints.first()
-                                    listOf(p, DrawingPoint(p.x + 0.5f, p.y + 0.5f))
+                                val gestureDurationMs = SystemClock.elapsedRealtime() - gestureStartMs
+                                val rawPoints = inProgressPoints.toList()
+                                val isFreehandPen = activeTool == DrawingTool.FOUNTAIN_PEN ||
+                                    activeTool == DrawingTool.TECHNICAL_PEN ||
+                                    activeTool == DrawingTool.HIGHLIGHTER
+
+                                val erasedByScribble = if (
+                                    isFreehandPen &&
+                                    controller.strokes.isNotEmpty() &&
+                                    ScribbleDetector.isScribbleGesture(rawPoints, gestureDurationMs)
+                                ) {
+                                    controller.eraseStrokesByScribble(rawPoints)
                                 } else {
-                                    inProgressPoints.toList()
+                                    0
                                 }
-                                controller.addStroke(
-                                    DrawingStroke(
-                                        tool = activeTool,
-                                        shapeKind = ShapeKind.NONE,
-                                        colorArgb = controller.penColor.toArgb(),
-                                        strokeWidth = controller.strokeWidth,
-                                        alpha = controller.alpha,
-                                        points = finalPoints,
-                                        canvasWidth = canvasSize.width.toFloat().coerceAtLeast(1f),
-                                        canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f)
+
+                                if (erasedByScribble > 0) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    feedbackMessage = "Karalama ile $erasedByScribble çizim silindi"
+                                } else {
+                                    val finalPoints = if (rawPoints.size == 1) {
+                                        val p = rawPoints.first()
+                                        listOf(p, DrawingPoint(p.x + 0.5f, p.y + 0.5f))
+                                    } else {
+                                        rawPoints
+                                    }
+                                    controller.addStroke(
+                                        DrawingStroke(
+                                            tool = activeTool,
+                                            shapeKind = ShapeKind.NONE,
+                                            colorArgb = controller.penColor.toArgb(),
+                                            strokeWidth = controller.strokeWidth,
+                                            alpha = controller.alpha,
+                                            points = finalPoints,
+                                            canvasWidth = canvasSize.width.toFloat().coerceAtLeast(1f),
+                                            canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f)
+                                        )
                                     )
-                                )
+                                }
                             }
                             inProgressPoints.clear()
                         }
@@ -327,14 +451,18 @@ fun DrawingCanvasOverlay(
     Box(
         modifier = modifier
             .onSizeChanged { canvasSize = it }
-            .then(pointerModifier)
+            .onGloballyPositioned { coords -> canvasWindowBounds = coords.boundsInWindow() }
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .then(pointerModifier)
+        ) {
             val selectedIds = controller.selectedStrokeIds
 
             // 1. Draw all committed strokes
             for (stroke in controller.strokes) {
-                val isSelected = stroke.id in selectedIds
+                val isSelected = !isCapturingScreenshot && stroke.id in selectedIds
                 if (isSelected) {
                     // Draw subtle selection halo behind selected stroke
                     drawStrokeElement(
@@ -349,7 +477,7 @@ fun DrawingCanvasOverlay(
             }
 
             // 2. Draw active in-progress stroke / shape / lasso
-            if (inProgressPoints.isNotEmpty()) {
+            if (inProgressPoints.isNotEmpty() && !isCapturingScreenshot) {
                 if (activeTool == DrawingTool.LASSO) {
                     drawLassoLoop(inProgressPoints)
                 } else if (activeTool.isPenTool || activeTool.isShapeTool) {
@@ -366,35 +494,43 @@ fun DrawingCanvasOverlay(
                 }
             }
 
-            // 3. Draw Lasso selection bounding box with corner handles
-            val selBounds = controller.selectionBounds()
-            if (selBounds != null) {
-                val dashEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
-                val topLeft = Offset(selBounds.left, selBounds.top)
-                val rectSize = Size(selBounds.width, selBounds.height)
+            // 3. Draw Lasso selection bounding box (and free-region polygon contour) when not capturing
+            if (!isCapturingScreenshot) {
+                if (controller.lassoPolygon.size >= 3 && !controller.hasSelection) {
+                    drawLassoLoop(controller.lassoPolygon)
+                }
 
-                drawRect(
-                    color = Color(0xFF0288D1).copy(alpha = 0.08f),
-                    topLeft = topLeft,
-                    size = rectSize
-                )
-                drawRect(
-                    color = Color(0xFF0288D1),
-                    topLeft = topLeft,
-                    size = rectSize,
-                    style = Stroke(width = 2.dp.toPx(), pathEffect = dashEffect)
-                )
+                val selBounds = controller.selectionBounds()
+                if (selBounds != null) {
+                    val dashEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
+                    val topLeft = Offset(selBounds.left, selBounds.top)
+                    val rectSize = Size(selBounds.width, selBounds.height)
 
-                val handleRadius = 4.5.dp.toPx()
-                val corners = listOf(
-                    Offset(selBounds.left, selBounds.top),
-                    Offset(selBounds.right, selBounds.top),
-                    Offset(selBounds.right, selBounds.bottom),
-                    Offset(selBounds.left, selBounds.bottom)
-                )
-                for (corner in corners) {
-                    drawCircle(color = Color.White, radius = handleRadius + 1.5f, center = corner)
-                    drawCircle(color = Color(0xFF0288D1), radius = handleRadius, center = corner)
+                    if (controller.hasSelection || controller.lassoPolygon.size < 3) {
+                        drawRect(
+                            color = Color(0xFF0288D1).copy(alpha = 0.08f),
+                            topLeft = topLeft,
+                            size = rectSize
+                        )
+                    }
+                    drawRect(
+                        color = Color(0xFF0288D1),
+                        topLeft = topLeft,
+                        size = rectSize,
+                        style = Stroke(width = 2.dp.toPx(), pathEffect = dashEffect)
+                    )
+
+                    val handleRadius = 4.5.dp.toPx()
+                    val corners = listOf(
+                        Offset(selBounds.left, selBounds.top),
+                        Offset(selBounds.right, selBounds.top),
+                        Offset(selBounds.right, selBounds.bottom),
+                        Offset(selBounds.left, selBounds.bottom)
+                    )
+                    for (corner in corners) {
+                        drawCircle(color = Color.White, radius = handleRadius + 1.5f, center = corner)
+                        drawCircle(color = Color(0xFF0288D1), radius = handleRadius, center = corner)
+                    }
                 }
             }
 
@@ -415,13 +551,16 @@ fun DrawingCanvasOverlay(
             }
         }
 
-        // Floating Contextual Action Bar above/below Lasso Selection
+        // Floating Contextual Action Bar above/below Lasso Selection (strokes OR free region)
         val selBounds = controller.selectionBounds()
-        if (selBounds != null && canvasSize.width > 0) {
-            val barWidthPx = with(density) { 290.dp.toPx() }
-            val barHeightPx = with(density) { if (showLassoColorRow) 84.dp.toPx() else 44.dp.toPx() }
-            val targetX = (selBounds.centerX - barWidthPx * 0.5f)
-                .coerceIn(8f, (canvasSize.width - barWidthPx - 8f).coerceAtLeast(8f))
+        if (selBounds != null && canvasSize.width > 0 && !isCapturingScreenshot) {
+            val maxBarWidthDp = with(density) { (canvasSize.width.toFloat() - 16f).coerceAtLeast(160f).toDp() }
+            val estBarWidthPx = with(density) {
+                if (controller.hasSelection) 330.dp.toPx() else 210.dp.toPx()
+            }.coerceAtMost((canvasSize.width - 16f).coerceAtLeast(120f))
+            val barHeightPx = with(density) { if (showLassoColorRow) 84.dp.toPx() else 46.dp.toPx() }
+            val targetX = (selBounds.centerX - estBarWidthPx * 0.5f)
+                .coerceIn(8f, (canvasSize.width - estBarWidthPx - 8f).coerceAtLeast(8f))
             val aboveY = selBounds.top - barHeightPx - with(density) { 10.dp.toPx() }
             val targetY = if (aboveY >= 8f) {
                 aboveY
@@ -431,12 +570,19 @@ fun DrawingCanvasOverlay(
             }
 
             Surface(
-                modifier = Modifier.offset { IntOffset(targetX.roundToInt(), targetY.roundToInt()) },
+                modifier = Modifier
+                    .zIndex(10f)
+                    .offset { IntOffset(targetX.roundToInt(), targetY.roundToInt()) }
+                    .widthIn(max = maxBarWidthDp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {},
                 shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 8.dp,
                 shadowElevation = 10.dp,
-                border = androidx.compose.foundation.BorderStroke(
+                border = BorderStroke(
                     1.dp,
                     MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
                 )
@@ -446,44 +592,55 @@ fun DrawingCanvasOverlay(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         LassoActionChip(
-                            label = "Kes",
-                            onClick = { controller.cutSelected() }
+                            label = "Ekran Görüntüsü",
+                            icon = Icons.Default.Crop,
+                            isHighlighted = true,
+                            onClick = { triggerLassoScreenshot() }
                         )
-                        LassoActionChip(
-                            label = "Kopyala",
-                            onClick = { controller.copySelected() }
-                        )
+                        if (controller.hasSelection) {
+                            LassoActionChip(
+                                label = "Kes",
+                                onClick = { controller.cutSelected() }
+                            )
+                            LassoActionChip(
+                                label = "Kopyala",
+                                onClick = { controller.copySelected() }
+                            )
+                        }
                         if (controller.hasClipboard) {
                             LassoActionChip(
                                 label = "Yapıştır",
                                 onClick = { controller.pasteClipboard() }
                             )
                         }
-                        IconButton(
-                            onClick = { showLassoColorRow = !showLassoColorRow },
-                            modifier = Modifier.size(30.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Palette,
-                                contentDescription = "Renk Değiştir",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(17.dp)
-                            )
-                        }
-                        IconButton(
-                            onClick = { controller.deleteSelected() },
-                            modifier = Modifier.size(30.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Delete,
-                                contentDescription = "Seçimi Sil",
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(17.dp)
-                            )
+                        if (controller.hasSelection) {
+                            IconButton(
+                                onClick = { showLassoColorRow = !showLassoColorRow },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Palette,
+                                    contentDescription = "Renk Değiştir",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { controller.deleteSelected() },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Seçimi Sil",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
                         }
                         IconButton(
                             onClick = { controller.clearSelection() },
@@ -491,14 +648,14 @@ fun DrawingCanvasOverlay(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
-                                contentDescription = "Seçimi Kaldır",
+                                contentDescription = "Seçimi Kapat",
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
                                 modifier = Modifier.size(16.dp)
                             )
                         }
                     }
 
-                    if (showLassoColorRow) {
+                    if (showLassoColorRow && controller.hasSelection) {
                         Row(
                             modifier = Modifier
                                 .padding(top = 4.dp, bottom = 2.dp)
@@ -527,26 +684,303 @@ fun DrawingCanvasOverlay(
                 }
             }
         }
+
+        // Subtle Feedback Pill (Scribble-to-Erase / Screenshot Saved)
+        AnimatedVisibility(
+            visible = feedbackMessage != null && !isCapturingScreenshot,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 12.dp)
+        ) {
+            feedbackMessage?.let { msg ->
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.inverseSurface,
+                    shadowElevation = 6.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoFixHigh,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.inversePrimary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = msg,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.inverseOnSurface
+                        )
+                    }
+                }
+            }
+        }
+
+        // Cropped Screenshot Preview & Export Dialog
+        capturedCrop?.let { crop ->
+            val activeBitmap = if (usePolygonCrop && crop.polygonBitmap != null) {
+                crop.polygonBitmap
+            } else {
+                crop.rectBitmap
+            }
+            var dialogStatusMessage by remember(crop) { mutableStateOf<String?>(null) }
+            val dismissPreview = {
+                capturedCrop = null
+            }
+
+            Dialog(onDismissRequest = { if (!isSavingCrop) dismissPreview() }) {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 8.dp,
+                    shadowElevation = 14.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Kırpılan Alan",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "${activeBitmap.width} × ${activeBitmap.height} px",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
+                                )
+                            }
+                            IconButton(
+                                onClick = { if (!isSavingCrop) dismissPreview() },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Kapat"
+                                )
+                            }
+                        }
+
+                        if (crop.polygonBitmap != null) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                FilterChip(
+                                    selected = usePolygonCrop,
+                                    onClick = { usePolygonCrop = true },
+                                    label = { Text("Serbest Kement", fontSize = 12.sp) }
+                                )
+                                FilterChip(
+                                    selected = !usePolygonCrop,
+                                    onClick = { usePolygonCrop = false },
+                                    label = { Text("Dikdörtgen", fontSize = 12.sp) }
+                                )
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 120.dp, max = 280.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                                .border(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.outlineVariant,
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .padding(8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                bitmap = activeBitmap.asImageBitmap(),
+                                contentDescription = "Kırpılan ekran görüntüsü",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        dialogStatusMessage?.let { status ->
+                            Text(
+                                text = status,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                if (isSavingCrop) return@Button
+                                isSavingCrop = true
+                                coroutineScope.launch {
+                                    val result = DrawingScreenshotHelper.saveCropToNotes(context, activeBitmap)
+                                    isSavingCrop = false
+                                    if (result.isSuccess) {
+                                        feedbackMessage = "Notlara eklendi"
+                                        dismissPreview()
+                                    } else {
+                                        dialogStatusMessage = "Not kaydedilemedi"
+                                    }
+                                }
+                            },
+                            enabled = !isSavingCrop,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (isSavingCrop) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.StickyNote2,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            Text("Notlara Ekle", fontWeight = FontWeight.SemiBold)
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (isSavingCrop) return@OutlinedButton
+                                    isSavingCrop = true
+                                    coroutineScope.launch {
+                                        val result = DrawingScreenshotHelper.saveBitmapToGallery(context, activeBitmap)
+                                        isSavingCrop = false
+                                        val msg = if (result.isSuccess) {
+                                            "Galeriye kaydedildi"
+                                        } else {
+                                            "Galeriye kaydedilemedi"
+                                        }
+                                        dialogStatusMessage = msg
+                                        feedbackMessage = msg
+                                    }
+                                },
+                                enabled = !isSavingCrop,
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PhotoLibrary,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Galeriye Kaydet", fontSize = 12.sp)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    if (isSavingCrop) return@OutlinedButton
+                                    coroutineScope.launch {
+                                        val result = DrawingScreenshotHelper.shareBitmap(context, activeBitmap)
+                                        if (result.isFailure) {
+                                            dialogStatusMessage = "Paylaşım başlatılamadı"
+                                        }
+                                    }
+                                },
+                                enabled = !isSavingCrop,
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Paylaş", fontSize = 12.sp)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = { if (!isSavingCrop) dismissPreview() },
+                                enabled = !isSavingCrop
+                            ) {
+                                Text("Kapat")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun LassoActionChip(
     label: String,
+    icon: ImageVector? = null,
+    isHighlighted: Boolean = false,
     onClick: () -> Unit
 ) {
+    val bgColor = if (isHighlighted) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+    }
+    val fgColor = if (isHighlighted) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    }
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+        color = bgColor
     ) {
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = fgColor,
+                    modifier = Modifier.size(13.dp)
+                )
+            }
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = fgColor
+            )
+        }
     }
 }
 

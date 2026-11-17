@@ -1,5 +1,6 @@
 package com.example.sharkmentor.core.ai
 
+import android.content.Context
 import android.util.Log
 import com.example.sharkmentor.BuildConfig
 import com.google.ai.client.generativeai.type.InvalidAPIKeyException
@@ -8,38 +9,74 @@ import java.util.concurrent.atomic.AtomicInteger
 
 object ApiKeyRotator {
 
-    private val apiKeys: List<String> by lazy {
+    private val buildConfigKeys: List<String> by lazy {
         val raw = BuildConfig.GEMINI_API_KEYS
         val parsed = raw.split(",")
             .map { it.trim().replace("\"", "").replace("'", "") }
             .filter { it.isNotBlank() && (it.startsWith("AQ.") || it.startsWith("AIza") || it.length >= 20) }
 
         if (parsed.isNotEmpty()) parsed else {
-            val fallback = BuildConfig.GEMINI_API_KEY.trim().replace("\"", "")
+            val fallback = BuildConfig.GEMINI_API_KEY.trim().replace("\"", "").replace("'", "")
             if (fallback.isNotBlank()) listOf(fallback) else emptyList()
         }
     }
 
     private val currentIndex = AtomicInteger(0)
 
-    fun getActiveKey(): String {
-        if (apiKeys.isEmpty()) return BuildConfig.GEMINI_API_KEY.trim().replace("\"", "").replace("'", "")
-        val idx = Math.abs(currentIndex.get()) % apiKeys.size
-        return apiKeys[idx]
+    @Volatile
+    private var lastUserKeySignature: String? = null
+
+    private fun resolveEffectiveKeys(context: Context? = null): List<String> {
+        val prefs = UserAiPreferences.getOrNull(context)
+        val userKeys = prefs?.getParsedUserGeminiKeys().orEmpty()
+        val signature = userKeys.joinToString("|")
+        if (lastUserKeySignature != signature) {
+            lastUserKeySignature = signature
+            currentIndex.set(0)
+        }
+        return if (userKeys.isNotEmpty()) {
+            (userKeys + buildConfigKeys).distinct()
+        } else {
+            buildConfigKeys
+        }
     }
 
-    fun rotateToNextKey(): String {
-        if (apiKeys.size <= 1) return getActiveKey()
-        val nextIdx = Math.abs(currentIndex.incrementAndGet()) % apiKeys.size
+    fun hasCustomUserGeminiKeys(context: Context? = null): Boolean =
+        UserAiPreferences.getOrNull(context)?.getParsedUserGeminiKeys()?.isNotEmpty() == true
+
+    fun getActiveKey(): String = getActiveKey(null)
+
+    fun getActiveKey(context: Context?): String {
+        val keys = resolveEffectiveKeys(context)
+        if (keys.isEmpty()) {
+            return BuildConfig.GEMINI_API_KEY.trim().replace("\"", "").replace("'", "")
+        }
+        val idx = Math.abs(currentIndex.get()) % keys.size
+        return keys[idx]
+    }
+
+    fun rotateToNextKey(): String = rotateToNextKey(null)
+
+    fun rotateToNextKey(context: Context?): String {
+        val keys = resolveEffectiveKeys(context)
+        if (keys.size <= 1) return getActiveKey(context)
+        val nextIdx = Math.abs(currentIndex.incrementAndGet()) % keys.size
         Log.w("ApiKeyRotator", "Quota exceeded. Rotated to Account Index: $nextIdx")
-        return apiKeys[nextIdx]
+        return keys[nextIdx]
     }
 
     fun resetToPrimary() {
         currentIndex.set(0)
     }
 
-    fun getKeyCount(): Int = apiKeys.size
+    fun invalidateAndReset() {
+        lastUserKeySignature = null
+        currentIndex.set(0)
+    }
+
+    fun getKeyCount(): Int = getKeyCount(null)
+
+    fun getKeyCount(context: Context?): Int = resolveEffectiveKeys(context).size
 
     fun shouldRotateKey(throwable: Throwable): Boolean {
         if (throwable is QuotaExceededException ||

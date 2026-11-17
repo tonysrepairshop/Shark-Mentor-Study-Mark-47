@@ -5,14 +5,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.widget.Toast
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.material.icons.filled.Apps
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -24,35 +21,45 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.SelfImprovement
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.sharkmentor.core.ai.AiProviderChoice
+import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.GeminiAiFactory
+import com.example.sharkmentor.core.ai.PreferredPowerMode
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.data.AppThemeMode
 import com.example.sharkmentor.core.data.ThemePalette
 import com.example.sharkmentor.core.data.ThemePreferences
 import com.example.sharkmentor.core.util.AppIconManager
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.core.util.SharkAppIcon
-import com.example.sharkmentor.core.util.SharkVisualKit
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.ui.components.ReflectionTimeDialog
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -115,12 +122,16 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            AiSettingsSection(snackbarHostState = snackbarHostState)
+
+            HorizontalDivider()
+
             AppIconSelectorSection(snackbarHostState = snackbarHostState)
 
             HorizontalDivider()
 
             Text("Bildirim & Hedefler", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-            
+
             SettingRow(
                 icon = Icons.Default.AccessTime,
                 label = "Gün Değerlendirmesi Saati",
@@ -132,33 +143,33 @@ fun SettingsScreen(
                 label = "Hedef Sınav & Geri Sayım",
                 onClick = onOpenCountdownSettings
             )
-            
+
             HorizontalDivider()
 
-            Text("Odaklanma & Zihin Modülleri", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Text("Odak Modülleri", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
 
             SettingRow(
                 icon = Icons.Default.SelfImprovement,
-                label = "Zen Odası & Nefes Egzersizi",
+                label = "Zen Odası",
                 onClick = onOpenZenRoom
             )
-            
+
             SettingRow(
                 icon = Icons.Default.Block,
-                label = "Uygulama Engelleyici (App Blocker)",
+                label = "Uygulama Engelleyici",
                 onClick = onOpenAppBlocker
             )
 
             HorizontalDivider()
 
             Text("Analiz & Geçmiş", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-            
+
             SettingRow(
                 icon = Icons.Default.Analytics,
-                label = "Detaylı Analiz & Raporlar",
+                label = "Detaylı Analiz",
                 onClick = onOpenAnalysis
             )
-            
+
             SettingRow(
                 icon = Icons.Default.History,
                 label = "Çalışma Geçmişi",
@@ -167,7 +178,7 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            Text("Hesap Yönetimi (KVKK / GDPR)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+            Text("Hesap", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
 
             Button(
                 onClick = { executePermanentAccountDeletion(context, onAccountDeleted) },
@@ -177,10 +188,231 @@ fun SettingsScreen(
             ) {
                 Icon(Icons.Default.DeleteForever, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Hesabımı ve Tüm Verilerimi Kalıcı Olarak Sil", fontWeight = FontWeight.Bold)
+                Text("Hesabı Kalıcı Sil", fontWeight = FontWeight.Bold)
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val userAiPrefs = remember { UserAiPreferences.initialize(context) }
+
+    val savedGemini by userAiPrefs.userGeminiKeys.collectAsStateWithLifecycle()
+    val savedDeepSeek by userAiPrefs.userDeepSeekKey.collectAsStateWithLifecycle()
+    val savedKimi by userAiPrefs.userKimiKey.collectAsStateWithLifecycle()
+    val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
+    val savedPowerMode by userAiPrefs.preferredPowerMode.collectAsStateWithLifecycle()
+
+    var geminiKeysInput by remember(savedGemini) { mutableStateOf(savedGemini) }
+    var deepSeekInput by remember(savedDeepSeek) { mutableStateOf(savedDeepSeek) }
+    var kimiInput by remember(savedKimi) { mutableStateOf(savedKimi) }
+    var selectedProvider by remember(savedProvider) { mutableStateOf(savedProvider) }
+    var selectedPowerMode by remember(savedPowerMode) { mutableStateOf(savedPowerMode) }
+
+    var showGeminiKey by remember { mutableStateOf(false) }
+    var showDeepSeekKey by remember { mutableStateOf(false) }
+    var showKimiKey by remember { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Yapay Zeka & API",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    text = GeminiAiFactory.SOLE_GEMINI_MODEL,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
+
+        if (geminiKeysInput.isBlank() || deepSeekInput.isBlank() || kimiInput.isBlank()) {
+            Text(
+                text = "Boş bırakılırsa standart uygulama anahtarları kullanılır.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        ApiKeyInputField(
+            value = geminiKeysInput,
+            onValueChange = { geminiKeysInput = it },
+            label = "Gemini API Key",
+            placeholder = "key1, key2",
+            isVisible = showGeminiKey,
+            onToggleVisibility = { showGeminiKey = !showGeminiKey },
+            onClear = { geminiKeysInput = "" }
+        )
+
+        ApiKeyInputField(
+            value = deepSeekInput,
+            onValueChange = { deepSeekInput = it },
+            label = "DeepSeek API Key",
+            placeholder = "",
+            isVisible = showDeepSeekKey,
+            onToggleVisibility = { showDeepSeekKey = !showDeepSeekKey },
+            onClear = { deepSeekInput = "" }
+        )
+
+        ApiKeyInputField(
+            value = kimiInput,
+            onValueChange = { kimiInput = it },
+            label = "Kimi API Key",
+            placeholder = "",
+            isVisible = showKimiKey,
+            onToggleVisibility = { showKimiKey = !showKimiKey },
+            onClear = { kimiInput = "" }
+        )
+
+        Text(
+            text = "Sağlayıcı",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            AiProviderChoice.entries.forEach { provider ->
+                val isSelected = selectedProvider == provider
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { selectedProvider = provider },
+                    label = {
+                        Text(
+                            text = provider.label,
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+            }
+        }
+
+        Text(
+            text = "Model Modu",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            PreferredPowerMode.entries.forEachIndexed { index, mode ->
+                SegmentedButton(
+                    selected = selectedPowerMode == mode,
+                    onClick = { selectedPowerMode = mode },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = PreferredPowerMode.entries.size
+                    )
+                ) {
+                    Text(mode.label, fontSize = 12.sp)
+                }
+            }
+        }
+
+        Button(
+            onClick = {
+                userAiPrefs.saveSettings(
+                    geminiKeys = geminiKeysInput,
+                    deepSeekKey = deepSeekInput,
+                    kimiKey = kimiInput,
+                    provider = selectedProvider,
+                    powerMode = selectedPowerMode
+                )
+                ApiKeyRotator.invalidateAndReset()
+                scope.launch {
+                    snackbarHostState.showSnackbar("AI ayarları kaydedildi")
+                }
+            },
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Kaydet", fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun ApiKeyInputField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    isVisible: Boolean,
+    onToggleVisibility: () -> Unit,
+    onClear: () -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        placeholder = if (placeholder.isNotBlank()) {
+            { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        } else null,
+        singleLine = true,
+        visualTransformation = if (isVisible) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onToggleVisibility,
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = if (isVisible) "Gizle" else "Göster",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                if (value.isNotEmpty()) {
+                    IconButton(
+                        onClick = onClear,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Temizle",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        },
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @Composable
@@ -190,7 +422,7 @@ fun ThemeSelectorSection(
     currentPalette: ThemePalette,
     onSelectPalette: (ThemePalette) -> Unit
 ) {
-    Text("Arayüz Teması & Görünüm", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+    Text("Görünüm & Tema", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
     Spacer(modifier = Modifier.height(4.dp))
 
     Text("Tema Modu", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
@@ -276,9 +508,9 @@ fun executePermanentAccountDeletion(context: Context, onComplete: () -> Unit) {
     val db = GoogleServicesHelper.getFirebaseFirestore(context)
 
     AlertDialog.Builder(context)
-        .setTitle("⚠️ Hesabınızı Kalıcı Olarak Silmek İstiyor Musunuz?")
-        .setMessage("Tüm çalışma oturumlarınız, deneme sınavı kayıtlarınız ve koç eşleşmeleriniz geri dönülemez şekilde silinecektir. Bu işlem geri alınamaz.")
-        .setPositiveButton("Kalıcı Olarak Sil") { _, _ ->
+        .setTitle("Hesabı Kalıcı Sil")
+        .setMessage("Tüm verileriniz kalıcı olarak silinecektir.")
+        .setPositiveButton("Kalıcı Sil") { _, _ ->
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     SharkMentorDatabase.getDatabase(context).clearAllTables()
@@ -296,13 +528,13 @@ fun executePermanentAccountDeletion(context: Context, onComplete: () -> Unit) {
                     user.delete()
                         .addOnSuccessListener {
                             auth?.signOut()
-                            Toast.makeText(context, "Hesabınız başarıyla silindi.", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "Hesap silindi", Toast.LENGTH_SHORT).show()
                             onComplete()
                         }
                         .addOnFailureListener { e ->
                             Toast.makeText(
                                 context,
-                                "Güvenlik politikası gereği tekrar oturum açmanız gerekmektedir: ${e.localizedMessage}",
+                                "Tekrar giriş yapın: ${e.localizedMessage}",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
@@ -382,12 +614,6 @@ fun AppIconSelectorSection(snackbarHostState: SnackbarHostState) {
         fontWeight = FontWeight.Bold,
         color = MaterialTheme.colorScheme.primary
     )
-    Spacer(modifier = Modifier.height(4.dp))
-    Text(
-        "Launcher simgenizi kişiselleştirin",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
     Spacer(modifier = Modifier.height(10.dp))
 
     LazyRow(
@@ -407,7 +633,7 @@ fun AppIconSelectorSection(snackbarHostState: SnackbarHostState) {
                         AppIconManager.setActiveIcon(context, item)
                         selectedIcon = item
                         scope.launch {
-                            snackbarHostState.showSnackbar("${item.title} simgesi aktif edildi.")
+                            snackbarHostState.showSnackbar("Simge güncellendi")
                         }
                     }
                 )

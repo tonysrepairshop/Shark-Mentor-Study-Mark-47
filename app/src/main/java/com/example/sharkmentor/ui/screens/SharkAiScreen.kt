@@ -81,7 +81,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import androidx.compose.material.icons.filled.TrackChanges
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -128,11 +127,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.data.repository.AiModelPower
 import com.example.sharkmentor.data.repository.SharkAiEngine
 import com.example.sharkmentor.ui.aichat.ActionChip
 import com.example.sharkmentor.ui.aichat.AiPersona
-import com.example.sharkmentor.ui.aichat.PersistedChatSession
 import com.example.sharkmentor.ui.aichat.PersonalizedGreetingHeader
 import com.example.sharkmentor.ui.aichat.getFlashCardsForPersona
 import com.example.sharkmentor.ui.aichat.isPersonaAvailable
@@ -160,6 +159,7 @@ fun SharkAiScreen(
     onNavigateToPlans: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
+    remember { UserAiPreferences.initialize(context) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val chatSessions by viewModel.chatSessions.collectAsStateWithLifecycle()
     val activeChatSessionId by viewModel.activeChatSessionId.collectAsStateWithLifecycle()
@@ -210,7 +210,7 @@ fun SharkAiScreen(
             tempCameraUri = uri
             cameraLauncher.launch(uri)
         } else {
-            Toast.makeText(context, "Kamera izni verilmedi", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Kamera izni yok", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -234,14 +234,20 @@ fun SharkAiScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    LaunchedEffect(activeChatSessionId) {
+        if (uiState.messages.isEmpty()) {
+            listState.scrollToItem(0)
+        }
+    }
+
     LaunchedEffect(uiState.messages.size, uiState.isLoading) {
         if (uiState.messages.isNotEmpty() || uiState.isLoading) {
-            scope.launch {
-                val count = 1 + uiState.messages.size + if (uiState.isLoading) 1 else 0
-                if (count > 0) {
-                    listState.animateScrollToItem(count - 1)
-                }
+            val count = 1 + uiState.messages.size + if (uiState.isLoading) 1 else 0
+            if (count > 0) {
+                listState.animateScrollToItem(count - 1)
             }
+        } else {
+            listState.scrollToItem(0)
         }
     }
 
@@ -255,115 +261,86 @@ fun SharkAiScreen(
                 tonalElevation = 2.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
+                val activeModeTitle = when {
+                    lockedEngine == SharkAiEngine.SOLVER_ENGINE -> "Soru Çözümü"
+                    lockedEngine == SharkAiEngine.TWIN_QUESTION_ENGINE -> "Benzer Soru"
+                    lockedEngine == SharkAiEngine.PLANNER_OR_ORGANIZER -> "Planlayıcı"
+                    uiState.currentPersona != AiPersona.SHARK_COACH -> uiState.currentPersona.title
+                    else -> "Sınav Koçu"
+                }
+                val activeModeIcon = when {
+                    lockedEngine == SharkAiEngine.SOLVER_ENGINE -> Icons.Default.AutoAwesome
+                    lockedEngine == SharkAiEngine.TWIN_QUESTION_ENGINE -> Icons.AutoMirrored.Filled.MenuBook
+                    lockedEngine == SharkAiEngine.PLANNER_OR_ORGANIZER -> Icons.Default.DateRange
+                    else -> uiState.currentPersona.iconRes
+                }
+                val hasNonDefaultMode = uiState.currentPersona != AiPersona.SHARK_COACH || lockedEngine != null
+
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // 1. Satır: Shark AI başlık + Sohbetler + Yeni Sohbet
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val activeModeTitle = when {
-                            lockedEngine == SharkAiEngine.SOLVER_ENGINE -> "Soru Çözümü"
-                            lockedEngine == SharkAiEngine.TWIN_QUESTION_ENGINE -> "Benzer Soru"
-                            lockedEngine == SharkAiEngine.PLANNER_OR_ORGANIZER -> "Akıllı Planlayıcı"
-                            uiState.currentPersona != AiPersona.SHARK_COACH -> uiState.currentPersona.title
-                            else -> "Shark Sınav Koçu"
-                        }
-                        val activeModeIcon = when {
-                            lockedEngine == SharkAiEngine.SOLVER_ENGINE -> Icons.Default.AutoAwesome
-                            lockedEngine == SharkAiEngine.TWIN_QUESTION_ENGINE -> Icons.AutoMirrored.Filled.MenuBook
-                            lockedEngine == SharkAiEngine.PLANNER_OR_ORGANIZER -> Icons.Default.DateRange
-                            else -> uiState.currentPersona.iconRes
-                        }
-
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.clickable { showPersonaSheet = true }
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 6.dp)
+                                .clickable { showPersonaSheet = true }
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .size(28.dp)
                                     .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = activeModeIcon,
                                     contentDescription = activeModeTitle,
                                     tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(22.dp)
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
-                            Column {
-                                Text(
-                                    text = "Shark AI",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = activeModeTitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
+                            Text(
+                                text = "Shark AI",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            if (uiState.currentPersona != AiPersona.SHARK_COACH || lockedEngine != null) {
-                                val resetLabel = when {
-                                    lockedEngine == SharkAiEngine.SOLVER_ENGINE -> "Soru Çözümü"
-                                    lockedEngine == SharkAiEngine.TWIN_QUESTION_ENGINE -> "Benzer Soru"
-                                    lockedEngine == SharkAiEngine.PLANNER_OR_ORGANIZER -> "Planlayıcı"
-                                    else -> uiState.currentPersona.title
-                                }
-                                Surface(
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(16.dp),
-                                    modifier = Modifier.clickable { viewModel.resetToDefaultPersona() }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Text(
-                                            text = resetLabel,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Varsayılana Dön",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // "Sohbetler" (Chat History / Session Selector) button
                             Surface(
+                                onClick = { showChatHistorySheet = true },
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
                                 shape = RoundedCornerShape(16.dp),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
-                                modifier = Modifier.clickable { showChatHistorySheet = true }
+                                modifier = Modifier.heightIn(min = 34.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 34.dp)
+                                        .padding(horizontal = 9.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.History,
-                                        contentDescription = "Sohbet Geçmişi",
+                                        contentDescription = "Sohbetler",
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(14.dp)
                                     )
@@ -371,83 +348,149 @@ fun SharkAiScreen(
                                         text = "Sohbetler (${chatSessions.size})",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1
                                     )
                                 }
                             }
 
-                            // "Yeni Sohbet" (New Chat) button
                             Surface(
+                                onClick = {
+                                    viewModel.startNewChat()
+                                    scope.launch { listState.scrollToItem(0) }
+                                    Toast.makeText(context, "Yeni sohbet", Toast.LENGTH_SHORT).show()
+                                },
                                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
                                 shape = RoundedCornerShape(16.dp),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-                                modifier = Modifier.clickable {
-                                    viewModel.startNewChat()
-                                    Toast.makeText(context, "Yeni sohbet hazır", Toast.LENGTH_SHORT).show()
-                                }
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                                modifier = Modifier.heightIn(min = 34.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 34.dp)
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Add,
                                         contentDescription = "Yeni Sohbet",
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(14.dp)
+                                        modifier = Modifier.size(15.dp)
                                     )
                                     Text(
-                                        text = "Yeni",
+                                        text = "Yeni Sohbet",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1
                                     )
                                 }
                             }
+                        }
+                    }
 
-                            // Sleek Segmented / Filter Chips for Model Power: Fast vs Deep (Aligned to far right)
-                            Surface(
-                                shape = RoundedCornerShape(20.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    // 2. Satır: Aktif mod çipi ve Hızlı/Detaylı geçişi
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            color = if (hasNonDefaultMode) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (hasNonDefaultMode) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                } else {
+                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                                }
+                            ),
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .padding(end = 8.dp)
+                                .heightIn(min = 30.dp)
+                                .clickable { showPersonaSheet = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                                ) {
-                                    AiModelPower.entries.forEach { powerOption ->
-                                        val isSelected = modelPower == powerOption
-                                        FilterChip(
-                                            selected = isSelected,
-                                            onClick = {
-                                                viewModel.setModelPower(powerOption)
-                                                val modeHint = if (powerOption == AiModelPower.PRO) {
-                                                    "Detaylı Mod aktif: Derin konu sentezi ve adım adım analiz"
-                                                } else {
-                                                    "Hızlı Mod aktif: Öz ve seri yanıt"
-                                                }
-                                                Toast.makeText(context, modeHint, Toast.LENGTH_SHORT).show()
-                                            },
-                                            label = {
-                                                Text(
-                                                    text = powerOption.label,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                                )
-                                            },
-                                            shape = RoundedCornerShape(16.dp),
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                                                containerColor = Color.Transparent,
-                                                labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                            ),
-                                            border = null,
-                                            modifier = Modifier.height(28.dp)
-                                        )
-                                    }
+                                Icon(
+                                    imageVector = activeModeIcon,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = activeModeTitle,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (hasNonDefaultMode) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (hasNonDefaultMode) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Sıfırla",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .clickable { viewModel.resetToDefaultPersona() }
+                                    )
+                                }
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                AiModelPower.entries.forEach { powerOption ->
+                                    val isSelected = modelPower == powerOption
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = {
+                                            viewModel.setModelPower(powerOption)
+                                            val modeHint = if (powerOption == AiModelPower.PRO) "Detaylı mod" else "Hızlı mod"
+                                            Toast.makeText(context, modeHint, Toast.LENGTH_SHORT).show()
+                                        },
+                                        label = {
+                                            Text(
+                                                text = powerOption.label,
+                                                fontSize = 11.sp,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                            containerColor = Color.Transparent,
+                                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        ),
+                                        border = null,
+                                        modifier = Modifier.height(28.dp)
+                                    )
                                 }
                             }
                         }
@@ -719,7 +762,7 @@ fun SharkAiScreen(
                                         text = { Text("Kopyala") },
                                         onClick = {
                                             clipboardManager.setText(AnnotatedString(msg.text))
-                                            Toast.makeText(context, "Mesaj kopyalandı", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Kopyalandı", Toast.LENGTH_SHORT).show()
                                             showMenu = false
                                         }
                                     )
@@ -802,7 +845,7 @@ fun SharkAiScreen(
                                                     horizontalArrangement = Arrangement.SpaceBetween
                                                 ) {
                                                     Text(
-                                                        text = "Shark AI • Çözüm & Analiz",
+                                                        text = "Shark AI",
                                                         fontSize = 12.sp,
                                                         fontWeight = FontWeight.Bold,
                                                         color = MaterialTheme.colorScheme.primary
@@ -810,7 +853,7 @@ fun SharkAiScreen(
                                                     IconButton(
                                                         onClick = {
                                                             clipboardManager.setText(AnnotatedString(msg.text))
-                                                            Toast.makeText(context, "Çözüm kopyalandı", Toast.LENGTH_SHORT).show()
+                                                            Toast.makeText(context, "Kopyalandı", Toast.LENGTH_SHORT).show()
                                                         },
                                                         modifier = Modifier.size(24.dp)
                                                     ) {
@@ -831,13 +874,13 @@ fun SharkAiScreen(
 
                                                 if (msg.isPlanCard) {
                                                     Surface(
-                                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f).copy(alpha = 0.6f),
+                                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                                                         shape = RoundedCornerShape(8.dp),
                                                         modifier = Modifier.fillMaxWidth()
                                                     ) {
                                                         Column(modifier = Modifier.padding(12.dp)) {
                                                             Text(
-                                                                "7 Günlük Plan Takvime Eklendi",
+                                                                "Plan Takvime Eklendi",
                                                                 fontSize = 12.sp,
                                                                 fontWeight = FontWeight.Bold,
                                                                 color = MaterialTheme.colorScheme.onSurface
@@ -854,19 +897,19 @@ fun SharkAiScreen(
                                                                 shape = RoundedCornerShape(8.dp),
                                                                 colors = ButtonDefaults.buttonColors(
                                                                     containerColor = MaterialTheme.colorScheme.primary,
-                                                                    contentColor = MaterialTheme.colorScheme.background
+                                                                    contentColor = MaterialTheme.colorScheme.onPrimary
                                                                 ),
                                                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                                                                 modifier = Modifier.height(32.dp)
                                                             ) {
-                                                                Text("Planlar Sekmesine Git", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                                Text("Planlara Git", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                                             }
                                                         }
                                                     }
                                                 } else {
                                                     RichChatText(
                                                         text = msg.text,
-                                                        textColor = Color(0xFFF8FAFC)
+                                                        textColor = MaterialTheme.colorScheme.onSurface
                                                     )
                                                 }
 
@@ -926,12 +969,12 @@ fun SharkAiScreen(
                                         text = { Text("Kopyala") },
                                         onClick = {
                                             clipboardManager.setText(AnnotatedString(msg.text))
-                                            Toast.makeText(context, "Mesaj kopyalandı", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Kopyalandı", Toast.LENGTH_SHORT).show()
                                             showMenu = false
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Düzenle (Yanıtla)") },
+                                        text = { Text("Düzenle") },
                                         onClick = {
                                             viewModel.onInputTextChanged(msg.text)
                                             showMenu = false
@@ -958,7 +1001,7 @@ fun SharkAiScreen(
                                 "Düşünüyor...",
                                 "Analiz ediyor...",
                                 "Araştırıyor...",
-                                "En uygun yanıtı hazırlıyor..."
+                                "Hazırlanıyor..."
                             )
                             var idx = 0
                             while (isActive) {
@@ -1221,7 +1264,7 @@ fun SharkAiScreen(
                         decorationBox = { innerTextField ->
                             if (inputText.isEmpty()) {
                                 Text(
-                                    text = "Bir soru sor veya dosya ekle...",
+                                    text = "Soru sor veya dosya ekle...",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                                     fontSize = 14.sp
                                 )
@@ -1292,21 +1335,14 @@ fun SharkAiScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "Shark AI Modları & Yetenekleri",
+                        text = "Shark AI Modları",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Text(
-                        text = "İhtiyacınıza en uygun çalışma modunu veya AI uzmanını seçin.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
 
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    // SECTION 1: Akademik Araçlar & Çözüm
+                    // SECTION 1: Akademik Araçlar
                     Text(
-                        text = "AKADEMİK ARAÇLAR & ÇÖZÜM",
+                        text = "AKADEMİK ARAÇLAR",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp
@@ -1319,7 +1355,7 @@ fun SharkAiScreen(
                     val isSolverSelected = lockedEngine == SharkAiEngine.SOLVER_ENGINE
                     ModeSelectorCard(
                         title = "Soru Çözümü",
-                        subtitle = "Adım adım soru çözümü, işlem basamakları ve kazanım analizi",
+                        subtitle = "Adım adım çözüm",
                         icon = Icons.Default.AutoAwesome,
                         isSelected = isSolverSelected,
                         onClick = {
@@ -1332,7 +1368,7 @@ fun SharkAiScreen(
                     val isTwinSelected = lockedEngine == SharkAiEngine.TWIN_QUESTION_ENGINE
                     ModeSelectorCard(
                         title = "Benzer (İkiz) Soru",
-                        subtitle = "Mevcut sorunun kazanımına ve zorluğuna uygun yeni soru üretir",
+                        subtitle = "Özgün ikiz soru",
                         icon = Icons.AutoMirrored.Filled.MenuBook,
                         isSelected = isTwinSelected,
                         onClick = {
@@ -1351,7 +1387,7 @@ fun SharkAiScreen(
                         uiState.currentPersona == AiPersona.STUDY_PLANNER
                     ModeSelectorCard(
                         title = "Akıllı Planlayıcı",
-                        subtitle = plannerReason ?: "Haftalık kişiselleştirilmiş ders programı ve görev mimarı",
+                        subtitle = plannerReason ?: "Haftalık ders programı",
                         icon = Icons.Default.DateRange,
                         isSelected = isPlannerSelected,
                         isAvailable = isPlannerAvail,
@@ -1361,16 +1397,16 @@ fun SharkAiScreen(
                                 viewModel.selectUnifiedMode(AiPersona.STUDY_PLANNER, SharkAiEngine.PLANNER_OR_ORGANIZER)
                                 showPersonaSheet = false
                             } else {
-                                Toast.makeText(context, plannerReason ?: "Bu mod şu an kilitli.", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, plannerReason ?: "Mod kilitli", Toast.LENGTH_SHORT).show()
                             }
                         }
                     )
 
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    // SECTION 2: Koçluk & Rehberlik
+                    // SECTION 2: Rehberlik
                     Text(
-                        text = "KOÇLUK & REHBERLİK ASİSTANLARI",
+                        text = "REHBERLİK",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp
@@ -1383,7 +1419,7 @@ fun SharkAiScreen(
                     val isCoachSelected = lockedEngine == null && uiState.currentPersona == AiPersona.SHARK_COACH
                     ModeSelectorCard(
                         title = "Shark Sınav Koçu",
-                        subtitle = "Taktiksel yönlendirme, sınav stratejisi ve serbest sohbet (otomatik algılama)",
+                        subtitle = "Strateji ve sohbet",
                         icon = Icons.Default.Psychology,
                         isSelected = isCoachSelected,
                         onClick = {
@@ -1396,7 +1432,7 @@ fun SharkAiScreen(
                     val isGoalSelected = uiState.currentPersona == AiPersona.GOAL_SETTER
                     ModeSelectorCard(
                         title = "Hedef & Net Analizi",
-                        subtitle = "Stratejik net analizi, taban/hedef karşılaştırması ve sıralama projeksiyonu",
+                        subtitle = "Net ve sıralama analizi",
                         icon = Icons.AutoMirrored.Filled.TrendingUp,
                         isSelected = isGoalSelected,
                         onClick = {
@@ -1414,7 +1450,7 @@ fun SharkAiScreen(
                     val isDopamineSelected = uiState.currentPersona == AiPersona.DOPAMINE_COACH
                     ModeSelectorCard(
                         title = "Alışkanlık & Odak",
-                        subtitle = dopamineReason ?: "Odaklanma, erteleme alışkanlıkları ve motivasyon yönetimi",
+                        subtitle = dopamineReason ?: "Odak ve motivasyon",
                         icon = Icons.Default.Bolt,
                         isSelected = isDopamineSelected,
                         isAvailable = isDopamineAvail,
@@ -1424,7 +1460,7 @@ fun SharkAiScreen(
                                 viewModel.selectUnifiedMode(AiPersona.DOPAMINE_COACH, null)
                                 showPersonaSheet = false
                             } else {
-                                Toast.makeText(context, dopamineReason ?: "Bu mod şu an kilitli.", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, dopamineReason ?: "Mod kilitli", Toast.LENGTH_SHORT).show()
                             }
                         }
                     )
@@ -1433,7 +1469,7 @@ fun SharkAiScreen(
                     val isZenSelected = uiState.currentPersona == AiPersona.ZEN_CALM
                     ModeSelectorCard(
                         title = "Odak & Stres (Zen)",
-                        subtitle = "Sınav kaygısı, nefes egzersizleri ve zihinsel rahatlama",
+                        subtitle = "Nefes ve sakinleşme",
                         icon = Icons.Default.SelfImprovement,
                         isSelected = isZenSelected,
                         onClick = {
@@ -1459,17 +1495,11 @@ fun SharkAiScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Görsel veya Belge Ekle",
+                        text = "Dosya Ekle",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Text(
-                        text = "Sorunun fotoğrafını çekebilir, galeriden veya PDF belgelerinden soru yükleyebilirsiniz.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
 
                     // 1. Kamera
                     Surface(
@@ -1513,12 +1543,12 @@ fun SharkAiScreen(
                             }
                             Column {
                                 Text(
-                                    text = "Kamera ile Fotoğraf Çek",
+                                    text = "Kamera",
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Sorunun veya kitap sayfasının anlık fotoğrafını çek",
+                                    text = "Fotoğraf çek",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1560,12 +1590,12 @@ fun SharkAiScreen(
                             }
                             Column {
                                 Text(
-                                    text = "Galeriden Seç",
+                                    text = "Galeri",
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Fotoğraflarından soru veya ödev görseli yükle",
+                                    text = "Görsel seç",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1605,12 +1635,12 @@ fun SharkAiScreen(
                             }
                             Column {
                                 Text(
-                                    text = "PDF veya Belge Seç",
+                                    text = "PDF / Belge",
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Deneme sınavı, fasikül veya ders notu PDF'i aktar",
+                                    text = "Dosya seç",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1644,13 +1674,13 @@ fun SharkAiScreen(
                     ) {
                         Column {
                             Text(
-                                text = "Sohbet Geçmişi",
+                                text = "Sohbetler",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "${chatSessions.size} kayıtlı oturum • Seçin, yeni açın veya silin",
+                                text = "${chatSessions.size} oturum",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1659,8 +1689,9 @@ fun SharkAiScreen(
                         Button(
                             onClick = {
                                 viewModel.startNewChat()
+                                scope.launch { listState.scrollToItem(0) }
                                 showChatHistorySheet = false
-                                Toast.makeText(context, "Yeni sohbet başlatıldı", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Yeni sohbet", Toast.LENGTH_SHORT).show()
                             },
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -1701,7 +1732,7 @@ fun SharkAiScreen(
                                     ?.replace(Regex("\\s+"), " ")
                                     ?.trim()
                                     ?.take(90)
-                                    ?: "Henüz mesaj gönderilmedi"
+                                    ?: "Mesaj yok"
                             }
                             val formattedDate = remember(session.updatedAtMillis) {
                                 runCatching { dateFormatter.format(Date(session.updatedAtMillis)) }
@@ -2070,7 +2101,7 @@ private fun ModeSelectorCard(
                         style = MaterialTheme.typography.bodySmall,
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }

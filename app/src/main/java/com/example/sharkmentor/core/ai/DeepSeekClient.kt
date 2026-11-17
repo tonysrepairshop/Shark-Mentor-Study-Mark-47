@@ -1,5 +1,6 @@
 package com.example.sharkmentor.core.ai
 
+import android.content.Context
 import android.util.Log
 import com.example.sharkmentor.BuildConfig
 import com.google.gson.Gson
@@ -49,7 +50,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
    - Kullanıcı sadece "Selam", "Nasılsın", "Merhaba" yazarsa MAKSİMUM 1 KISA CÜMLE ile cevap ver (Örn: "Selam! Bugün hangi derse odaklanıyoruz?").
    - Standart konu anlatımı ve rehberlik açıklamalarını net, anlaşılır ve kotayı boşa harcamayacak yoğunlukta tut.
 3. SOHBET KANCASI:
-   - Yanıtını klişe bitirişlerle ("Başarılar dilerim") kapatma. Öğrenciyi aksiyonda tutacak tek cümlelik doğal bir takip sorusu sor.
+   - Yanıtını klişe bitirişlerle ("Başarılar dilerim") kapatma. Öğrenciyi aksiyonda tutan tek cümlelik doğal bir takip sorusu sor.
 """
 
     private val gson = Gson()
@@ -65,7 +66,15 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             .build()
     }
 
-    fun getDeepSeekApiKey(): String {
+    fun getDeepSeekApiKey(): String = getDeepSeekApiKey(null)
+
+    fun getDeepSeekApiKey(context: Context?): String {
+        val userKey = runCatching {
+            UserAiPreferences.getOrNull(context)?.getUserDeepSeekKey()
+        }.getOrNull()
+        if (!userKey.isNullOrBlank()) {
+            return userKey
+        }
         return runCatching {
             BuildConfig.DEEPSEEK_API_KEY
                 .trim()
@@ -74,7 +83,15 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         }.getOrDefault("")
     }
 
-    fun getKimiApiKey(): String {
+    fun getKimiApiKey(): String = getKimiApiKey(null)
+
+    fun getKimiApiKey(context: Context?): String {
+        val userKey = runCatching {
+            UserAiPreferences.getOrNull(context)?.getUserKimiKey()
+        }.getOrNull()
+        if (!userKey.isNullOrBlank()) {
+            return userKey
+        }
         return runCatching {
             BuildConfig.KIMI_API_KEY
                 .trim()
@@ -115,7 +132,16 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             add(OpenAiChatMessage(role = "user", content = userPrompt.trim()))
         }
 
-        val useKimiPrimary = preferKimiLongContext || isLongContextPrompt(userPrompt, systemPrompt)
+        val selectedProvider = runCatching {
+            UserAiPreferences.getOrNull()?.getSelectedProvider()
+        }.getOrNull() ?: AiProviderChoice.AUTO
+
+        val useKimiPrimary = when (selectedProvider) {
+            AiProviderChoice.KIMI -> true
+            AiProviderChoice.DEEPSEEK -> false
+            AiProviderChoice.AUTO, AiProviderChoice.GEMINI ->
+                preferKimiLongContext || isLongContextPrompt(userPrompt, systemPrompt)
+        }
         var streamedTokensCount = 0
         var lastException: Throwable? = null
 

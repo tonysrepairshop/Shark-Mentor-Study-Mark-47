@@ -38,7 +38,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.core.util.SharkVisualKit
 import com.example.sharkmentor.ui.viewmodel.LeagueEntry
 import com.example.sharkmentor.ui.viewmodel.LeagueTab
@@ -89,14 +89,14 @@ fun SharkLeagueScreen(
     LaunchedEffect(uiState.statusMessage) {
         val msg = uiState.statusMessage
         if (!msg.isNullOrBlank()) {
-            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
             viewModel.clearStatusMessage()
         }
     }
 
     fun copyToClipboard(label: String, code: String) {
         clipboardManager.setText(AnnotatedString(code))
-        Toast.makeText(context, "$label kopyalandı: $code", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Kopyalandı: $code", Toast.LENGTH_SHORT).show()
     }
 
     fun shareInviteText(text: String) {
@@ -104,7 +104,7 @@ fun SharkLeagueScreen(
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, text)
         }
-        context.startActivity(Intent.createChooser(sendIntent, "Kodu Paylaş"))
+        context.startActivity(Intent.createChooser(sendIntent, "Paylaş"))
     }
 
     Scaffold(
@@ -119,23 +119,25 @@ fun SharkLeagueScreen(
                     title = {
                         Column {
                             Text(
-                                text = "Shark Ligi & Arena",
+                                text = "Shark Ligi",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
                                 color = MaterialTheme.colorScheme.primary
                             )
                             Text(
                                 text = when {
                                     uiState.activeTab == LeagueTab.GROUPS_AND_FRIENDS && !uiState.groupName.isNullOrBlank() ->
-                                        "Grup: ${uiState.groupName} • Arkadaş & Grup Rekabeti"
+                                        uiState.groupName.orEmpty()
                                     uiState.activeTab == LeagueTab.GROUPS_AND_FRIENDS ->
-                                        "Kodlu Çalışma Gruplarım & Arkadaşlarım"
+                                        "Gruplar & Arkadaşlar"
                                     uiState.useInstitutionFilter && uiState.institutionCode.isNotBlank() ->
-                                        "Kurum Ligi (${uiState.institutionCode}) • Doğrulanmış Odak Sıralaması"
+                                        "Kurum Ligi (${uiState.institutionCode})"
                                     else ->
-                                        "Bireysel Genel Lig • Doğrulanmış Odak Sıralaması"
+                                        "Genel Lig"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     },
@@ -269,16 +271,16 @@ private fun LeagueContent(
     val listHeaderTitle = when (uiState.activeTab) {
         LeagueTab.GLOBAL_INDIVIDUAL -> {
             if (uiState.useInstitutionFilter && uiState.institutionCode.isNotBlank()) {
-                "KURUM LİGİ SIRALAMASI (${uiState.institutionCode})"
+                "KURUM LİGİ (${uiState.institutionCode})"
             } else {
-                "BİREYSEL GENEL LİG SIRALAMASI"
+                "GENEL LİG"
             }
         }
         LeagueTab.GROUPS_AND_FRIENDS -> {
             if (!uiState.groupName.isNullOrBlank()) {
-                "GRUP SIRALAMASI: ${uiState.groupName.uppercase()}"
+                uiState.groupName.orEmpty().uppercase()
             } else {
-                "ARKADAŞLARIM & GRUP ÜYELERİ"
+                "ARKADAŞLAR & GRUPLAR"
             }
         }
     }
@@ -315,7 +317,6 @@ private fun LeagueContent(
                     onOpenJoinByCode = onOpenJoinByCode,
                     onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) }
                 )
-                MotivationalBanner()
             }
 
             LazyColumn(
@@ -455,22 +456,6 @@ private fun LeagueContent(
                     )
                 }
             }
-
-            item {
-                MotivationalBanner()
-            }
-
-            item {
-                Text(
-                    text = "Sıralama yalnızca doğrulanmış masa odaklanma sürelerine dayanır.\nArkadaşlarını 12 saatte bir dürterek çalışma masasına davet edebilirsin.",
-                    style = MaterialTheme.typography.labelSmall.copy(lineHeight = 16.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
-                )
-            }
         }
     }
 }
@@ -493,7 +478,7 @@ private fun LeagueFilterSection(
                 FilterChip(
                     selected = !uiState.useInstitutionFilter,
                     onClick = { onToggleInstitutionFilter(false) },
-                    label = { Text("Bireysel Genel Lig", fontWeight = FontWeight.SemiBold) },
+                    label = { Text("Genel Lig", fontWeight = FontWeight.SemiBold) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                         selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -521,7 +506,7 @@ private fun LeagueFilterSection(
                         FilterChip(
                             selected = uiState.selectedGroupCode == null,
                             onClick = { onSelectGroupFilter(null) },
-                            label = { Text("Tümü (Arkadaşlarım & Gruplar)") },
+                            label = { Text("Tümü") },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                                 selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -534,7 +519,7 @@ private fun LeagueFilterSection(
                             selected = selected,
                             onClick = { onSelectGroupFilter(group.inviteCode) },
                             label = {
-                                Text("${group.name} (${group.inviteCode}) • ${group.memberCount} kişi")
+                                Text("${group.name} (${group.memberCount})")
                             },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -559,30 +544,26 @@ private fun LeagueFilterSection(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "${selectedGroup.name} • Davet Kodu: ${selectedGroup.inviteCode}",
-                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "Arkadaşların bu 6 haneli kodu girerek gruba katılabilir.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                            Text(
+                                text = "${selectedGroup.name} • ${selectedGroup.inviteCode}",
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 IconButton(onClick = { onCopyGroupCode(selectedGroup.inviteCode) }) {
                                     Icon(
                                         imageVector = Icons.Default.ContentCopy,
-                                        contentDescription = "Grup Kodunu Kopyala",
+                                        contentDescription = "Kopyala",
                                         tint = MaterialTheme.colorScheme.primary
                                     )
                                 }
                                 IconButton(onClick = { onShareGroupCode(selectedGroup) }) {
                                     Icon(
                                         imageVector = Icons.Default.Share,
-                                        contentDescription = "Grup Kodunu Paylaş",
+                                        contentDescription = "Paylaş",
                                         tint = MaterialTheme.colorScheme.primary
                                     )
                                 }
@@ -617,18 +598,12 @@ private fun SocialCodeActionCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Arkadaş & Çalışma Grubu Merkezi",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "6 haneli grup kodu üret veya SHK-XXXX arkadaş koduyla yarışa katıl.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                Text(
+                    text = "Gruplar & Arkadaşlar",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
                 if (myFriendCode.isNotBlank()) {
                     Surface(
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
@@ -828,7 +803,7 @@ private fun MyTierCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Rütbe İlerleme Çubuğu",
+                        text = "Rütbe İlerlemesi",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -837,9 +812,9 @@ private fun MyTierCard(
                             val remSecs = (nextThresh - currentSecs).coerceAtLeast(0L)
                             val remH = remSecs / 3600
                             val remM = (remSecs % 3600) / 60
-                            "Sonraki rütbeye ${remH}s ${remM}dk kaldı"
+                            "Sonraki: ${remH}s ${remM}dk"
                         } else {
-                            "En üst rütbedesin (Büyük Beyaz)"
+                            "En üst rütbe"
                         },
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = accentColor
@@ -910,7 +885,6 @@ private fun LeaderboardRow(
     val accentColor = entry.tier.themeAwareAccentColor()
     val hours = entry.weeklyFocusSeconds / 3600
     val mins = (entry.weeklyFocusSeconds % 3600) / 60
-    val sharkBadgeRes = SharkVisualKit.getTierBadge((entry.weeklyFocusSeconds / 60).toInt())
     val nowMs = System.currentTimeMillis()
     val canNudge = entry.canBeNudged(nowMs)
 
@@ -957,10 +931,11 @@ private fun LeaderboardRow(
                 }
             }
 
-            Image(
-                painter = painterResource(id = sharkBadgeRes),
-                contentDescription = entry.tier.label,
-                modifier = Modifier.size(32.dp)
+            SharkAvatar(
+                avatarBase64 = entry.avatarBase64,
+                avatarPresetId = entry.avatarPresetId,
+                displayName = entry.displayName,
+                size = 38.dp
             )
 
             Column(modifier = Modifier.weight(1f)) {
@@ -1094,21 +1069,15 @@ private fun EmptyLeagueStateCard(
         ) {
             Text(
                 text = if (isGroupsTab) {
-                    "Henüz bir çalışma grubuna veya arkadaşa bağlanmadın."
+                    "Grup veya arkadaş yok"
                 } else {
-                    "Henüz bu hafta odak verisi bulunmuyor. Kronometreni başlat ve zirveye yerleş!"
+                    "Bu hafta veri yok"
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center
             )
             if (isGroupsTab) {
-                Text(
-                    text = "6 haneli davet koduyla yeni bir çalışma grubu kurabilir veya arkadaşının SHK-XXXX kodunu girebilirsin.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onOpenJoinByCode) {
@@ -1119,41 +1088,6 @@ private fun EmptyLeagueStateCard(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun MotivationalBanner() {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Shark Arena Felsefesi",
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.5.sp
-                ),
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "\"Netler değişken, odaklanma alışkanlığı kalıcıdır.\"",
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onSurface,
-                fontStyle = FontStyle.Italic
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "Bu sıralamada yalnızca masa başında geçirilen doğrulanmış odaklanma süresi sayılır.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 16.sp
-            )
         }
     }
 }
@@ -1170,33 +1104,26 @@ private fun CreateStudyGroupDialog(
         containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Text(
-                text = "Çalışma Grubu Oluştur",
+                text = "Grup Oluştur",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurface
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Grubuna bir isim ver. Otomatik üretilen 6 haneli davet kodunu arkadaşlarınla paylaşarak birlikte odak yarışına girebilirsin.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedTextField(
-                    value = groupName,
-                    onValueChange = { groupName = it.take(40) },
-                    label = { Text("Grup Adı (ör. Derece Tayfa 2026)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+            OutlinedTextField(
+                value = groupName,
+                onValueChange = { groupName = it.take(40) },
+                label = { Text("Grup Adı") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
         },
         confirmButton = {
             Button(
                 onClick = { onCreateGroup(groupName) },
                 enabled = groupName.trim().length >= 2
             ) {
-                Text("6 Haneli Kod Üret & Oluştur")
+                Text("Oluştur")
             }
         },
         dismissButton = {
@@ -1220,21 +1147,16 @@ private fun JoinByCodeDialog(
         containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Text(
-                text = "Gruba veya Arkadaşa Katıl",
+                text = "Kod ile Katıl",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurface
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Arkadaşının kodunu (SHK-XXXX) veya 6 haneli çalışma grubu davet kodunu aşağıya gir.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 if (myFriendCode.isNotBlank()) {
                     Text(
-                        text = "Senin Arkadaş Kodun: $myFriendCode",
+                        text = "Kodun: $myFriendCode",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -1242,7 +1164,7 @@ private fun JoinByCodeDialog(
                 OutlinedTextField(
                     value = inputCode,
                     onValueChange = { inputCode = it.uppercase().take(12) },
-                    label = { Text("Kod (SHK-XXXX veya 6 Haneli Grup Kodu)") },
+                    label = { Text("Arkadaş / Grup Kodu") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )

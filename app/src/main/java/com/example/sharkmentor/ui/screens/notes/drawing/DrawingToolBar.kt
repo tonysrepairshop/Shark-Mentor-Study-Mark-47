@@ -123,7 +123,7 @@ fun DrawingStudioBar(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Şekiller:",
+                            text = "Şekil",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = onSurfaceColor.copy(alpha = 0.7f)
@@ -147,7 +147,7 @@ fun DrawingStudioBar(
                             onClick = { controller.selectTool(DrawingTool.SHAPE_RECTANGLE) }
                         )
                         ShapeToolChip(
-                            label = "Daire/Elips",
+                            label = "Elips",
                             tool = DrawingTool.SHAPE_ELLIPSE,
                             isSelected = activeTool == DrawingTool.SHAPE_ELLIPSE,
                             onClick = { controller.selectTool(DrawingTool.SHAPE_ELLIPSE) }
@@ -179,16 +179,21 @@ fun DrawingStudioBar(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (controller.hasSelection) {
-                                "${controller.selectedStrokeIds.size} nesne seçildi:"
-                            } else {
-                                "Kement: Seçmek için etrafını çizin"
+                            text = when {
+                                controller.hasSelection -> "${controller.selectedStrokeIds.size} seçili"
+                                controller.hasLassoRegion -> "Alan seçili"
+                                else -> "Alan çizin"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = primaryColor
                         )
 
+                        if (controller.hasActiveLasso) {
+                            MiniActionPill("Ekran Görüntüsü") {
+                                controller.requestLassoScreenshot()
+                            }
+                        }
                         if (controller.hasSelection) {
                             MiniActionPill("Kes") { controller.cutSelected() }
                             MiniActionPill("Kopyala") { controller.copySelected() }
@@ -202,8 +207,11 @@ fun DrawingStudioBar(
                                 isDestructive = true,
                                 onClick = { controller.deleteSelected() }
                             )
-                            MiniActionPill("Seçimi Kaldır") { controller.clearSelection() }
-
+                        }
+                        if (controller.hasActiveLasso) {
+                            MiniActionPill("Kapat") { controller.clearSelection() }
+                        }
+                        if (controller.hasSelection) {
                             Spacer(modifier = Modifier.width(4.dp))
                             STUDIO_COLOR_PALETTE.take(7).forEach { color ->
                                 Box(
@@ -270,10 +278,10 @@ fun DrawingStudioBar(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = if (activeTool.isEraserTool) "Silgi Boyutu" else "Kalınlık",
+                            text = if (activeTool.isEraserTool) "Boyut" else "Kalınlık",
                             style = MaterialTheme.typography.labelSmall,
                             color = onSurfaceColor.copy(alpha = 0.75f),
-                            modifier = Modifier.width(72.dp)
+                            modifier = Modifier.width(64.dp)
                         )
                         val currentWidthValue = if (activeTool.isEraserTool) controller.eraserRadius else controller.strokeWidth
                         Slider(
@@ -308,7 +316,7 @@ fun DrawingStudioBar(
                                 text = "Opaklık",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = onSurfaceColor.copy(alpha = 0.75f),
-                                modifier = Modifier.width(72.dp)
+                                modifier = Modifier.width(64.dp)
                             )
                             Slider(
                                 value = controller.alpha,

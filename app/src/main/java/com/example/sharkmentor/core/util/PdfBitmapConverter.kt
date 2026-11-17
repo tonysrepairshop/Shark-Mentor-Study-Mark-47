@@ -12,14 +12,25 @@ import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.util.Log
 import android.util.LruCache
+import android.os.Looper
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 data class ImportedPdfFile(
@@ -122,7 +133,7 @@ class LazyPdfPageRenderer(private val pdfFile: File) {
                     System.gc()
                     val fallbackW = (targetW / 2).coerceAtLeast(480)
                     val fallbackH = ((srcH.toFloat() / srcW.toFloat()) * fallbackW.toFloat()).toInt().coerceAtLeast(1)
-                    Bitmap.createBitmap(fallbackW, fallbackH, Bitmap.Config.RGB_565)
+                    Bitmap.createBitmap(fallbackW, fallbackH, Bitmap.Config.ARGB_8888)
                 }
 
                 val canvas = Canvas(bitmap)
@@ -156,10 +167,41 @@ class LazyPdfPageRenderer(private val pdfFile: File) {
 
 object PdfBitmapConverter {
 
+    private const val TAG = "PdfBitmapConverter"
     private const val MAX_RENDER_WIDTH_PX = 1080
     private const val DEFAULT_MAX_PAGES = 25
+    private const val MAX_PDFBOX_PAGES = 60
+    private const val MAX_PDFBOX_CHARS = 45_000
+    private const val MAX_OCR_PAGES = 10
+    private const val OCR_RENDER_WIDTH_PX = 1440
     private const val PDF_PAGES_DIR = "rendered_pdf_pages"
     const val PRIVATE_PDFS_DIR = "pdfs"
+
+    @Volatile
+    private var isPdfBoxInitialized = false
+    private val pdfBoxInitLock = Any()
+
+    private val CID_TAG_REGEX = Regex("""\(cid:\d+\)""")
+    private val INTRA_WORD_NOISE_REGEX = Regex("""[A-Za-zçÇğĞıİöÖşŞüÜ][#$@|~`\\^][A-Za-zçÇğĞıİöÖşŞüÜ]""")
+    private val WHITESPACE_SPLIT_REGEX = Regex("""\s+""")
+
+    private const val TURKISH_SPECIAL_LETTERS = "çÇğĞıİöÖşŞüÜâÂîÎûÛ"
+    private const val VOWEL_CHARS = "aeıioöuüAEIİOÖUÜâîûÂÎÛyY"
+    private const val STANDARD_SYMBOLS = ".,;:!?()[]{}'\"’‘“”…-–—−/\\•▪✓→↔+=*×÷±≈%°<>@#&_~^|₺€\$²³¹′παβγθ∆∑√∞≤≥≠"
+
+    fun ensurePdfBoxInitialized(context: Context) {
+        if (isPdfBoxInitialized) return
+        synchronized(pdfBoxInitLock) {
+            if (!isPdfBoxInitialized) {
+                runCatching {
+                    PDFBoxResourceLoader.init(context.applicationContext)
+                    isPdfBoxInitialized = true
+                }.onFailure { e ->
+                    Log.w(TAG, "PDFBoxResourceLoader.init failed: ${e.message}")
+                }
+            }
+        }
+    }
 
     /**
      * Takes persistable URI read permission (when supported by the provider) and copies the
@@ -174,7 +216,7 @@ object PdfBitmapConverter {
             runCatching {
                 resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }.onFailure {
-                Log.d("PdfBitmapConverter", "URI does not support persistable permission (will use private copy): ${it.message}")
+                Log.d(TAG, "URI does not support persistable permission (will use private copy): ${it.message}")
             }
         }
 
@@ -238,7 +280,7 @@ object PdfBitmapConverter {
             }
 
             if (!targetFile.exists() || targetFile.length() == 0L) {
-                Log.e("PdfBitmapConverter", "Copied PDF file is empty for $uri")
+                Log.e(TAG, "Copied PDF file is empty for $uri")
                 return null
             }
 
@@ -251,7 +293,7 @@ object PdfBitmapConverter {
                 pageCount = pageCount
             )
         } catch (e: Exception) {
-            Log.e("PdfBitmapConverter", "Failed copying PDF URI to private storage: $uri", e)
+            Log.e(TAG, "Failed copying PDF URI to private storage: $uri", e)
             null
         }
     }
@@ -295,7 +337,7 @@ object PdfBitmapConverter {
                 return directPfd to null
             }
         } catch (e: Exception) {
-            Log.w("PdfBitmapConverter", "Direct openFileDescriptor failed, falling back to temp file copy: ${e.message}")
+            Log.w(TAG, "Direct openFileDescriptor failed, falling back to temp file copy: ${e.message}")
         }
 
         return try {
@@ -308,8 +350,48 @@ object PdfBitmapConverter {
             val pfd = ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY)
             pfd to tempFile
         } catch (e: Exception) {
-            Log.e("PdfBitmapConverter", "Failed to open PDF stream for $pdfUri", e)
+            Log.e(TAG, "Failed to open PDF stream for $pdfUri", e)
             null to null
+        }
+    }
+
+    private fun resolveReadablePdfFile(context: Context, pdfUri: Uri): Pair<File?, Boolean> {
+        if (pdfUri.scheme == ContentResolver.SCHEME_FILE || pdfUri.scheme == null) {
+            val direct = File(pdfUri.path ?: pdfUri.toString())
+            if (direct.exists() && direct.length() > 0L) {
+                return direct to false
+            }
+        }
+
+        return runCatching {
+            val tempFile = File.createTempFile("pdf_extract_", ".pdf", context.cacheDir)
+            var wroteBytes = false
+            context.contentResolver.openInputStream(pdfUri)?.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    input.copyTo(output, bufferSize = 8 * 1024)
+                    output.flush()
+                    wroteBytes = tempFile.length() > 0L
+                }
+            } ?: run {
+                context.contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
+                    ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+                        FileOutputStream(tempFile).use { output ->
+                            input.copyTo(output, bufferSize = 8 * 1024)
+                            output.flush()
+                            wroteBytes = tempFile.length() > 0L
+                        }
+                    }
+                }
+            }
+            if (wroteBytes) {
+                tempFile to true
+            } else {
+                runCatching { tempFile.delete() }
+                null to false
+            }
+        }.getOrElse { e ->
+            Log.w(TAG, "Could not resolve PDF file for $pdfUri: ${e.message}")
+            null to false
         }
     }
 
@@ -377,12 +459,12 @@ object PdfBitmapConverter {
                             page.close()
                         }
                     }.onFailure { e ->
-                        Log.e("PdfBitmapConverter", "Error rendering PDF page $pageIndex", e)
+                        Log.e(TAG, "Error rendering PDF page $pageIndex", e)
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e("PdfBitmapConverter", "Failed converting PDF to page paths", e)
+            Log.e(TAG, "Failed converting PDF to page paths", e)
         } finally {
             runCatching { pdfRenderer?.close() }
             runCatching { fileDescriptor?.close() }
@@ -435,12 +517,12 @@ object PdfBitmapConverter {
                             page.close()
                         }
                     }.onFailure { e ->
-                        Log.e("PdfBitmapConverter", "Failed rendering PDF page $pageIndex into Bitmap", e)
+                        Log.e(TAG, "Failed rendering PDF page $pageIndex into Bitmap", e)
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e("PdfBitmapConverter", "Failed converting PDF to Bitmaps", e)
+            Log.e(TAG, "Failed converting PDF to Bitmaps", e)
         } finally {
             runCatching { pdfRenderer?.close() }
             runCatching { fileDescriptor?.close() }
@@ -451,201 +533,296 @@ object PdfBitmapConverter {
     }
 
     /**
-     * Extracts plain text from a PDF file using stream operators and FlateDecode decompression.
-     * Runs safely on any thread (best on Dispatchers.IO) with no external library dependencies.
+     * Checks whether extracted PDF text is clean, human-readable Turkish/Latin prose rather than
+     * broken `/ToUnicode` CMap glyph tables, PUA/replacement mojibake, `(cid:N)` tokens, or symbol noise.
      */
-    fun extractPdfPlainText(context: Context, pdfUri: Uri, maxLines: Int = 500): String {
-        return runCatching {
-            val bytes = context.contentResolver.openInputStream(pdfUri)?.use { it.readBytes() } ?: return@runCatching ""
-            extractPdfPlainTextFromBytes(bytes, maxLines)
-        }.getOrDefault("")
-    }
+    fun isExtractedTextReadable(rawText: String, sanitizedText: String = rawText): Boolean {
+        val raw = rawText.trim()
+        val clean = sanitizedText.trim()
+        if (raw.isEmpty() || clean.isEmpty()) return false
 
-    fun extractPdfPlainTextFromBytes(pdfBytes: ByteArray, maxLines: Int = 500): String {
-        return runCatching {
-            val rawLatin = String(pdfBytes, Charsets.ISO_8859_1)
-            val collectedLines = mutableListOf<String>()
+        // 1. Detect unmapped CID glyphs produced when /ToUnicode CMap is missing or corrupt
+        val cidCount = CID_TAG_REGEX.findAll(raw).count()
+        if (cidCount >= 2) {
+            val rawNonWs = raw.count { !it.isWhitespace() }.coerceAtLeast(1)
+            val withoutCid = CID_TAG_REGEX.replace(raw, "").trim()
+            if (withoutCid.count { !it.isWhitespace() } < 12) return false
+            if ((cidCount * 7).toFloat() / rawNonWs.toFloat() > 0.06f) return false
+        }
 
-            // Extract text operators from uncompressed and FlateDecode-compressed PDF streams
-            val streamRegex = Regex("stream\\r?\\n([\\s\\S]*?)\\r?endstream")
-            for (match in streamRegex.findAll(rawLatin)) {
-                val streamContent = match.groupValues[1]
-                val streamBytes = streamContent.toByteArray(Charsets.ISO_8859_1)
-                val decodedStream = inflatePdfStreamIfPossible(streamBytes)
-                if (decodedStream != null) {
-                    extractTextFromPdfContentStream(decodedStream, collectedLines)
-                }
-                if (collectedLines.size >= maxLines) break
-            }
+        // 2. Check raw stream corruption ratio (PUA, replacement U+FFFD, control chars) before sanitization
+        val rawNonWs = raw.count { !it.isWhitespace() }.coerceAtLeast(1)
+        val rawCorruptCount = raw.count { ch ->
+            ch == '\uFFFD' ||
+                ch in '\uE000'..'\uF8FF' ||
+                (ch.code < 32 && ch != '\n' && ch != '\r' && ch != '\t')
+        }
+        if (rawCorruptCount.toFloat() / rawNonWs.toFloat() > 0.12f) {
+            return false
+        }
 
-            val rawResult = collectedLines.joinToString("\n\n").trim()
-            DocumentTextExtractor.sanitizeExtractedText(rawResult)
-        }.getOrDefault("")
-    }
+        // 3. Analyze sanitized text character distribution
+        val cleanNonWs = clean.count { !it.isWhitespace() }
+        if (cleanNonWs < 3) return false
 
-    private fun inflatePdfStreamIfPossible(bytes: ByteArray): String? {
-        for (nowrap in listOf(false, true)) {
-            val inflater = java.util.zip.Inflater(nowrap)
-            try {
-                inflater.setInput(bytes)
-                val output = java.io.ByteArrayOutputStream()
-                val buffer = ByteArray(4096)
-                var total = 0
-                while (!inflater.finished() && total < 1_048_576) {
-                    val count = inflater.inflate(buffer)
-                    if (count <= 0) break
-                    output.write(buffer, 0, count)
-                    total += count
-                }
-                if (output.size() > 0) {
-                    val decodedBytes = output.toByteArray()
-                    return try {
-                        val utf8 = String(decodedBytes, Charsets.UTF_8)
-                        if (utf8.contains('\uFFFD')) String(decodedBytes, Charsets.ISO_8859_1) else utf8
-                    } catch (_: Exception) {
-                        String(decodedBytes, Charsets.ISO_8859_1)
-                    }
-                }
-            } catch (_: Exception) {
-                // Not a zlib/deflate stream
-            } finally {
-                inflater.end()
+        var allowedLetters = 0
+        var digits = 0
+        var allowedPunct = 0
+        var unknownChars = 0
+
+        for (ch in clean) {
+            if (ch.isWhitespace()) continue
+            when {
+                ch in 'A'..'Z' || ch in 'a'..'z' || TURKISH_SPECIAL_LETTERS.indexOf(ch) >= 0 -> allowedLetters++
+                ch in '0'..'9' -> digits++
+                STANDARD_SYMBOLS.indexOf(ch) >= 0 -> allowedPunct++
+                else -> unknownChars++
             }
         }
-        return null
-    }
 
-    private val BT_ET_REGEX = Regex("""BT([\s\S]*?)ET""")
-    private val TJ_ARRAY_REGEX = Regex("""\[([\s\S]*?)\]\s*TJ""")
-    private val TJ_SINGLE_REGEX = Regex("""\(([^()\\]*(?:\\.[^()\\]*)*)\)\s*(?:Tj|'|")""")
-    private val TJ_HEX_REGEX = Regex("""<([0-9A-Fa-f]{4,})>\s*Tj""")
-    private val PAREN_TOKEN_REGEX = Regex("""\(([^()\\]*(?:\\.[^()\\]*)*)\)""")
-    private val VOWEL_CHECK_REGEX = Regex("""[aeıioöuüAEIİOÖUÜ]""")
+        if (allowedLetters < 2) return false
+        if (unknownChars.toFloat() / cleanNonWs.toFloat() > 0.12f) return false
+        if ((allowedLetters + digits).toFloat() / cleanNonWs.toFloat() < 0.45f) return false
 
-    private fun extractTextFromPdfContentStream(streamText: String, out: MutableList<String>) {
-        if (!streamText.contains("BT") || !streamText.contains("ET")) return
+        // 4. Word-level noise and Turkish/Latin vowel presence check
+        val tokens = clean.split(WHITESPACE_SPLIT_REGEX).filter { it.isNotEmpty() }
+        if (tokens.size >= 4) {
+            val noisyWordCount = tokens.count { INTRA_WORD_NOISE_REGEX.containsMatchIn(it) }
+            if (noisyWordCount >= 2 && noisyWordCount.toFloat() / tokens.size.toFloat() >= 0.12f) {
+                return false
+            }
+        }
 
-        for (block in BT_ET_REGEX.findAll(streamText)) {
-            val blockBody = block.groupValues[1]
-            val lineBuilder = StringBuilder()
-
-            // 1. Process array text operators: [(Text) -10 (More)] TJ
-            for (arrayMatch in TJ_ARRAY_REGEX.findAll(blockBody)) {
-                val arrayContent = arrayMatch.groupValues[1]
-                for (strToken in PAREN_TOKEN_REGEX.findAll(arrayContent)) {
-                    val decoded = decodePdfParenString(strToken.groupValues[1])
-                    if (decoded.isNotBlank()) {
-                        if (lineBuilder.isNotEmpty() && !lineBuilder.endsWith(" ")) lineBuilder.append(" ")
-                        lineBuilder.append(decoded)
+        val regularWords = mutableListOf<String>()
+        for (token in tokens) {
+            val lettersOnly = buildString {
+                for (ch in token) {
+                    if (ch in 'A'..'Z' || ch in 'a'..'z' || TURKISH_SPECIAL_LETTERS.indexOf(ch) >= 0) {
+                        append(ch)
                     }
                 }
             }
-
-            // 2. Process single string text operators: (Text) Tj
-            if (lineBuilder.isEmpty()) {
-                for (singleMatch in TJ_SINGLE_REGEX.findAll(blockBody)) {
-                    val decoded = decodePdfParenString(singleMatch.groupValues[1])
-                    if (decoded.isNotBlank()) {
-                        if (lineBuilder.isNotEmpty() && !lineBuilder.endsWith(" ")) lineBuilder.append(" ")
-                        lineBuilder.append(decoded)
-                    }
+            if (lettersOnly.length >= 3) {
+                // Skip short ALL-CAPS acronyms like YKS, AYT, TYT, PDF, DNA
+                val isShortAcronym = lettersOnly.length <= 5 && lettersOnly.all { it.isUpperCase() }
+                if (!isShortAcronym) {
+                    regularWords.add(lettersOnly)
                 }
             }
-
-            // 3. Process hex text operators: <00480065006C006C006F> Tj
-            if (lineBuilder.isEmpty()) {
-                for (hexMatch in TJ_HEX_REGEX.findAll(blockBody)) {
-                    val hexStr = hexMatch.groupValues[1]
-                    val decoded = decodePdfHexString(hexStr)
-                    if (decoded.isNotBlank()) {
-                        if (lineBuilder.isNotEmpty() && !lineBuilder.endsWith(" ")) lineBuilder.append(" ")
-                        lineBuilder.append(decoded)
-                    }
-                }
-            }
-
-            val cleaned = lineBuilder.toString().trim()
-            if (isValidPdfLine(cleaned)) {
-                out.add(cleaned)
-            }
-        }
-    }
-
-    private fun decodePdfParenString(raw: String): String {
-        var str = raw
-            .replace("\\n", "\n")
-            .replace("\\r", " ")
-            .replace("\\t", " ")
-            .replace("\\(", "(")
-            .replace("\\)", ")")
-            .replace("\\\\", "\\")
-            .replace("\u0000", "")
-
-        // Handle octal escape codes e.g. \040 -> space, \101 -> 'A'
-        if (str.contains('\\')) {
-            str = Regex("""\\([0-7]{1,3})""").replace(str) { match ->
-                val oct = match.groupValues[1].toIntOrNull(8)
-                if (oct != null && oct in 32..255) oct.toChar().toString() else ""
-            }
         }
 
-        return str.trim()
-    }
-
-    private fun decodePdfHexString(hex: String): String {
-        if (hex.length < 4) return ""
-
-        val sb = StringBuilder()
-        // Check if UTF-16BE (length multiple of 4, alternate byte is 0x00 for ASCII or non-zero for Unicode)
-        if (hex.length % 4 == 0) {
-            var allValid = true
-            for (i in 0 until hex.length step 4) {
-                val b1 = hex.substring(i, i + 2).toIntOrNull(16) ?: 0
-                val b2 = hex.substring(i + 2, i + 4).toIntOrNull(16) ?: 0
-                val charCode = (b1 shl 8) or b2
-                if (charCode in 32..126 || charCode in 0x00A0..0x024F ||
-                    charCode in listOf(0x011E, 0x011F, 0x0130, 0x0131, 0x00D6, 0x00F6, 0x00DC, 0x00FC, 0x00C7, 0x00E7, 0x015E, 0x015F)
-                ) {
-                    sb.append(charCode.toChar())
-                } else if (charCode == 0) {
-                    // skip null
-                } else {
-                    allValid = false
-                    break
-                }
+        if (regularWords.size >= 4) {
+            val wordsWithVowels = regularWords.count { word ->
+                word.any { ch -> VOWEL_CHARS.indexOf(ch) >= 0 }
             }
-            if (allValid && sb.length >= 2) return sb.toString()
-        }
-
-        // Fallback: 2 hex digits per character (only if clean readable characters)
-        sb.clear()
-        if (hex.length % 2 == 0) {
-            for (i in 0 until hex.length step 2) {
-                val b = hex.substring(i, i + 2).toIntOrNull(16) ?: continue
-                if (b in 32..126) sb.append(b.toChar())
+            if (wordsWithVowels.toFloat() / regularWords.size.toFloat() < 0.55f) {
+                return false
             }
-        }
-        val result = sb.toString().trim()
-        return if (result.length >= 2 && VOWEL_CHECK_REGEX.containsMatchIn(result)) result else ""
-    }
-
-    private fun isValidPdfLine(line: String): Boolean {
-        if (line.length < 2) return false
-        val lower = line.lowercase()
-
-        // Filter out Postscript operator debris and PDF structural tokens
-        if (lower.startsWith("/f") && lower.contains("tf")) return false
-        if (lower.startsWith("obj") || lower.startsWith("endobj") || lower.startsWith("xref") || lower.startsWith("trailer")) return false
-        if (lower.startsWith("<<") || lower.startsWith(">>") || lower.startsWith("startxref") || lower.startsWith("%%eof")) return false
-        if (lower.matches(Regex("""^([0-9.-]+\s+)+(cm|re|rg|sc|cs|tm)\s*$"""))) return false
-
-        // Drop lines that are corrupted glyph symbol sequences (e.g. !#$%&'()*+,-./0123...)
-        if (line.length >= 8) {
-            val nonAlnum = line.count { !it.isLetterOrDigit() && !it.isWhitespace() }
-            if (nonAlnum.toFloat() / line.length >= 0.40f && !line.contains("=")) return false
-            if (line.length >= 12 && !VOWEL_CHECK_REGEX.containsMatchIn(line) && line.none { it.isDigit() }) return false
         }
 
         return true
     }
+
+    /**
+     * Extracts clean UTF-8 Turkish text from a PDF:
+     * 1. Initializes PDFBox and extracts text page-by-page using [PDFTextStripper].
+     * 2. Validates readability ([isExtractedTextReadable]); if empty or corrupted (e.g. broken `/ToUnicode` CMap),
+     *    falls back to rendering up to the first 10 pages via [PdfRenderer] and running offline ML Kit OCR.
+     * Never returns binary or garbled glyph dumps.
+     */
+    fun extractPdfPlainText(context: Context, pdfUri: Uri, maxLines: Int = 500): String {
+        ensurePdfBoxInitialized(context)
+
+        val (targetFile, deleteAfter) = resolveReadablePdfFile(context, pdfUri)
+        if (targetFile == null) return ""
+
+        try {
+            // 1. Primary pass: PDFBox page-by-page extraction
+            val pdfBoxResult = extractWithPdfBoxFile(targetFile, maxLines)
+            if (pdfBoxResult.isNotBlank()) {
+                return pdfBoxResult
+            }
+
+            // 2. Fallback pass: Render up to first 10 pages with PdfRenderer and run offline ML Kit OCR
+            Log.i(TAG, "PDFBox text was empty or unreadable for ${targetFile.name}, running ML Kit OCR fallback.")
+            val ocrRaw = extractPdfTextWithMlKitOcr(targetFile, maxPages = MAX_OCR_PAGES)
+            val ocrClean = DocumentTextExtractor.sanitizeExtractedText(ocrRaw)
+            return if (isExtractedTextReadable(ocrClean, ocrClean)) {
+                limitLines(ocrClean, maxLines)
+            } else {
+                ""
+            }
+        } catch (t: Throwable) {
+            if (t is OutOfMemoryError) System.gc()
+            Log.e(TAG, "extractPdfPlainText failed for $pdfUri", t)
+            return ""
+        } finally {
+            if (deleteAfter) {
+                runCatching { targetFile.delete() }
+            }
+        }
+    }
+
+    fun extractPdfPlainTextFromBytes(pdfBytes: ByteArray, maxLines: Int = 500): String {
+        if (pdfBytes.isEmpty()) return ""
+        return runCatching {
+            val rawBuilder = StringBuilder()
+            PDDocument.load(ByteArrayInputStream(pdfBytes)).use { document ->
+                val pageLimit = minOf(document.numberOfPages, MAX_PDFBOX_PAGES)
+                val stripper = PDFTextStripper().apply { sortByPosition = true }
+                for (pageNum in 1..pageLimit) {
+                    if (rawBuilder.length >= MAX_PDFBOX_CHARS) break
+                    runCatching {
+                        stripper.startPage = pageNum
+                        stripper.endPage = pageNum
+                        val pageText = stripper.getText(document)
+                        if (!pageText.isNullOrBlank()) {
+                            if (rawBuilder.isNotEmpty()) rawBuilder.append("\n\n")
+                            rawBuilder.append(pageText.trim())
+                        }
+                    }
+                }
+            }
+            val rawText = rawBuilder.toString()
+            val cleaned = DocumentTextExtractor.sanitizeExtractedText(rawText)
+            if (isExtractedTextReadable(rawText, cleaned)) {
+                limitLines(cleaned, maxLines)
+            } else {
+                ""
+            }
+        }.getOrElse { t ->
+            if (t is OutOfMemoryError) System.gc()
+            ""
+        }
+    }
+
+    private fun extractWithPdfBoxFile(pdfFile: File, maxLines: Int): String {
+        return runCatching {
+            val rawBuilder = StringBuilder()
+            PDDocument.load(pdfFile).use { document ->
+                val pageLimit = minOf(document.numberOfPages, MAX_PDFBOX_PAGES)
+                val stripper = PDFTextStripper().apply {
+                    sortByPosition = true
+                }
+                for (pageNum in 1..pageLimit) {
+                    if (rawBuilder.length >= MAX_PDFBOX_CHARS) break
+                    runCatching {
+                        stripper.startPage = pageNum
+                        stripper.endPage = pageNum
+                        val pageText = stripper.getText(document)
+                        if (!pageText.isNullOrBlank()) {
+                            if (rawBuilder.isNotEmpty()) rawBuilder.append("\n\n")
+                            rawBuilder.append(pageText.trim())
+                        }
+                    }.onFailure { e ->
+                        Log.w(TAG, "PDFBox failed on page $pageNum: ${e.message}")
+                    }
+                }
+            }
+            val rawText = rawBuilder.toString()
+            val cleaned = DocumentTextExtractor.sanitizeExtractedText(rawText)
+            if (isExtractedTextReadable(rawText, cleaned)) {
+                limitLines(cleaned, maxLines)
+            } else {
+                ""
+            }
+        }.getOrElse { t ->
+            if (t is OutOfMemoryError) System.gc()
+            Log.w(TAG, "PDDocument.load failed for ${pdfFile.name}: ${t.message}")
+            ""
+        }
+    }
+
+    private fun extractPdfTextWithMlKitOcr(pdfFile: File, maxPages: Int = MAX_OCR_PAGES): String {
+        if (!pdfFile.exists() || pdfFile.length() == 0L) return ""
+
+        // Ensure Tasks.await is never called on the UI main thread
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            val executor = Executors.newSingleThreadExecutor()
+            return try {
+                executor.submit<String> {
+                    performMlKitOcrSync(pdfFile, maxPages)
+                }.get(45L, TimeUnit.SECONDS)
+            } catch (t: Throwable) {
+                Log.w(TAG, "Executor ML Kit OCR failed: ${t.message}")
+                ""
+            } finally {
+                executor.shutdownNow()
+            }
+        }
+
+        return performMlKitOcrSync(pdfFile, maxPages)
+    }
+
+    private fun performMlKitOcrSync(pdfFile: File, maxPages: Int): String {
+        var pfd: ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        val ocrBuilder = StringBuilder()
+
+        try {
+            pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            renderer = PdfRenderer(pfd)
+            val pageLimit = minOf(renderer.pageCount, maxPages)
+
+            for (pageIndex in 0 until pageLimit) {
+                var page: PdfRenderer.Page? = null
+                var bitmap: Bitmap? = null
+                try {
+                    page = renderer.openPage(pageIndex)
+                    val srcW = page.width.coerceAtLeast(1)
+                    val srcH = page.height.coerceAtLeast(1)
+                    val targetW = minOf((srcW * 2).coerceAtLeast(1080), OCR_RENDER_WIDTH_PX)
+                    val targetH = ((srcH.toFloat() / srcW.toFloat()) * targetW.toFloat()).toInt().coerceAtLeast(1)
+
+                    bitmap = try {
+                        Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                    } catch (oom: OutOfMemoryError) {
+                        System.gc()
+                        val reducedW = 720
+                        val reducedH = ((srcH.toFloat() / srcW.toFloat()) * reducedW.toFloat()).toInt().coerceAtLeast(1)
+                        Bitmap.createBitmap(reducedW, reducedH, Bitmap.Config.ARGB_8888)
+                    }
+
+                    val canvas = Canvas(bitmap)
+                    canvas.drawColor(Color.WHITE)
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+                    val inputImage = InputImage.fromBitmap(bitmap, 0)
+                    val visionText = Tasks.await(recognizer.process(inputImage), 15L, TimeUnit.SECONDS)
+                    val recognized = visionText?.text?.trim().orEmpty()
+                    if (recognized.isNotBlank()) {
+                        if (ocrBuilder.isNotEmpty()) ocrBuilder.append("\n\n")
+                        ocrBuilder.append(recognized)
+                    }
+                } catch (t: Throwable) {
+                    if (t is OutOfMemoryError) System.gc()
+                    Log.w(TAG, "ML Kit OCR skipped page $pageIndex: ${t.message}")
+                } finally {
+                    runCatching { bitmap?.recycle() }
+                    runCatching { page?.close() }
+                }
+            }
+        } catch (t: Throwable) {
+            if (t is OutOfMemoryError) System.gc()
+            Log.e(TAG, "ML Kit OCR pipeline error", t)
+        } finally {
+            runCatching { recognizer.close() }
+            runCatching { renderer?.close() }
+            runCatching { pfd?.close() }
+        }
+
+        return ocrBuilder.toString().trim()
+    }
+
+    private fun limitLines(text: String, maxLines: Int): String {
+        if (maxLines <= 0 || text.isBlank()) return ""
+        val lines = text.lineSequence().toList()
+        return if (lines.size <= maxLines) {
+            text.trim()
+        } else {
+            lines.take(maxLines).joinToString("\n").trim()
+        }
+    }
 }
+

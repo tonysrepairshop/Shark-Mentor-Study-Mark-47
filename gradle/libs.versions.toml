@@ -17,6 +17,8 @@ room                     = "2.7.1"
 generativeai             = "0.9.0"
 coilCompose              = "2.6.0"
 playServicesBase         = "18.5.0"
+pdfboxAndroid            = "2.0.27.0"
+mlkitTextRecognition     = "16.0.1"
 
 [libraries]
 # Core & AppCompat
@@ -73,6 +75,10 @@ coil-compose                             = { group = "io.coil-kt",              
 
 # Google Play Services
 play-services-base                       = { group = "com.google.android.gms",     name = "play-services-base",     version.ref = "playServicesBase" }
+
+# PDFBox Android & Offline ML Kit OCR
+pdfbox-android                           = { group = "com.tom-roush",              name = "pdfbox-android",         version.ref = "pdfboxAndroid" }
+mlkit-text-recognition                   = { group = "com.google.mlkit",           name = "text-recognition",       version.ref = "mlkitTextRecognition" }
 
 [plugins]
 android-application = { id = "com.android.application",             version.ref = "agp" }
