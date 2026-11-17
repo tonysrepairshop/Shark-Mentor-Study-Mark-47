@@ -623,7 +623,7 @@ fun SharkAiScreen(
                                             viewModel.sendMessage("Mevcut net projeksiyonuma göre açığı kapatmak için hangi konulara öncelik vermeliyim?")
                                         }
                                     ) {
-                                        Text("Detaylı Analiz", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                        Text("Net Açığı Analizi", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                     }
                                 }
                             }

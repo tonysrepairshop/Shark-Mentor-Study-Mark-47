@@ -74,6 +74,10 @@
     
     <!-- CAMERA: Required for Error Bank photo capture -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Legacy external storage write access for lasso gallery export on Android 9 (API 28) -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:name=".SharkMentorApplication"

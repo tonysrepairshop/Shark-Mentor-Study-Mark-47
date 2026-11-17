@@ -95,6 +95,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material.icons.outlined.PushPin
@@ -169,8 +170,15 @@ import com.example.sharkmentor.data.local.entity.NoteEntity
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingCanvasOverlay
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
-import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStudioBar
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
+import com.example.sharkmentor.ui.screens.notes.drawing.PenLassoActionsPanel
+import com.example.sharkmentor.ui.screens.notes.drawing.PenPalmRejectionGlyph
+import com.example.sharkmentor.ui.screens.notes.drawing.PenRedoGlyph
+import com.example.sharkmentor.ui.screens.notes.drawing.PenShapePickerPanel
+import com.example.sharkmentor.ui.screens.notes.drawing.PenStrokeSettingsPanel
+import com.example.sharkmentor.ui.screens.notes.drawing.PenToolGlyph
+import com.example.sharkmentor.ui.screens.notes.drawing.PenUndoGlyph
+import com.example.sharkmentor.ui.screens.notes.drawing.StudioToolButton
 import com.example.sharkmentor.ui.screens.pdf.PdfReaderActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -238,6 +246,10 @@ enum class ActiveColorPanel {
     NONE, PEN, HIGHLIGHT
 }
 
+enum class ActivePenPanel {
+    NONE, SETTINGS, SHAPES, LASSO
+}
+
 enum class ToolbarDockState {
     BOTTOM, TOP, LEFT, RIGHT, FLOATING
 }
@@ -281,14 +293,15 @@ fun NoteDetailScreen(
     val isAiLoading by viewModel.isAiLoading.collectAsStateWithLifecycle()
     val aiError by viewModel.aiError.collectAsStateWithLifecycle()
     val aiSavedNewNoteId by viewModel.aiSavedNewNoteId.collectAsStateWithLifecycle()
+    val isVmNoteReady by viewModel.isNoteReady.collectAsStateWithLifecycle()
 
     val activeNoteId = noteId ?: initialNote?.id
     val drawingScope = rememberCoroutineScope()
-    var showDrawingStudioBar by rememberSaveable { mutableStateOf(false) }
-    var preservedPdfFileTag by remember(activeNoteId, initialContent) {
+    var activePenPanel by remember { mutableStateOf(ActivePenPanel.NONE) }
+    var preservedPdfFileTag by remember(activeNoteId, initialNote?.id, initialContent) {
         mutableStateOf(extractPdfFilePathFromContent(initialNote?.content ?: initialContent))
     }
-    var localPdfFilePath by remember(activeNoteId, incomingFileUri) {
+    var localPdfFilePath by remember(activeNoteId, initialNote?.id, initialContent, incomingFileUri) {
         mutableStateOf(
             extractPdfFilePathFromContent(initialNote?.content ?: initialContent)
                 ?: incomingFileUri
@@ -341,14 +354,20 @@ fun NoteDetailScreen(
     val noteMutedTextColor = if (isLightPaper) Color(0xFF64748B) else Color(0xFF94A3B8)
     val notePatternColor = if (isLightPaper) Color(0xFF0F172A).copy(alpha = 0.08f) else Color(0xFFFFFFFF).copy(alpha = 0.08f)
     val noteMarginLineColor = Color(0xFFEF4444).copy(alpha = if (isLightPaper) 0.35f else 0.25f)
+    val effectivePaperAccent = if (kotlin.math.abs(primaryColor.luminance() - effectiveBgColor.luminance()) > 0.25f) {
+        primaryColor
+    } else {
+        noteTextColor
+    }
 
+    val isLightHeaderSurface = surfaceColor.luminance() > 0.5f
     val view = LocalView.current
-    DisposableEffect(isLightPaper) {
+    DisposableEffect(isLightHeaderSurface) {
         val window = (view.context as? Activity)?.window
         if (window != null) {
             val insetsController = WindowCompat.getInsetsController(window, view)
             val prevLightStatus = insetsController.isAppearanceLightStatusBars
-            insetsController.isAppearanceLightStatusBars = isLightPaper
+            insetsController.isAppearanceLightStatusBars = isLightHeaderSurface
             onDispose {
                 insetsController.isAppearanceLightStatusBars = prevLightStatus
             }
@@ -361,14 +380,16 @@ fun NoteDetailScreen(
     var showPageStyleDialog by remember { mutableStateOf(false) }
     var showStatsDialog by remember { mutableStateOf(false) }
 
-    var pdfPreviewBitmap by remember(incomingFileUri, initialPdfPreview) {
+    var pdfPreviewBitmap by remember(activeNoteId, initialNote?.id, incomingFileUri, initialPdfPreview) {
         mutableStateOf(initialPdfPreview)
     }
 
-    var pdfPagePaths by remember(activeNoteId, incomingFileUri, initialPdfPagePaths) {
+    var pdfPagePaths by remember(activeNoteId, initialNote?.id, incomingFileUri, initialPdfPagePaths) {
         val fromTags = extractPdfPagePathsFromContent(initialNote?.content ?: initialContent)
         mutableStateOf((initialPdfPagePaths + fromTags).distinct())
     }
+    var activePdfPageIndex by remember { mutableStateOf(0) }
+    var isPdfPreviewExpanded by remember { mutableStateOf(true) }
 
     val initialCleanRaw = remember(activeNoteId, initialContent) {
         stripPdfPageTags(initialNote?.content ?: initialContent)
@@ -419,19 +440,44 @@ fun NoteDetailScreen(
     var dragPosition by remember { mutableStateOf(Offset.Zero) }
     var candidateBorder by remember { mutableStateOf<ToolbarDockState?>(null) }
 
+    LaunchedEffect(drawingController.hasActiveLasso, drawingController.activeTool) {
+        if (drawingController.activeTool == DrawingTool.LASSO && drawingController.hasActiveLasso) {
+            activePenPanel = ActivePenPanel.LASSO
+        }
+    }
+
+    val togglePenMode: () -> Unit = {
+        if (drawingController.isDrawingActive) {
+            drawingController.selectTool(DrawingTool.NONE)
+            activePenPanel = ActivePenPanel.NONE
+        } else {
+            drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+            isToolbarCollapsed = false
+            activeColorPanel = ActiveColorPanel.NONE
+        }
+    }
+
     LaunchedEffect(noteId, initialNote?.id) {
+        activePdfPageIndex = 0
         if (!noteId.isNullOrBlank()) {
+            pdfPreviewBitmap = null
+            pdfPagePaths = emptyList()
+            preservedPdfFileTag = null
+            localPdfFilePath = null
             isNoteLoaded = false
             viewModel.loadNoteById(noteId)
         } else if (initialNote != null || initialContent.isNotBlank() || initialTitle.isNotBlank()) {
             val rawContent = initialNote?.content ?: initialContent
             val extractedPaths = (initialPdfPagePaths + extractPdfPagePathsFromContent(rawContent)).distinct()
             pdfPagePaths = extractedPaths
+            pdfPreviewBitmap = initialPdfPreview
             val extractedPdfFile = extractPdfFilePathFromContent(rawContent)
-            if (extractedPdfFile != null) {
-                preservedPdfFileTag = extractedPdfFile
-                localPdfFilePath = extractedPdfFile
-            }
+            preservedPdfFileTag = extractedPdfFile
+            localPdfFilePath = extractedPdfFile
+                ?: incomingFileUri
+                    ?.takeIf { it.scheme == ContentResolver.SCHEME_FILE }
+                    ?.path
+                    ?.takeIf { it.endsWith(".pdf", ignoreCase = true) && File(it).exists() }
             val cleanDisplayRaw = stripPdfPageTags(rawContent)
             val parsed = NoteRichTextHelper.parseTaggedText(cleanDisplayRaw)
             val persistedContent = composeContentWithPdfPageTags(cleanDisplayRaw, extractedPaths, preservedPdfFileTag)
@@ -446,6 +492,13 @@ fun NoteDetailScreen(
             )
             isNoteLoaded = true
         } else {
+            pdfPagePaths = initialPdfPagePaths.distinct()
+            pdfPreviewBitmap = initialPdfPreview
+            preservedPdfFileTag = null
+            localPdfFilePath = incomingFileUri
+                ?.takeIf { it.scheme == ContentResolver.SCHEME_FILE }
+                ?.path
+                ?.takeIf { it.endsWith(".pdf", ignoreCase = true) && File(it).exists() }
             viewModel.initializeEmptyNote()
             noteFieldValue = TextFieldValue(
                 annotatedString = AnnotatedString(""),
@@ -455,17 +508,25 @@ fun NoteDetailScreen(
         }
     }
 
-    LaunchedEffect(vmContent) {
+    LaunchedEffect(vmNoteId, vmContent, isVmNoteReady) {
+        if (!noteId.isNullOrBlank() && (vmNoteId != noteId || !isVmNoteReady)) {
+            return@LaunchedEffect
+        }
         val extractedPaths = extractPdfPagePathsFromContent(vmContent)
-        if (extractedPaths.isNotEmpty() && (pdfPagePaths.isEmpty() || pdfPagePaths != extractedPaths)) {
+        if (!noteId.isNullOrBlank()) {
+            pdfPagePaths = extractedPaths
+        } else if (extractedPaths.isNotEmpty() && pdfPagePaths != extractedPaths) {
             pdfPagePaths = extractedPaths
         }
         val extractedPdfFile = extractPdfFilePathFromContent(vmContent)
         if (extractedPdfFile != null) {
             preservedPdfFileTag = extractedPdfFile
             localPdfFilePath = extractedPdfFile
+        } else if (!noteId.isNullOrBlank()) {
+            preservedPdfFileTag = null
+            localPdfFilePath = null
         }
-        if (!isNoteLoaded && vmContent.isNotBlank()) {
+        if (!isNoteLoaded) {
             val cleanVmRaw = stripPdfPageTags(vmContent)
             val parsed = NoteRichTextHelper.parseTaggedText(cleanVmRaw)
             noteFieldValue = TextFieldValue(
@@ -511,6 +572,14 @@ fun NoteDetailScreen(
         }
     }
 
+    val effectiveTitleColor = if (isLightPaper) {
+        Color(0xFF0F172A)
+    } else if (kotlin.math.abs(titleAccentColor.luminance() - effectiveBgColor.luminance()) > 0.35f) {
+        titleAccentColor
+    } else {
+        noteTextColor
+    }
+
     val chars = noteFieldValue.text.length
     val lineCount = remember(noteFieldValue.text) {
         if (noteFieldValue.text.isEmpty()) 1 else noteFieldValue.text.count { it == '\n' } + 1
@@ -535,9 +604,6 @@ fun NoteDetailScreen(
             count
         }
     }
-
-    var activePdfPageIndex by remember { mutableStateOf(0) }
-    var isPdfPreviewExpanded by remember { mutableStateOf(true) }
 
     var showAiSheet by remember { mutableStateOf(false) }
     var aiQueryText by remember { mutableStateOf("") }
@@ -708,7 +774,7 @@ fun NoteDetailScreen(
     BackHandler {
         if (drawingController.isDrawingActive) {
             drawingController.selectTool(DrawingTool.NONE)
-            showDrawingStudioBar = false
+            activePenPanel = ActivePenPanel.NONE
         } else {
             saveCurrentNote()
             onSave(vmTitle, NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString), colorHex, isPinned)
@@ -724,7 +790,7 @@ fun NoteDetailScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(effectiveBgColor)
+            .background(bgColor)
             .statusBarsPadding()
             .padding(bottom = effectiveBottomPadding)
     ) {
@@ -765,25 +831,13 @@ fun NoteDetailScreen(
                 }
             },
             actions = {
-                // Kalem & Çizim Stüdyosu Toggle
-                IconButton(
-                    onClick = {
-                        showDrawingStudioBar = !showDrawingStudioBar
-                        if (showDrawingStudioBar && drawingController.activeTool == DrawingTool.NONE) {
-                            drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
-                        } else if (!showDrawingStudioBar) {
-                            drawingController.selectTool(DrawingTool.NONE)
-                        }
-                    }
-                ) {
+                // Kalem Modu Toggle
+                val isPenActive = drawingController.isDrawingActive
+                IconButton(onClick = togglePenMode) {
                     Surface(
                         shape = CircleShape,
-                        color = if (showDrawingStudioBar || drawingController.isDrawingActive) {
-                            primaryColor.copy(alpha = 0.20f)
-                        } else {
-                            Color.Transparent
-                        },
-                        border = if (showDrawingStudioBar || drawingController.isDrawingActive) {
+                        color = if (isPenActive) primaryColor.copy(alpha = 0.20f) else Color.Transparent,
+                        border = if (isPenActive) {
                             androidx.compose.foundation.BorderStroke(1.dp, primaryColor)
                         } else null,
                         modifier = Modifier.size(32.dp)
@@ -791,8 +845,8 @@ fun NoteDetailScreen(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Edit,
-                                contentDescription = "Kalem ve Çizim Stüdyosu",
-                                tint = if (showDrawingStudioBar || drawingController.isDrawingActive) primaryColor else onSurfaceColor,
+                                contentDescription = if (isPenActive) "Metin Moduna Geç" else "Kalem Modu",
+                                tint = if (isPenActive) primaryColor else onSurfaceColor,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -873,7 +927,7 @@ fun NoteDetailScreen(
                         )
 
                         DropdownMenuItem(
-                            text = { Text(if (showDrawingStudioBar) "Çizim Stüdyosunu Kapat" else "Kalem & Çizim Stüdyosu") },
+                            text = { Text(if (drawingController.isDrawingActive) "Metin Moduna Geç" else "Kalem Araçları") },
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Default.Edit,
@@ -884,12 +938,7 @@ fun NoteDetailScreen(
                             },
                             onClick = {
                                 showMoreMenu = false
-                                showDrawingStudioBar = !showDrawingStudioBar
-                                if (showDrawingStudioBar && drawingController.activeTool == DrawingTool.NONE) {
-                                    drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
-                                } else if (!showDrawingStudioBar) {
-                                    drawingController.selectTool(DrawingTool.NONE)
-                                }
+                                togglePenMode()
                             }
                         )
 
@@ -1029,30 +1078,18 @@ fun NoteDetailScreen(
                         Icon(
                             imageVector = Icons.Default.Menu,
                             contentDescription = "Yan Panel",
-                            tint = noteTextColor
+                            tint = onSurfaceColor
                         )
                     }
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = if (isLightPaper) effectiveBgColor else surfaceColor,
-                titleContentColor = noteTextColor,
-                navigationIconContentColor = noteTextColor,
-                actionIconContentColor = primaryColor
+                containerColor = surfaceColor,
+                titleContentColor = onSurfaceColor,
+                navigationIconContentColor = onSurfaceColor,
+                actionIconContentColor = onSurfaceColor
             )
         )
-
-        // Expandable Drawing & Pen Studio Toolbar
-        AnimatedVisibility(visible = showDrawingStudioBar) {
-            DrawingStudioBar(
-                controller = drawingController,
-                onCloseStudio = {
-                    showDrawingStudioBar = false
-                    drawingController.selectTool(DrawingTool.NONE)
-                },
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-            )
-        }
 
         // Movable Toolbar & Editor Area
         BoxWithConstraints(
@@ -1102,6 +1139,7 @@ fun NoteDetailScreen(
 
             fun startExpandedToolbarDrag(touchOffset: Offset) {
                 activeColorPanel = ActiveColorPanel.NONE
+                activePenPanel = ActivePenPanel.NONE
                 val isVert = dockState == ToolbarDockState.LEFT || dockState == ToolbarDockState.RIGHT
                 val curW = if (isVert) with(density) { 54.dp.toPx() } else if (dockState == ToolbarDockState.FLOATING) with(density) { 350.dp.toPx() } else minOf(screenWidthPx, with(density) { 760.dp.toPx() })
                 val curH = if (isVert) with(density) { 410.dp.toPx() } else with(density) { 56.dp.toPx() }
@@ -1267,6 +1305,7 @@ fun NoteDetailScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .background(effectiveBgColor)
                     .pointerInput(drawingController.isDrawingActive) {
                         if (!drawingController.isDrawingActive) return@pointerInput
                         awaitPointerEventScope {
@@ -1389,9 +1428,9 @@ fun NoteDetailScreen(
                             textStyle = TextStyle(
                                 fontSize = 24.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isLightPaper) Color(0xFF0F172A) else titleAccentColor
+                                color = effectiveTitleColor
                             ),
-                            cursorBrush = SolidColor(if (isLightPaper) primaryColor else titleAccentColor),
+                            cursorBrush = SolidColor(effectivePaperAccent),
                             modifier = Modifier.fillMaxWidth(),
                             decorationBox = { innerTextField ->
                                 if (vmTitle.isEmpty()) {
@@ -1685,7 +1724,7 @@ fun NoteDetailScreen(
                             },
                             onTextLayout = { textLayoutResult = it },
                             textStyle = bodyTextStyle,
-                            cursorBrush = SolidColor(primaryColor),
+                            cursorBrush = SolidColor(effectivePaperAccent),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = minBodyHeight)
@@ -1747,7 +1786,7 @@ fun NoteDetailScreen(
                         Text(
                             text = "$words kelime | $chars karakter",
                             style = MaterialTheme.typography.bodySmall,
-                            color = textMutedColor
+                            color = noteMutedTextColor
                         )
                     }
                 }
@@ -1833,6 +1872,7 @@ fun NoteDetailScreen(
                 }
 
                 CollapsedToolbarBubble(
+                    isPenModeActive = drawingController.isDrawingActive,
                     modifier = bubbleModifier,
                     onExpand = { isToolbarCollapsed = false }
                 )
@@ -1879,6 +1919,7 @@ fun NoteDetailScreen(
                     modifier = currentToolbarModifier,
                     dockState = if (isVertNow) (if (candidateBorder == ToolbarDockState.RIGHT || (candidateBorder == null && dockState == ToolbarDockState.RIGHT)) ToolbarDockState.RIGHT else ToolbarDockState.LEFT) else dockState,
                     dragModifier = toolbarDragModifier,
+                    drawingController = drawingController,
                     onCollapse = { isToolbarCollapsed = true },
                     highlightIntensity = highlightIntensity,
                     onHighlightIntensityChanged = handleHighlightIntensityChanged,
@@ -1892,9 +1933,31 @@ fun NoteDetailScreen(
                     isCheckboxActive = isCheckboxActive,
                     isCheckboxChecked = isCheckboxChecked,
                     activeColorPanel = activeColorPanel,
+                    activePenPanel = activePenPanel,
                     customColors = userCustomColors,
+                    onSelectTextMode = {
+                        drawingController.selectTool(DrawingTool.NONE)
+                        activePenPanel = ActivePenPanel.NONE
+                    },
+                    onSelectPenMode = {
+                        if (!drawingController.isDrawingActive) {
+                            drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                        }
+                        activeColorPanel = ActiveColorPanel.NONE
+                    },
                     onToggleColorPanel = { panel ->
-                        activeColorPanel = if (activeColorPanel == panel) ActiveColorPanel.NONE else panel
+                        activeColorPanel = if (panel == ActiveColorPanel.NONE || activeColorPanel == panel) {
+                            ActiveColorPanel.NONE
+                        } else {
+                            panel
+                        }
+                    },
+                    onTogglePenPanel = { panel ->
+                        activePenPanel = if (panel == ActivePenPanel.NONE || activePenPanel == panel) {
+                            ActivePenPanel.NONE
+                        } else {
+                            panel
+                        }
                     },
                     onColorSelected = handleColorSelected,
                     onHighlightSelected = handleHighlightSelected,
@@ -1910,7 +1973,9 @@ fun NoteDetailScreen(
                     onUnderlineToggled = onUnderlineToggled
                 )
 
-                if ((dockState == ToolbarDockState.LEFT || dockState == ToolbarDockState.RIGHT) && activeColorPanel != ActiveColorPanel.NONE && !isDragging) {
+                val showSideTextPanel = !drawingController.isDrawingActive && activeColorPanel != ActiveColorPanel.NONE
+                val showSidePenPanel = drawingController.isDrawingActive && activePenPanel != ActivePenPanel.NONE
+                if ((dockState == ToolbarDockState.LEFT || dockState == ToolbarDockState.RIGHT) && (showSideTextPanel || showSidePenPanel) && !isDragging) {
                     val panelX = if (dockState == ToolbarDockState.LEFT) with(density) { 60.dp.toPx() } else (screenWidthPx - with(density) { 330.dp.toPx() }).coerceAtLeast(0f)
                     val panelY = effectiveVerticalY.coerceIn(0f, (screenHeightPx - with(density) { 260.dp.toPx() }).coerceAtLeast(0f))
                     Box(
@@ -1925,27 +1990,45 @@ fun NoteDetailScreen(
                             tonalElevation = 6.dp,
                             border = androidx.compose.foundation.BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.15f))
                         ) {
-                            FormattingColorPanel(
-                                activeColorPanel = activeColorPanel,
-                                selectedColor = selectedTextColor,
-                                selectedHighlightColor = selectedHighlightColor,
-                                highlightIntensity = highlightIntensity,
-                                onHighlightIntensityChanged = handleHighlightIntensityChanged,
-                                customColors = userCustomColors,
-                                onToggleColorPanel = { panel ->
-                                    activeColorPanel = if (activeColorPanel == panel) ActiveColorPanel.NONE else panel
-                                },
-                                onColorSelected = handleColorSelected,
-                                onHighlightSelected = handleHighlightSelected,
-                                onOpenCustomColorPicker = { isHighlight ->
-                                    customColorIsHighlight = isHighlight
-                                    showCustomColorDialog = true
-                                },
-                                primaryColor = primaryColor,
-                                onSurfaceColor = onSurfaceColor,
-                                surfaceColor = surfaceColor,
-                                colorScheme = colorScheme
-                            )
+                            if (showSideTextPanel) {
+                                FormattingColorPanel(
+                                    activeColorPanel = activeColorPanel,
+                                    selectedColor = selectedTextColor,
+                                    selectedHighlightColor = selectedHighlightColor,
+                                    highlightIntensity = highlightIntensity,
+                                    onHighlightIntensityChanged = handleHighlightIntensityChanged,
+                                    customColors = userCustomColors,
+                                    onToggleColorPanel = { panel ->
+                                        activeColorPanel = if (activeColorPanel == panel) ActiveColorPanel.NONE else panel
+                                    },
+                                    onColorSelected = handleColorSelected,
+                                    onHighlightSelected = handleHighlightSelected,
+                                    onOpenCustomColorPicker = { isHighlight ->
+                                        customColorIsHighlight = isHighlight
+                                        showCustomColorDialog = true
+                                    },
+                                    primaryColor = primaryColor,
+                                    onSurfaceColor = onSurfaceColor,
+                                    surfaceColor = surfaceColor,
+                                    colorScheme = colorScheme
+                                )
+                            } else {
+                                when (activePenPanel) {
+                                    ActivePenPanel.SETTINGS -> PenStrokeSettingsPanel(
+                                        controller = drawingController,
+                                        onDismiss = { activePenPanel = ActivePenPanel.NONE }
+                                    )
+                                    ActivePenPanel.SHAPES -> PenShapePickerPanel(
+                                        controller = drawingController,
+                                        onDismiss = { activePenPanel = ActivePenPanel.NONE }
+                                    )
+                                    ActivePenPanel.LASSO -> PenLassoActionsPanel(
+                                        controller = drawingController,
+                                        onDismiss = { activePenPanel = ActivePenPanel.NONE }
+                                    )
+                                    ActivePenPanel.NONE -> {}
+                                }
+                            }
                         }
                     }
                 }
@@ -2173,8 +2256,9 @@ fun NoteDetailScreen(
                     }
 
                     Surface(
-                        color = effectiveBgColor,
+                        color = colorScheme.surfaceVariant.copy(alpha = 0.55f),
                         shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.10f)),
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 380.dp)
@@ -2304,6 +2388,7 @@ private fun VerticalDragHandleView(modifier: Modifier = Modifier) {
 
 @Composable
 fun CollapsedToolbarBubble(
+    isPenModeActive: Boolean = false,
     modifier: Modifier = Modifier,
     onExpand: () -> Unit = {}
 ) {
@@ -2330,7 +2415,7 @@ fun CollapsedToolbarBubble(
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                imageVector = Icons.Default.BorderColor,
+                imageVector = if (isPenModeActive) Icons.Default.Edit else Icons.Default.BorderColor,
                 contentDescription = "Araç Çubuğunu Aç",
                 tint = primaryColor,
                 modifier = Modifier.size(20.dp)
@@ -2350,6 +2435,7 @@ fun CollapsedToolbarBubble(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RichTextFormattingToolbar(
+    drawingController: DrawingController,
     selectedColor: Color?,
     selectedHighlightColor: Color?,
     isBoldActive: Boolean,
@@ -2360,12 +2446,16 @@ fun RichTextFormattingToolbar(
     isCheckboxActive: Boolean,
     isCheckboxChecked: Boolean,
     activeColorPanel: ActiveColorPanel,
+    activePenPanel: ActivePenPanel,
     customColors: List<Color>,
     dockState: ToolbarDockState = ToolbarDockState.BOTTOM,
     highlightIntensity: Float = 0.60f,
     onHighlightIntensityChanged: (Float) -> Unit = {},
     onCollapse: () -> Unit = {},
+    onSelectTextMode: () -> Unit = {},
+    onSelectPenMode: () -> Unit = {},
     onToggleColorPanel: (ActiveColorPanel) -> Unit,
+    onTogglePenPanel: (ActivePenPanel) -> Unit,
     onColorSelected: (Color) -> Unit,
     onHighlightSelected: (Color?) -> Unit,
     onOpenCustomColorPicker: (isHighlight: Boolean) -> Unit,
@@ -2385,6 +2475,8 @@ fun RichTextFormattingToolbar(
     val isImeOpen = WindowInsets.isImeVisible
 
     val isVertical = dockState == ToolbarDockState.LEFT || dockState == ToolbarDockState.RIGHT
+    val isPenMode = drawingController.isDrawingActive
+    val activeDrawTool = drawingController.activeTool
 
     val shape = when (dockState) {
         ToolbarDockState.BOTTOM -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -2396,10 +2488,10 @@ fun RichTextFormattingToolbar(
 
     val border = when (dockState) {
         ToolbarDockState.FLOATING -> androidx.compose.foundation.BorderStroke(1.dp, primaryColor.copy(alpha = 0.4f))
-        ToolbarDockState.TOP -> androidx.compose.foundation.BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.12f))
-        ToolbarDockState.LEFT -> androidx.compose.foundation.BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.12f))
-        ToolbarDockState.RIGHT -> androidx.compose.foundation.BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.12f))
-        ToolbarDockState.BOTTOM -> null
+        ToolbarDockState.BOTTOM,
+        ToolbarDockState.TOP,
+        ToolbarDockState.LEFT,
+        ToolbarDockState.RIGHT -> androidx.compose.foundation.BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.14f))
     }
 
     Surface(
@@ -2415,11 +2507,12 @@ fun RichTextFormattingToolbar(
             Column(
                 modifier = Modifier
                     .width(54.dp)
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
                     .padding(vertical = 6.dp, horizontal = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Drag handle (long press to drag)
                 Surface(
                     color = Color.Transparent,
                     modifier = Modifier.then(dragModifier)
@@ -2427,11 +2520,10 @@ fun RichTextFormattingToolbar(
                     VerticalDragHandleView()
                 }
 
-                // Minimize / Collapse button
                 Surface(
                     shape = CircleShape,
                     color = Color.Transparent,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(30.dp)
                 ) {
                     IconButton(
                         onClick = onCollapse,
@@ -2439,139 +2531,338 @@ fun RichTextFormattingToolbar(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Paneli Küçült",
+                            contentDescription = "Küçült",
                             tint = onSurfaceColor.copy(alpha = 0.65f),
                             modifier = Modifier.size(16.dp)
                         )
                     }
                 }
 
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), color = onSurfaceColor.copy(alpha = 0.18f))
-
-                // Kalem / Vurgu symbol buttons (vertical)
-                ToolbarColorSymbolButton(
-                    label = "Yazı",
-                    currentColor = selectedColor ?: onSurfaceColor,
-                    isPanelOpen = activeColorPanel == ActiveColorPanel.PEN,
-                    isHighlight = false,
-                    isVertical = true,
-                    onClick = { onToggleColorPanel(ActiveColorPanel.PEN) },
-                    primaryColor = primaryColor,
-                    onSurfaceColor = onSurfaceColor
-                )
-
-                ToolbarColorSymbolButton(
-                    label = "Vurgu",
-                    currentColor = selectedHighlightColor,
-                    isPanelOpen = activeColorPanel == ActiveColorPanel.HIGHLIGHT,
-                    isHighlight = true,
-                    isVertical = true,
-                    onClick = { onToggleColorPanel(ActiveColorPanel.HIGHLIGHT) },
-                    primaryColor = primaryColor,
-                    onSurfaceColor = onSurfaceColor
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), color = onSurfaceColor.copy(alpha = 0.18f))
-
-                // Lists
-                ToolbarToggleButton(
-                    icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                    contentDescription = "Madde İşaretli Liste",
-                    isActive = isBulletActive,
-                    onClick = onBulletToggled,
-                    primaryColor = primaryColor,
-                    onSurfaceColor = onSurfaceColor
-                )
-
-                ToolbarToggleButton(
-                    icon = Icons.Default.FormatListNumbered,
-                    contentDescription = "Numaralı Liste",
-                    isActive = isNumberedActive,
-                    onClick = onNumberedToggled,
-                    primaryColor = primaryColor,
-                    onSurfaceColor = onSurfaceColor
-                )
-
-                ToolbarToggleButton(
-                    icon = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                    contentDescription = if (isCheckboxChecked) "Tamamlandı olarak işaretlendi" else "Yapılacaklar / İşaretleme",
-                    isActive = isCheckboxActive || isCheckboxChecked,
-                    onClick = onCheckboxToggled,
-                    primaryColor = if (isCheckboxChecked) Color(0xFF10B981) else primaryColor,
-                    onSurfaceColor = onSurfaceColor
-                )
+                // Vertical concise mode switcher ("Metin" <-> "Kalem")
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isPenMode) primaryColor.copy(alpha = 0.18f) else onSurfaceColor.copy(alpha = 0.08f),
+                    border = androidx.compose.foundation.BorderStroke(
+                        width = 1.dp,
+                        color = if (isPenMode) primaryColor else onSurfaceColor.copy(alpha = 0.2f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            if (isPenMode) onSelectTextMode() else onSelectPenMode()
+                        }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(vertical = 4.dp, horizontal = 2.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPenMode) Icons.Default.Edit else Icons.Default.BorderColor,
+                            contentDescription = if (isPenMode) "Metin Moduna Geç" else "Kalem Moduna Geç",
+                            tint = if (isPenMode) primaryColor else onSurfaceColor,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = if (isPenMode) "Kalem" else "Metin",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isPenMode) primaryColor else onSurfaceColor
+                        )
+                    }
+                }
 
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), color = onSurfaceColor.copy(alpha = 0.18f))
 
-                // Bold, Italic, Underline
-                ToolbarToggleButton(
-                    icon = Icons.Default.FormatBold,
-                    contentDescription = "Kalın (Bold)",
-                    isActive = isBoldActive,
-                    onClick = onBoldToggled,
-                    primaryColor = primaryColor,
-                    onSurfaceColor = onSurfaceColor
-                )
+                if (!isPenMode) {
+                    ToolbarColorSymbolButton(
+                        label = "Yazı",
+                        currentColor = selectedColor ?: onSurfaceColor,
+                        isPanelOpen = activeColorPanel == ActiveColorPanel.PEN,
+                        isHighlight = false,
+                        isVertical = true,
+                        onClick = { onToggleColorPanel(ActiveColorPanel.PEN) },
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor
+                    )
 
-                ToolbarToggleButton(
-                    icon = Icons.Default.FormatItalic,
-                    contentDescription = "İtalik (Italic)",
-                    isActive = isItalicActive,
-                    onClick = onItalicToggled,
-                    primaryColor = primaryColor,
-                    onSurfaceColor = onSurfaceColor
-                )
+                    ToolbarColorSymbolButton(
+                        label = "Vurgu",
+                        currentColor = selectedHighlightColor,
+                        isPanelOpen = activeColorPanel == ActiveColorPanel.HIGHLIGHT,
+                        isHighlight = true,
+                        isVertical = true,
+                        onClick = { onToggleColorPanel(ActiveColorPanel.HIGHLIGHT) },
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor
+                    )
 
-                ToolbarToggleButton(
-                    icon = Icons.Default.FormatUnderlined,
-                    contentDescription = "Altı Çizili (Underline)",
-                    isActive = isUnderlineActive,
-                    onClick = onUnderlineToggled,
-                    primaryColor = primaryColor,
-                    onSurfaceColor = onSurfaceColor
-                )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), color = onSurfaceColor.copy(alpha = 0.18f))
+
+                    ToolbarToggleButton(
+                        icon = Icons.AutoMirrored.Filled.FormatListBulleted,
+                        contentDescription = "Madde İşaretli Liste",
+                        isActive = isBulletActive,
+                        onClick = onBulletToggled,
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor
+                    )
+
+                    ToolbarToggleButton(
+                        icon = Icons.Default.FormatListNumbered,
+                        contentDescription = "Numaralı Liste",
+                        isActive = isNumberedActive,
+                        onClick = onNumberedToggled,
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor
+                    )
+
+                    ToolbarToggleButton(
+                        icon = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                        contentDescription = "Onay Kutusu",
+                        isActive = isCheckboxActive || isCheckboxChecked,
+                        onClick = onCheckboxToggled,
+                        primaryColor = if (isCheckboxChecked) Color(0xFF10B981) else primaryColor,
+                        onSurfaceColor = onSurfaceColor
+                    )
+
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), color = onSurfaceColor.copy(alpha = 0.18f))
+
+                    ToolbarToggleButton(
+                        icon = Icons.Default.FormatBold,
+                        contentDescription = "Kalın",
+                        isActive = isBoldActive,
+                        onClick = onBoldToggled,
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor
+                    )
+
+                    ToolbarToggleButton(
+                        icon = Icons.Default.FormatItalic,
+                        contentDescription = "İtalik",
+                        isActive = isItalicActive,
+                        onClick = onItalicToggled,
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor
+                    )
+
+                    ToolbarToggleButton(
+                        icon = Icons.Default.FormatUnderlined,
+                        contentDescription = "Altı Çizili",
+                        isActive = isUnderlineActive,
+                        onClick = onUnderlineToggled,
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor
+                    )
+                } else {
+                    PenVerticalToolButton(
+                        isSelected = activeDrawTool == DrawingTool.FOUNTAIN_PEN,
+                        accentColor = drawingController.penColor,
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                onTogglePenPanel(ActivePenPanel.NONE)
+                            }
+                            drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.FOUNTAIN_PEN, tint = tint) }
+
+                    PenVerticalToolButton(
+                        isSelected = activeDrawTool == DrawingTool.HIGHLIGHTER,
+                        accentColor = Color(0xFFFBC02D),
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                onTogglePenPanel(ActivePenPanel.NONE)
+                            }
+                            drawingController.selectTool(DrawingTool.HIGHLIGHTER)
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.HIGHLIGHTER, tint = tint) }
+
+                    PenVerticalToolButton(
+                        isSelected = activeDrawTool == DrawingTool.TECHNICAL_PEN,
+                        accentColor = drawingController.penColor,
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                onTogglePenPanel(ActivePenPanel.NONE)
+                            }
+                            drawingController.selectTool(DrawingTool.TECHNICAL_PEN)
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.TECHNICAL_PEN, tint = tint) }
+
+                    PenVerticalToolButton(
+                        isSelected = activeDrawTool == DrawingTool.UNDERLINE_MARKER,
+                        accentColor = drawingController.penColor,
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                onTogglePenPanel(ActivePenPanel.NONE)
+                            }
+                            drawingController.selectTool(DrawingTool.UNDERLINE_MARKER)
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.UNDERLINE_MARKER, tint = tint) }
+
+                    PenVerticalToolButton(
+                        isSelected = activeDrawTool == DrawingTool.STROKE_ERASER,
+                        accentColor = Color(0xFFEF4444),
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                onTogglePenPanel(ActivePenPanel.NONE)
+                            }
+                            drawingController.selectTool(DrawingTool.STROKE_ERASER)
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.STROKE_ERASER, tint = tint) }
+
+                    PenVerticalToolButton(
+                        isSelected = activeDrawTool == DrawingTool.AREA_ERASER,
+                        accentColor = Color(0xFFEF4444),
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                onTogglePenPanel(ActivePenPanel.NONE)
+                            }
+                            drawingController.selectTool(DrawingTool.AREA_ERASER)
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.AREA_ERASER, tint = tint) }
+
+                    PenVerticalToolButton(
+                        isSelected = activeDrawTool.isShapeTool || activePenPanel == ActivePenPanel.SHAPES,
+                        accentColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (!activeDrawTool.isShapeTool) {
+                                drawingController.selectTool(DrawingTool.SHAPE_RECTANGLE)
+                            }
+                            onTogglePenPanel(ActivePenPanel.SHAPES)
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.SHAPE_RECTANGLE, tint = tint) }
+
+                    PenVerticalToolButton(
+                        isSelected = activeDrawTool == DrawingTool.LASSO,
+                        accentColor = Color(0xFF0288D1),
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (activeDrawTool != DrawingTool.LASSO) {
+                                drawingController.selectTool(DrawingTool.LASSO)
+                            } else {
+                                onTogglePenPanel(ActivePenPanel.LASSO)
+                            }
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.LASSO, tint = tint) }
+
+                    PenVerticalToolButton(
+                        isSelected = drawingController.stylusOnlyMode,
+                        accentColor = Color(0xFF10B981),
+                        onSurfaceColor = onSurfaceColor,
+                        primaryColor = primaryColor,
+                        onClick = { drawingController.toggleStylusOnlyMode() }
+                    ) { tint -> PenPalmRejectionGlyph(tint = tint) }
+
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), color = onSurfaceColor.copy(alpha = 0.18f))
+
+                    IconButton(
+                        onClick = { onTogglePenPanel(ActivePenPanel.SETTINGS) },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (activePenPanel == ActivePenPanel.SETTINGS) Icons.Default.Tune else Icons.Default.Palette,
+                                contentDescription = "Kalem Ayarları",
+                                tint = if (activePenPanel == ActivePenPanel.SETTINGS) primaryColor else onSurfaceColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(drawingController.penColor)
+                                    .border(1.dp, surfaceColor, CircleShape)
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { drawingController.undo() },
+                        enabled = drawingController.canUndo,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        PenUndoGlyph(
+                            tint = if (drawingController.canUndo) onSurfaceColor else onSurfaceColor.copy(alpha = 0.3f)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { drawingController.redo() },
+                        enabled = drawingController.canRedo,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        PenRedoGlyph(
+                            tint = if (drawingController.canRedo) onSurfaceColor else onSurfaceColor.copy(alpha = 0.3f)
+                        )
+                    }
+
+                    if (drawingController.strokes.isNotEmpty()) {
+                        IconButton(
+                            onClick = { drawingController.clearAll() },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Çizimleri Temizle",
+                                tint = colorScheme.error.copy(alpha = 0.8f),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
             }
         } else {
             // HORIZONTAL TOOLBAR (BOTTOM, TOP, FLOATING)
             Column(modifier = Modifier.fillMaxWidth()) {
-                // Expanding color panel ABOVE main row when docked at BOTTOM
                 if (dockState == ToolbarDockState.BOTTOM) {
-                    AnimatedVisibility(
-                        visible = activeColorPanel != ActiveColorPanel.NONE,
-                        enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
-                        exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()
-                    ) {
-                        FormattingColorPanel(
-                            activeColorPanel = activeColorPanel,
-                            selectedColor = selectedColor,
-                            selectedHighlightColor = selectedHighlightColor,
-                            highlightIntensity = highlightIntensity,
-                            onHighlightIntensityChanged = onHighlightIntensityChanged,
-                            customColors = customColors,
-                            onToggleColorPanel = onToggleColorPanel,
-                            onColorSelected = onColorSelected,
-                            onHighlightSelected = onHighlightSelected,
-                            onOpenCustomColorPicker = onOpenCustomColorPicker,
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor,
-                            surfaceColor = surfaceColor,
-                            colorScheme = colorScheme
-                        )
-                    }
-                    if (activeColorPanel != ActiveColorPanel.NONE) {
-                        HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.12f))
-                    }
+                    HorizontalToolbarSubPanels(
+                        isPenMode = isPenMode,
+                        drawingController = drawingController,
+                        activeColorPanel = activeColorPanel,
+                        activePenPanel = activePenPanel,
+                        selectedColor = selectedColor,
+                        selectedHighlightColor = selectedHighlightColor,
+                        highlightIntensity = highlightIntensity,
+                        onHighlightIntensityChanged = onHighlightIntensityChanged,
+                        customColors = customColors,
+                        onToggleColorPanel = onToggleColorPanel,
+                        onTogglePenPanel = onTogglePenPanel,
+                        onColorSelected = onColorSelected,
+                        onHighlightSelected = onHighlightSelected,
+                        onOpenCustomColorPicker = onOpenCustomColorPicker,
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor,
+                        surfaceColor = surfaceColor,
+                        colorScheme = colorScheme,
+                        expandFromTop = false
+                    )
                 }
 
                 // Main horizontal toolbar row
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                        .padding(horizontal = 6.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    // Group 0: Drag Handle & Minimize
+                    // Pinned Left Cluster: Drag Handle + Collapse + Metin/Kalem Toggle
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)
@@ -2586,7 +2877,7 @@ fun RichTextFormattingToolbar(
                         Surface(
                             shape = CircleShape,
                             color = Color.Transparent,
-                            modifier = Modifier.size(30.dp)
+                            modifier = Modifier.size(28.dp)
                         ) {
                             IconButton(
                                 onClick = onCollapse,
@@ -2594,9 +2885,37 @@ fun RichTextFormattingToolbar(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "Paneli Küçült",
+                                    contentDescription = "Küçült",
                                     tint = onSurfaceColor.copy(alpha = 0.6f),
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                        }
+
+                        // Compact segmented switch: Metin | Kalem
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = onSurfaceColor.copy(alpha = 0.06f),
+                            border = androidx.compose.foundation.BorderStroke(0.8.dp, onSurfaceColor.copy(alpha = 0.14f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ToolbarModeChip(
+                                    label = "Metin",
+                                    isSelected = !isPenMode,
+                                    primaryColor = primaryColor,
+                                    onSurfaceColor = onSurfaceColor,
+                                    onClick = onSelectTextMode
+                                )
+                                ToolbarModeChip(
+                                    label = "Kalem",
+                                    isSelected = isPenMode,
+                                    primaryColor = primaryColor,
+                                    onSurfaceColor = onSurfaceColor,
+                                    onClick = onSelectPenMode
                                 )
                             }
                         }
@@ -2604,137 +2923,438 @@ fun RichTextFormattingToolbar(
 
                     VerticalDivider(modifier = Modifier.height(24.dp), color = onSurfaceColor.copy(alpha = 0.18f))
 
-                    // Group 1: Kalem & Vurgu
+                    // Scrollable Tools Area
                     Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .horizontalScroll(rememberScrollState()),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(if (isPenMode) 5.dp else 6.dp)
                     ) {
-                        ToolbarColorSymbolButton(
-                            label = "Yazı",
-                            currentColor = selectedColor ?: onSurfaceColor,
-                            isPanelOpen = activeColorPanel == ActiveColorPanel.PEN,
-                            isHighlight = false,
-                            onClick = { onToggleColorPanel(ActiveColorPanel.PEN) },
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor
-                        )
+                        if (!isPenMode) {
+                            ToolbarColorSymbolButton(
+                                label = "Yazı",
+                                currentColor = selectedColor ?: onSurfaceColor,
+                                isPanelOpen = activeColorPanel == ActiveColorPanel.PEN,
+                                isHighlight = false,
+                                onClick = { onToggleColorPanel(ActiveColorPanel.PEN) },
+                                primaryColor = primaryColor,
+                                onSurfaceColor = onSurfaceColor
+                            )
 
-                        ToolbarColorSymbolButton(
-                            label = "Vurgu",
-                            currentColor = selectedHighlightColor,
-                            isPanelOpen = activeColorPanel == ActiveColorPanel.HIGHLIGHT,
-                            isHighlight = true,
-                            onClick = { onToggleColorPanel(ActiveColorPanel.HIGHLIGHT) },
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor
-                        )
-                    }
+                            ToolbarColorSymbolButton(
+                                label = "Vurgu",
+                                currentColor = selectedHighlightColor,
+                                isPanelOpen = activeColorPanel == ActiveColorPanel.HIGHLIGHT,
+                                isHighlight = true,
+                                onClick = { onToggleColorPanel(ActiveColorPanel.HIGHLIGHT) },
+                                primaryColor = primaryColor,
+                                onSurfaceColor = onSurfaceColor
+                            )
 
-                    VerticalDivider(modifier = Modifier.height(24.dp), color = onSurfaceColor.copy(alpha = 0.18f))
+                            VerticalDivider(modifier = Modifier.height(22.dp), color = onSurfaceColor.copy(alpha = 0.16f))
 
-                    // Group 2: Lists
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        ToolbarToggleButton(
-                            icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                            contentDescription = "Madde İşaretli Liste",
-                            isActive = isBulletActive,
-                            onClick = onBulletToggled,
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor
-                        )
+                            ToolbarToggleButton(
+                                icon = Icons.AutoMirrored.Filled.FormatListBulleted,
+                                contentDescription = "Madde İşaretli Liste",
+                                isActive = isBulletActive,
+                                onClick = onBulletToggled,
+                                primaryColor = primaryColor,
+                                onSurfaceColor = onSurfaceColor
+                            )
 
-                        ToolbarToggleButton(
-                            icon = Icons.Default.FormatListNumbered,
-                            contentDescription = "Numaralı Liste",
-                            isActive = isNumberedActive,
-                            onClick = onNumberedToggled,
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor
-                        )
+                            ToolbarToggleButton(
+                                icon = Icons.Default.FormatListNumbered,
+                                contentDescription = "Numaralı Liste",
+                                isActive = isNumberedActive,
+                                onClick = onNumberedToggled,
+                                primaryColor = primaryColor,
+                                onSurfaceColor = onSurfaceColor
+                            )
 
-                        ToolbarToggleButton(
-                            icon = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                            contentDescription = if (isCheckboxChecked) "Tamamlandı olarak işaretlendi" else "Yapılacaklar / İşaretleme",
-                            isActive = isCheckboxActive || isCheckboxChecked,
-                            onClick = onCheckboxToggled,
-                            primaryColor = if (isCheckboxChecked) Color(0xFF10B981) else primaryColor,
-                            onSurfaceColor = onSurfaceColor
-                        )
-                    }
+                            ToolbarToggleButton(
+                                icon = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                contentDescription = "Onay Kutusu",
+                                isActive = isCheckboxActive || isCheckboxChecked,
+                                onClick = onCheckboxToggled,
+                                primaryColor = if (isCheckboxChecked) Color(0xFF10B981) else primaryColor,
+                                onSurfaceColor = onSurfaceColor
+                            )
 
-                    VerticalDivider(modifier = Modifier.height(24.dp), color = onSurfaceColor.copy(alpha = 0.18f))
+                            VerticalDivider(modifier = Modifier.height(22.dp), color = onSurfaceColor.copy(alpha = 0.16f))
 
-                    // Group 3: Formatting actions
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        ToolbarToggleButton(
-                            icon = Icons.Default.FormatBold,
-                            contentDescription = "Kalın (Bold)",
-                            isActive = isBoldActive,
-                            onClick = onBoldToggled,
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor
-                        )
+                            ToolbarToggleButton(
+                                icon = Icons.Default.FormatBold,
+                                contentDescription = "Kalın",
+                                isActive = isBoldActive,
+                                onClick = onBoldToggled,
+                                primaryColor = primaryColor,
+                                onSurfaceColor = onSurfaceColor
+                            )
 
-                        ToolbarToggleButton(
-                            icon = Icons.Default.FormatItalic,
-                            contentDescription = "İtalik (Italic)",
-                            isActive = isItalicActive,
-                            onClick = onItalicToggled,
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor
-                        )
+                            ToolbarToggleButton(
+                                icon = Icons.Default.FormatItalic,
+                                contentDescription = "İtalik",
+                                isActive = isItalicActive,
+                                onClick = onItalicToggled,
+                                primaryColor = primaryColor,
+                                onSurfaceColor = onSurfaceColor
+                            )
 
-                        ToolbarToggleButton(
-                            icon = Icons.Default.FormatUnderlined,
-                            contentDescription = "Altı Çizili (Underline)",
-                            isActive = isUnderlineActive,
-                            onClick = onUnderlineToggled,
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor
-                        )
+                            ToolbarToggleButton(
+                                icon = Icons.Default.FormatUnderlined,
+                                contentDescription = "Altı Çizili",
+                                isActive = isUnderlineActive,
+                                onClick = onUnderlineToggled,
+                                primaryColor = primaryColor,
+                                onSurfaceColor = onSurfaceColor
+                            )
+                        } else {
+                            StudioToolButton(
+                                label = "Dolma",
+                                isSelected = activeDrawTool == DrawingTool.FOUNTAIN_PEN,
+                                accentColor = drawingController.penColor,
+                                onClick = {
+                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                        onTogglePenPanel(ActivePenPanel.NONE)
+                                    }
+                                    drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.FOUNTAIN_PEN, tint = tint) }
+
+                            StudioToolButton(
+                                label = "Fosforlu",
+                                isSelected = activeDrawTool == DrawingTool.HIGHLIGHTER,
+                                accentColor = Color(0xFFFBC02D),
+                                onClick = {
+                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                        onTogglePenPanel(ActivePenPanel.NONE)
+                                    }
+                                    drawingController.selectTool(DrawingTool.HIGHLIGHTER)
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.HIGHLIGHTER, tint = tint) }
+
+                            StudioToolButton(
+                                label = "Teknik",
+                                isSelected = activeDrawTool == DrawingTool.TECHNICAL_PEN,
+                                accentColor = drawingController.penColor,
+                                onClick = {
+                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                        onTogglePenPanel(ActivePenPanel.NONE)
+                                    }
+                                    drawingController.selectTool(DrawingTool.TECHNICAL_PEN)
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.TECHNICAL_PEN, tint = tint) }
+
+                            StudioToolButton(
+                                label = "Alt Çizgi",
+                                isSelected = activeDrawTool == DrawingTool.UNDERLINE_MARKER,
+                                accentColor = drawingController.penColor,
+                                onClick = {
+                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                        onTogglePenPanel(ActivePenPanel.NONE)
+                                    }
+                                    drawingController.selectTool(DrawingTool.UNDERLINE_MARKER)
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.UNDERLINE_MARKER, tint = tint) }
+
+                            StudioToolButton(
+                                label = "Çizgi Sil",
+                                isSelected = activeDrawTool == DrawingTool.STROKE_ERASER,
+                                accentColor = Color(0xFFEF4444),
+                                onClick = {
+                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                        onTogglePenPanel(ActivePenPanel.NONE)
+                                    }
+                                    drawingController.selectTool(DrawingTool.STROKE_ERASER)
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.STROKE_ERASER, tint = tint) }
+
+                            StudioToolButton(
+                                label = "Alan Sil",
+                                isSelected = activeDrawTool == DrawingTool.AREA_ERASER,
+                                accentColor = Color(0xFFEF4444),
+                                onClick = {
+                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                        onTogglePenPanel(ActivePenPanel.NONE)
+                                    }
+                                    drawingController.selectTool(DrawingTool.AREA_ERASER)
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.AREA_ERASER, tint = tint) }
+
+                            StudioToolButton(
+                                label = "Şekil",
+                                isSelected = activeDrawTool.isShapeTool || activePenPanel == ActivePenPanel.SHAPES,
+                                accentColor = primaryColor,
+                                onClick = {
+                                    onTogglePenPanel(ActivePenPanel.SHAPES)
+                                    if (!activeDrawTool.isShapeTool) {
+                                        drawingController.selectTool(DrawingTool.SHAPE_RECTANGLE)
+                                    }
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.SHAPE_RECTANGLE, tint = tint) }
+
+                            StudioToolButton(
+                                label = "Kement",
+                                isSelected = activeDrawTool == DrawingTool.LASSO,
+                                accentColor = Color(0xFF0288D1),
+                                onClick = {
+                                    if (activePenPanel == ActivePenPanel.SHAPES) {
+                                        onTogglePenPanel(ActivePenPanel.NONE)
+                                    }
+                                    drawingController.selectTool(DrawingTool.LASSO)
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.LASSO, tint = tint) }
+
+                            StudioToolButton(
+                                label = "El Reddi",
+                                isSelected = drawingController.stylusOnlyMode,
+                                accentColor = Color(0xFF10B981),
+                                onClick = { drawingController.toggleStylusOnlyMode() }
+                            ) { tint -> PenPalmRejectionGlyph(tint = tint) }
+
+                            VerticalDivider(modifier = Modifier.height(22.dp), color = onSurfaceColor.copy(alpha = 0.16f))
+
+                            IconButton(
+                                onClick = { onTogglePenPanel(ActivePenPanel.SETTINGS) },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = if (activePenPanel == ActivePenPanel.SETTINGS) Icons.Default.Tune else Icons.Default.Palette,
+                                        contentDescription = "Kalem Ayarları",
+                                        tint = if (activePenPanel == ActivePenPanel.SETTINGS) primaryColor else onSurfaceColor,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(drawingController.penColor)
+                                            .border(1.dp, surfaceColor, CircleShape)
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { drawingController.undo() },
+                                enabled = drawingController.canUndo,
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                PenUndoGlyph(
+                                    tint = if (drawingController.canUndo) onSurfaceColor else onSurfaceColor.copy(alpha = 0.3f)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { drawingController.redo() },
+                                enabled = drawingController.canRedo,
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                PenRedoGlyph(
+                                    tint = if (drawingController.canRedo) onSurfaceColor else onSurfaceColor.copy(alpha = 0.3f)
+                                )
+                            }
+
+                            if (drawingController.strokes.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { drawingController.clearAll() },
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Çizimleri Temizle",
+                                        tint = colorScheme.error.copy(alpha = 0.8f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
-                // Expanding color panel BELOW main row when docked at TOP or FLOATING
                 if (dockState == ToolbarDockState.TOP || dockState == ToolbarDockState.FLOATING) {
-                    if (activeColorPanel != ActiveColorPanel.NONE) {
-                        HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.12f))
-                    }
-                    AnimatedVisibility(
-                        visible = activeColorPanel != ActiveColorPanel.NONE,
-                        enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
-                        exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut()
-                    ) {
-                        FormattingColorPanel(
-                            activeColorPanel = activeColorPanel,
-                            selectedColor = selectedColor,
-                            selectedHighlightColor = selectedHighlightColor,
-                            highlightIntensity = highlightIntensity,
-                            onHighlightIntensityChanged = onHighlightIntensityChanged,
-                            customColors = customColors,
-                            onToggleColorPanel = onToggleColorPanel,
-                            onColorSelected = onColorSelected,
-                            onHighlightSelected = onHighlightSelected,
-                            onOpenCustomColorPicker = onOpenCustomColorPicker,
-                            primaryColor = primaryColor,
-                            onSurfaceColor = onSurfaceColor,
-                            surfaceColor = surfaceColor,
-                            colorScheme = colorScheme
-                        )
-                    }
+                    HorizontalToolbarSubPanels(
+                        isPenMode = isPenMode,
+                        drawingController = drawingController,
+                        activeColorPanel = activeColorPanel,
+                        activePenPanel = activePenPanel,
+                        selectedColor = selectedColor,
+                        selectedHighlightColor = selectedHighlightColor,
+                        highlightIntensity = highlightIntensity,
+                        onHighlightIntensityChanged = onHighlightIntensityChanged,
+                        customColors = customColors,
+                        onToggleColorPanel = onToggleColorPanel,
+                        onTogglePenPanel = onTogglePenPanel,
+                        onColorSelected = onColorSelected,
+                        onHighlightSelected = onHighlightSelected,
+                        onOpenCustomColorPicker = onOpenCustomColorPicker,
+                        primaryColor = primaryColor,
+                        onSurfaceColor = onSurfaceColor,
+                        surfaceColor = surfaceColor,
+                        colorScheme = colorScheme,
+                        expandFromTop = true
+                    )
                 }
 
-                // Flush spacer into navigation bar when docked at bottom and keyboard is closed
                 if (dockState == ToolbarDockState.BOTTOM && !isImeOpen) {
                     Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun HorizontalToolbarSubPanels(
+    isPenMode: Boolean,
+    drawingController: DrawingController,
+    activeColorPanel: ActiveColorPanel,
+    activePenPanel: ActivePenPanel,
+    selectedColor: Color?,
+    selectedHighlightColor: Color?,
+    highlightIntensity: Float,
+    onHighlightIntensityChanged: (Float) -> Unit,
+    customColors: List<Color>,
+    onToggleColorPanel: (ActiveColorPanel) -> Unit,
+    onTogglePenPanel: (ActivePenPanel) -> Unit,
+    onColorSelected: (Color) -> Unit,
+    onHighlightSelected: (Color?) -> Unit,
+    onOpenCustomColorPicker: (isHighlight: Boolean) -> Unit,
+    primaryColor: Color,
+    onSurfaceColor: Color,
+    surfaceColor: Color,
+    colorScheme: androidx.compose.material3.ColorScheme,
+    expandFromTop: Boolean
+) {
+    val expandOrigin = if (expandFromTop) Alignment.Top else Alignment.Bottom
+    if (!isPenMode) {
+        if (expandFromTop && activeColorPanel != ActiveColorPanel.NONE) {
+            HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.12f))
+        }
+        AnimatedVisibility(
+            visible = activeColorPanel != ActiveColorPanel.NONE,
+            enter = expandVertically(expandFrom = expandOrigin) + fadeIn(),
+            exit = shrinkVertically(shrinkTowards = expandOrigin) + fadeOut()
+        ) {
+            FormattingColorPanel(
+                activeColorPanel = activeColorPanel,
+                selectedColor = selectedColor,
+                selectedHighlightColor = selectedHighlightColor,
+                highlightIntensity = highlightIntensity,
+                onHighlightIntensityChanged = onHighlightIntensityChanged,
+                customColors = customColors,
+                onToggleColorPanel = onToggleColorPanel,
+                onColorSelected = onColorSelected,
+                onHighlightSelected = onHighlightSelected,
+                onOpenCustomColorPicker = onOpenCustomColorPicker,
+                primaryColor = primaryColor,
+                onSurfaceColor = onSurfaceColor,
+                surfaceColor = surfaceColor,
+                colorScheme = colorScheme
+            )
+        }
+        if (!expandFromTop && activeColorPanel != ActiveColorPanel.NONE) {
+            HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.12f))
+        }
+    } else {
+        val showShapes = activePenPanel == ActivePenPanel.SHAPES || drawingController.activeTool.isShapeTool
+        val showLasso = drawingController.activeTool == DrawingTool.LASSO
+        val showSettings = activePenPanel == ActivePenPanel.SETTINGS
+
+        AnimatedVisibility(
+            visible = showShapes,
+            enter = expandVertically(expandFrom = expandOrigin) + fadeIn(),
+            exit = shrinkVertically(shrinkTowards = expandOrigin) + fadeOut()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                PenShapePickerPanel(controller = drawingController)
+                if (!expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showLasso,
+            enter = expandVertically(expandFrom = expandOrigin) + fadeIn(),
+            exit = shrinkVertically(shrinkTowards = expandOrigin) + fadeOut()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                PenLassoActionsPanel(controller = drawingController)
+                if (!expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showSettings,
+            enter = expandVertically(expandFrom = expandOrigin) + fadeIn(),
+            exit = shrinkVertically(shrinkTowards = expandOrigin) + fadeOut()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                PenStrokeSettingsPanel(
+                    controller = drawingController,
+                    onDismiss = { onTogglePenPanel(ActivePenPanel.NONE) }
+                )
+                if (!expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolbarModeChip(
+    label: String,
+    isSelected: Boolean,
+    primaryColor: Color,
+    onSurfaceColor: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = if (isSelected) primaryColor else Color.Transparent,
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+            color = if (isSelected) MaterialTheme.colorScheme.onPrimary else onSurfaceColor.copy(alpha = 0.8f),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun PenVerticalToolButton(
+    isSelected: Boolean,
+    accentColor: Color,
+    onSurfaceColor: Color,
+    primaryColor: Color,
+    onClick: () -> Unit,
+    iconContent: @Composable (tint: Color) -> Unit
+) {
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    val effectiveAccent = if (kotlin.math.abs(accentColor.luminance() - surfaceColor.luminance()) < 0.22f) {
+        primaryColor
+    } else {
+        accentColor
+    }
+    val bgColor = if (isSelected) effectiveAccent.copy(alpha = 0.18f) else Color.Transparent
+    val borderColor = if (isSelected) effectiveAccent else Color.Transparent
+    val contentTint = if (isSelected) effectiveAccent else onSurfaceColor.copy(alpha = 0.8f)
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = bgColor,
+        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, borderColor) else null,
+        modifier = Modifier.size(34.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            iconContent(contentTint)
         }
     }
 }

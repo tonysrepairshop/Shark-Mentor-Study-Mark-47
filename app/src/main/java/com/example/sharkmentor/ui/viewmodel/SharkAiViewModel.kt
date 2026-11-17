@@ -33,7 +33,6 @@ import com.example.sharkmentor.worker.TopicTaggingWorker
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.google.firebase.firestore.SetOptions
 import com.example.sharkmentor.data.repository.AgentMemoryRepository
-import com.example.sharkmentor.data.repository.AiModelPower
 import com.example.sharkmentor.data.repository.AiRouterRepository
 import com.example.sharkmentor.data.repository.AutoIntentClassifier
 import com.example.sharkmentor.data.repository.NetPredictionRepository
@@ -168,9 +167,6 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
     private val _attachmentPreview = MutableStateFlow<SelectedAttachmentPreview?>(null)
     val attachmentPreview: StateFlow<SelectedAttachmentPreview?> = _attachmentPreview.asStateFlow()
 
-    private val _modelPower = MutableStateFlow(initialSessionSnapshot.modelPower)
-    val modelPower: StateFlow<AiModelPower> = _modelPower.asStateFlow()
-
     private val _activeModelDisplay = MutableStateFlow(userAiPrefs.getActiveDisplayText())
     val activeModelDisplay: StateFlow<String> = _activeModelDisplay.asStateFlow()
 
@@ -216,7 +212,6 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         _chatSessions.value = snapshot.sessions
         _activeChatSessionId.value = snapshot.activeSessionId
         _inputText.value = snapshot.draftInputText
-        _modelPower.value = snapshot.modelPower
         _lockedEngine.value = snapshot.lockedEngine
         _activeCapability.value = when (snapshot.lockedEngine) {
             SharkAiEngine.SOLVER_ENGINE -> SharkAiCapability.PROBLEM_SOLVER
@@ -303,12 +298,6 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         refreshAutoDetectedEngine()
     }
 
-    fun setModelPower(power: AiModelPower) {
-        _modelPower.value = power
-        val snapshot = SharkAiChatSessionStore.saveModelPower(getApplication(), power)
-        _chatSessions.value = snapshot.sessions
-    }
-
     fun setActiveCapability(capability: SharkAiCapability?) {
         _activeCapability.value = capability
         _lockedEngine.value = SharkAiEngine.fromCapability(capability)
@@ -340,7 +329,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         _activeCapability.value = null
         _lockedEngine.value = null
         _inputText.value = ""
-        val snapshot = SharkAiChatSessionStore.createNewSession(getApplication(), keepModelPower = true)
+        val snapshot = SharkAiChatSessionStore.createNewSession(getApplication())
         applySessionSnapshot(snapshot)
         _uiState.value = _uiState.value.copy(
             messages = emptyList(),
@@ -566,7 +555,6 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         lastUserPromptText = text
         val resolvedAttachmentName = attachmentName ?: attachmentUri?.let { resolveDisplayName(it) }
         val currentPersona = _uiState.value.currentPersona
-        val activePower = _modelPower.value
 
         // Automatic Mode Detection (`AutoIntentClassifier`) unless manually locked/overridden
         val resolvedEngine: SharkAiEngine = engineOverride
@@ -711,9 +699,9 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                 } else ""
 
                 val compressedSystemPrompt = """
-                    ${getSystemPromptForPersona(currentPersona, activePower)}
+                    ${getSystemPromptForPersona(currentPersona)}
 
-                    [SİSTEMİK KİMLİK: SharkMentor Otonom Hub - Motor: ${resolvedEngine.displayName} - Mod: ${currentPersona.title} - Güç: ${activePower.label}]
+                    [SİSTEMİK KİMLİK: SharkMentor Otonom Hub - Motor: ${resolvedEngine.displayName} - Mod: ${currentPersona.title}]
                     [ÖĞRENCİ, KÜTÜPHANE VE HEDEF BAĞLAMI]:
                     $userStatsAndLibrarySnapshot
                     [AKTİF HAFIZA: $memorySnapshot]$attachmentContext
@@ -779,8 +767,8 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                 }
 
                 // Hybrid Multi-Provider Routing:
-                // - Multimodal/PDF/Images always use Gemini Vision (gemini-3.6-flash).
-                // - Text-only honors UserAiPreferences.selectedAiProvider (GEMINI -> GeminiCoreService 3.6 Flash, AUTO/DEEPSEEK/KIMI -> DeepSeekClient/AiRouterRepository).
+                // - Multimodal/PDF/Images route through Vision pipeline.
+                // - Text-only honors UserAiPreferences.selectedAiProvider across all 5 providers and AUTO.
                 val routerResult = if (attachmentUri != null) {
                     val visionContext = when (resolvedEngine) {
                         SharkAiEngine.SOLVER_ENGINE ->
@@ -797,7 +785,6 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         systemInstruction = visionContext,
                         attachmentUri = attachmentUri,
                         activeEngine = resolvedEngine,
-                        modelPower = activePower,
                         onPartialText = onStreamChunk
                     ).getOrThrow()
                 } else {
@@ -816,7 +803,6 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         prompt = effectivePrompt,
                         systemInstruction = textInstruction,
                         chatHistory = openAiHistory,
-                        modelPower = activePower,
                         onPartialText = onStreamChunk
                     ).getOrThrow()
                 }
@@ -2193,11 +2179,9 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private fun getSystemPromptForPersona(
-        persona: AiPersona,
-        modelPower: AiModelPower = AiModelPower.FLASH
+        persona: AiPersona
     ): String {
         val mandatoryPersonaRules = AiRouterRepository.MANDATORY_PERSONA_RULES
-        val depthRule = AiRouterRepository.getDepthDirective(modelPower)
 
         val actionInstruction = """
             
@@ -2228,28 +2212,28 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                 Sen SharkMentor'un kıdemli sınav koçu ve akran mentörüsün.
                 MİSYONUN: Öğrenciye net analizi, stratejik yönlendirme ve odak desteği sağla.
                 TONUN: Doğal, net, sıfır laf kalabalığı, analitik ve samimi ($lengthGuide).
-                $mandatoryPersonaRules$depthRule
+                $mandatoryPersonaRules
             """.trimIndent()
 
             AiPersona.GOAL_SETTER -> """
                 Sen SharkMentor Hedef Belirleme AI koçusun.
                 MİSYONUN: Öğrencinin muğlak isteklerini somut net hedeflerine ve kısa/uzun vadeli sıralama rotalarına dönüştür.
                 TONUN: Odaklı, net, sayısal ve aksiyon odaklı ($lengthGuide).
-                $mandatoryPersonaRules$depthRule
+                $mandatoryPersonaRules
             """.trimIndent()
 
             AiPersona.ZEN_CALM -> """
                 Sen SharkMentor Empatik Zen Sakinleşme Koçusun.
                 MİSYONUN: Sınav kaygısı, stres ve tükenmişlik hisseden öğrenciye psikolojik zemin sağla, nefes porsiyonlaması ver.
                 TONUN: Şefkatli, ferahlatıcı, sakin ve içten ($lengthGuide).
-                $mandatoryPersonaRules$depthRule
+                $mandatoryPersonaRules
             """.trimIndent()
 
             AiPersona.DOPAMINE_COACH -> """
                 Sen SharkMentor Dopamin Orucu ve Nöral Odak Koçusun.
                 MİSYONUN: Öğrencinin sosyal medya, erteleme ve uyarım dürtülerini yönetmesine yardımcı ol, irade sürtünmesini azalt.
                 TONUN: Kararlı, nörolojik gerçeklere dayalı ve net ($lengthGuide).
-                $mandatoryPersonaRules$depthRule
+                $mandatoryPersonaRules
             """.trimIndent()
 
             AiPersona.STUDY_PLANNER -> """
@@ -2258,7 +2242,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                 1. Önce öğrenciye 2-3 samimi cümleyle bu haftaki çalışma stratejisini, eksiklerini nasıl toparlayacağını açıkla.
                 2. Ardından mesajın en sonuna çalışma programını aşağıdaki sistem eylem formatında ekle:
                 #ACTION:{"type":"CREATE_WEEKLY_PLAN","title":"Haftalık Çalışma Programı","summary":"Bu haftaki stratejik yönelim özeti","schedule":[{"dayOfWeek":1,"timeSlot":"09:00 - 10:30","subject":"Matematik","topic":"Türev","targetQuestions":40,"focusStrategy":"Konu Pekiştirme"}]}#
-                $mandatoryPersonaRules$depthRule
+                $mandatoryPersonaRules
             """.trimIndent()
         }
 

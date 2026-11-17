@@ -82,7 +82,13 @@ object MultiProviderAiClient {
             return@withContext GeminiRestClient.fetchSupportedModels(apiKeyRaw)
         }
 
-        val cleanKey = UserAiPreferences.sanitizeKey(apiKeyRaw)
+        val cleanKey = UserAiPreferences.sanitizeKey(apiKeyRaw).ifBlank {
+            when (provider) {
+                AiProviderChoice.DEEPSEEK -> DeepSeekClient.getDeepSeekApiKey(null)
+                AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(null)
+                else -> ""
+            }
+        }
         if (cleanKey.isBlank()) {
             return@withContext GeminiModelDiscoveryResult(
                 success = false,
@@ -124,7 +130,7 @@ object MultiProviderAiClient {
         context: Context? = null,
         candidateKey: String? = null,
         candidateModelId: String? = null
-    ): GeminiConnectionTestResult = withContext(Dispatchers.IO) {
+    ): AiProviderConnectionResult = withContext(Dispatchers.IO) {
         if (provider == AiProviderChoice.GEMINI || provider == AiProviderChoice.AUTO) {
             return@withContext GeminiRestClient.testApiConnection(
                 context = context,
@@ -134,18 +140,23 @@ object MultiProviderAiClient {
         }
 
         val prefs = UserAiPreferences.getOrNull(context)
-        val effectiveKey = UserAiPreferences.sanitizeKey(
-            candidateKey ?: when (provider) {
-                AiProviderChoice.DEEPSEEK -> DeepSeekClient.getDeepSeekApiKey(context)
-                AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(context)
-                AiProviderChoice.CLAUDE -> prefs?.getUserClaudeKey().orEmpty()
-                AiProviderChoice.OPENAI -> prefs?.getUserOpenAiKey().orEmpty()
-                else -> ""
-            }
-        )
+        val cleanCandidate = UserAiPreferences.sanitizeKey(candidateKey)
+        val effectiveKey = if (cleanCandidate.isNotBlank()) {
+            cleanCandidate
+        } else {
+            UserAiPreferences.sanitizeKey(
+                when (provider) {
+                    AiProviderChoice.DEEPSEEK -> DeepSeekClient.getDeepSeekApiKey(if (candidateKey == null) context else null)
+                    AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(if (candidateKey == null) context else null)
+                    AiProviderChoice.CLAUDE -> if (candidateKey == null) prefs?.getUserClaudeKey().orEmpty() else ""
+                    AiProviderChoice.OPENAI -> if (candidateKey == null) prefs?.getUserOpenAiKey().orEmpty() else ""
+                    else -> ""
+                }
+            )
+        }
 
         if (effectiveKey.isBlank()) {
-            return@withContext GeminiConnectionTestResult(
+            return@withContext AiProviderConnectionResult(
                 success = false,
                 summary = "${provider.label} API anahtarı girilmedi.",
                 details = listOf("Önce ${provider.label} API anahtarınızı yapıştırın.")
@@ -223,7 +234,7 @@ object MultiProviderAiClient {
 
         return@withContext if (result.isSuccess) {
             val replyPreview = result.getOrDefault("").trim().take(80)
-            GeminiConnectionTestResult(
+            AiProviderConnectionResult(
                 success = true,
                 summary = "${provider.shortLabel} bağlantısı başarılı ($effectiveModel)",
                 details = listOf(
@@ -235,7 +246,7 @@ object MultiProviderAiClient {
         } else {
             val err = result.exceptionOrNull()
             if (err is CancellationException) throw err
-            GeminiConnectionTestResult(
+            AiProviderConnectionResult(
                 success = false,
                 summary = "${provider.shortLabel} bağlantısı başarısız ($effectiveModel)",
                 details = listOf(

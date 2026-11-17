@@ -32,7 +32,7 @@ val kimiApiKey: String = cleanPropValue(localProperties.getProperty("KIMI_API_KE
 
 android {
     namespace = "com.example.sharkmentor"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.sharkmentor"
@@ -45,7 +45,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
 
         // Inject Gemini API keys into generated BuildConfig (deduplicated, cleanly separated)
@@ -128,7 +128,13 @@ android {
                 "META-INF/NOTICE.txt",
                 "META-INF/notice.txt",
                 "META-INF/ASL2.0",
-                "META-INF/*.kotlin_module"
+                "META-INF/*.kotlin_module",
+                "META-INF/*.version",
+                "META-INF/androidx/**",
+                "META-INF/proguard/*",
+                "META-INF/com/**",
+                "META-INF/native-image/**",
+                "META-INF/INDEX.LIST"
             )
         }
     }
@@ -174,9 +180,6 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
-
-    // ── Google Generative AI (Gemini) ─────────────────────────────────────
-    implementation(libs.google.generativeai)
 
     // ── Coil Compose ──────────────────────────────────────────────────────
     implementation(libs.coil.compose)

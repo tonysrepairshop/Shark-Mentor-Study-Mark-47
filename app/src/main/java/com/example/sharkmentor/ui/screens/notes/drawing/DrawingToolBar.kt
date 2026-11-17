@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -114,51 +115,7 @@ fun DrawingStudioBar(
                 exit = shrinkVertically() + fadeOut()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Şekil",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = onSurfaceColor.copy(alpha = 0.7f)
-                        )
-                        ShapeToolChip(
-                            label = "Çizgi",
-                            tool = DrawingTool.SHAPE_LINE,
-                            isSelected = activeTool == DrawingTool.SHAPE_LINE,
-                            onClick = { controller.selectTool(DrawingTool.SHAPE_LINE) }
-                        )
-                        ShapeToolChip(
-                            label = "Ok",
-                            tool = DrawingTool.SHAPE_ARROW,
-                            isSelected = activeTool == DrawingTool.SHAPE_ARROW,
-                            onClick = { controller.selectTool(DrawingTool.SHAPE_ARROW) }
-                        )
-                        ShapeToolChip(
-                            label = "Dikdörtgen",
-                            tool = DrawingTool.SHAPE_RECTANGLE,
-                            isSelected = activeTool == DrawingTool.SHAPE_RECTANGLE,
-                            onClick = { controller.selectTool(DrawingTool.SHAPE_RECTANGLE) }
-                        )
-                        ShapeToolChip(
-                            label = "Elips",
-                            tool = DrawingTool.SHAPE_ELLIPSE,
-                            isSelected = activeTool == DrawingTool.SHAPE_ELLIPSE,
-                            onClick = { controller.selectTool(DrawingTool.SHAPE_ELLIPSE) }
-                        )
-                        ShapeToolChip(
-                            label = "Üçgen",
-                            tool = DrawingTool.SHAPE_TRIANGLE,
-                            isSelected = activeTool == DrawingTool.SHAPE_TRIANGLE,
-                            onClick = { controller.selectTool(DrawingTool.SHAPE_TRIANGLE) }
-                        )
-                    }
+                    PenShapePickerPanel(controller = controller)
                     HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
                 }
             }
@@ -170,61 +127,7 @@ fun DrawingStudioBar(
                 exit = shrinkVertically() + fadeOut()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = when {
-                                controller.hasSelection -> "${controller.selectedStrokeIds.size} seçili"
-                                controller.hasLassoRegion -> "Alan seçili"
-                                else -> "Alan çizin"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = primaryColor
-                        )
-
-                        if (controller.hasActiveLasso) {
-                            MiniActionPill("Ekran Görüntüsü") {
-                                controller.requestLassoScreenshot()
-                            }
-                        }
-                        if (controller.hasSelection) {
-                            MiniActionPill("Kes") { controller.cutSelected() }
-                            MiniActionPill("Kopyala") { controller.copySelected() }
-                        }
-                        if (controller.hasClipboard) {
-                            MiniActionPill("Yapıştır") { controller.pasteClipboard() }
-                        }
-                        if (controller.hasSelection) {
-                            MiniActionPill(
-                                label = "Sil",
-                                isDestructive = true,
-                                onClick = { controller.deleteSelected() }
-                            )
-                        }
-                        if (controller.hasActiveLasso) {
-                            MiniActionPill("Kapat") { controller.clearSelection() }
-                        }
-                        if (controller.hasSelection) {
-                            Spacer(modifier = Modifier.width(4.dp))
-                            STUDIO_COLOR_PALETTE.take(7).forEach { color ->
-                                Box(
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clip(CircleShape)
-                                        .background(color)
-                                        .border(1.dp, onSurfaceColor.copy(alpha = 0.3f), CircleShape)
-                                        .clickable { controller.recolorSelected(color) }
-                                )
-                            }
-                        }
-                    }
+                    PenLassoActionsPanel(controller = controller)
                     HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
                 }
             }
@@ -235,111 +138,8 @@ fun DrawingStudioBar(
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut()
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // Color Swatches Row
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        STUDIO_COLOR_PALETTE.forEach { swatch ->
-                            val isSelected = controller.penColor == swatch
-                            Box(
-                                modifier = Modifier
-                                    .size(if (isSelected) 28.dp else 24.dp)
-                                    .clip(CircleShape)
-                                    .background(swatch)
-                                    .border(
-                                        width = if (isSelected) 2.5.dp else 1.dp,
-                                        color = if (isSelected) primaryColor else onSurfaceColor.copy(alpha = 0.25f),
-                                        shape = CircleShape
-                                    )
-                                    .clickable {
-                                        controller.updatePenColor(swatch)
-                                        if (controller.hasSelection) {
-                                            controller.recolorSelected(swatch)
-                                        }
-                                    }
-                            )
-                        }
-                    }
-
-                    // Thickness Slider
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = if (activeTool.isEraserTool) "Boyut" else "Kalınlık",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = onSurfaceColor.copy(alpha = 0.75f),
-                            modifier = Modifier.width(64.dp)
-                        )
-                        val currentWidthValue = if (activeTool.isEraserTool) controller.eraserRadius else controller.strokeWidth
-                        Slider(
-                            value = currentWidthValue,
-                            onValueChange = { controller.updateStrokeWidth(it) },
-                            valueRange = if (activeTool.isEraserTool) 8f..48f else 1f..36f,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(28.dp),
-                            colors = SliderDefaults.colors(
-                                thumbColor = primaryColor,
-                                activeTrackColor = primaryColor
-                            )
-                        )
-                        Text(
-                            text = "${currentWidthValue.roundToInt()} px",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = onSurfaceColor,
-                            modifier = Modifier.width(38.dp)
-                        )
-                    }
-
-                    // Opacity Slider (for pens & shapes)
-                    if (!activeTool.isEraserTool) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "Opaklık",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = onSurfaceColor.copy(alpha = 0.75f),
-                                modifier = Modifier.width(64.dp)
-                            )
-                            Slider(
-                                value = controller.alpha,
-                                onValueChange = { controller.updateAlpha(it) },
-                                valueRange = 0.15f..1.0f,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(28.dp),
-                                colors = SliderDefaults.colors(
-                                    thumbColor = primaryColor,
-                                    activeTrackColor = primaryColor
-                                )
-                            )
-                            Text(
-                                text = "%${(controller.alpha * 100).roundToInt()}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = onSurfaceColor,
-                                modifier = Modifier.width(38.dp)
-                            )
-                        }
-                    }
-
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    PenStrokeSettingsPanel(controller = controller)
                     HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
                 }
             }
@@ -363,17 +163,7 @@ fun DrawingStudioBar(
                         controller.selectTool(DrawingTool.NONE)
                     }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        // Cursor / pointer icon
-                        val path = Path().apply {
-                            moveTo(size.width * 0.25f, size.height * 0.15f)
-                            lineTo(size.width * 0.25f, size.height * 0.85f)
-                            lineTo(size.width * 0.48f, size.height * 0.65f)
-                            lineTo(size.width * 0.78f, size.height * 0.65f)
-                            close()
-                        }
-                        drawPath(path, color = tint, style = Stroke(width = 1.8.dp.toPx(), join = StrokeJoin.Round))
-                    }
+                    PenToolGlyph(tool = DrawingTool.NONE, tint = tint)
                 }
 
                 // Fountain Pen
@@ -386,12 +176,7 @@ fun DrawingStudioBar(
                         controller.selectTool(DrawingTool.FOUNTAIN_PEN)
                     }
                 ) { tint ->
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = "Dolma Kalem",
-                        tint = tint,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    PenToolGlyph(tool = DrawingTool.FOUNTAIN_PEN, tint = tint)
                 }
 
                 // Highlighter
@@ -404,20 +189,7 @@ fun DrawingStudioBar(
                         controller.selectTool(DrawingTool.HIGHLIGHTER)
                     }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        drawRect(
-                            color = tint.copy(alpha = 0.45f),
-                            topLeft = Offset(size.width * 0.1f, size.height * 0.55f),
-                            size = Size(size.width * 0.8f, size.height * 0.3f)
-                        )
-                        drawLine(
-                            color = tint,
-                            start = Offset(size.width * 0.25f, size.height * 0.7f),
-                            end = Offset(size.width * 0.75f, size.height * 0.2f),
-                            strokeWidth = 2.6.dp.toPx(),
-                            cap = StrokeCap.Square
-                        )
-                    }
+                    PenToolGlyph(tool = DrawingTool.HIGHLIGHTER, tint = tint)
                 }
 
                 // Technical Fine Pen
@@ -430,20 +202,7 @@ fun DrawingStudioBar(
                         controller.selectTool(DrawingTool.TECHNICAL_PEN)
                     }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        drawLine(
-                            color = tint,
-                            start = Offset(size.width * 0.2f, size.height * 0.8f),
-                            end = Offset(size.width * 0.8f, size.height * 0.2f),
-                            strokeWidth = 1.4.dp.toPx(),
-                            cap = StrokeCap.Round
-                        )
-                        drawCircle(
-                            color = tint,
-                            radius = 1.6.dp.toPx(),
-                            center = Offset(size.width * 0.8f, size.height * 0.2f)
-                        )
-                    }
+                    PenToolGlyph(tool = DrawingTool.TECHNICAL_PEN, tint = tint)
                 }
 
                 // Underline Marker
@@ -456,22 +215,7 @@ fun DrawingStudioBar(
                         controller.selectTool(DrawingTool.UNDERLINE_MARKER)
                     }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        drawLine(
-                            color = tint,
-                            start = Offset(size.width * 0.12f, size.height * 0.78f),
-                            end = Offset(size.width * 0.88f, size.height * 0.78f),
-                            strokeWidth = 2.4.dp.toPx(),
-                            cap = StrokeCap.Round
-                        )
-                        drawLine(
-                            color = tint.copy(alpha = 0.6f),
-                            start = Offset(size.width * 0.25f, size.height * 0.35f),
-                            end = Offset(size.width * 0.75f, size.height * 0.35f),
-                            strokeWidth = 1.5.dp.toPx(),
-                            cap = StrokeCap.Round
-                        )
-                    }
+                    PenToolGlyph(tool = DrawingTool.UNDERLINE_MARKER, tint = tint)
                 }
 
                 // Stroke Eraser
@@ -484,16 +228,7 @@ fun DrawingStudioBar(
                         controller.selectTool(DrawingTool.STROKE_ERASER)
                     }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        val path = Path().apply {
-                            moveTo(size.width * 0.2f, size.height * 0.65f)
-                            lineTo(size.width * 0.55f, size.height * 0.2f)
-                            lineTo(size.width * 0.85f, size.height * 0.45f)
-                            lineTo(size.width * 0.5f, size.height * 0.85f)
-                            close()
-                        }
-                        drawPath(path, color = tint, style = Stroke(width = 1.7.dp.toPx(), join = StrokeJoin.Round))
-                    }
+                    PenToolGlyph(tool = DrawingTool.STROKE_ERASER, tint = tint)
                 }
 
                 // Area / Point Eraser
@@ -506,16 +241,7 @@ fun DrawingStudioBar(
                         controller.selectTool(DrawingTool.AREA_ERASER)
                     }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        drawCircle(
-                            color = tint,
-                            radius = size.minDimension * 0.38f,
-                            style = Stroke(
-                                width = 1.7.dp.toPx(),
-                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 4f), 0f)
-                            )
-                        )
-                    }
+                    PenToolGlyph(tool = DrawingTool.AREA_ERASER, tint = tint)
                 }
 
                 // Shapes Menu Toggle
@@ -530,20 +256,7 @@ fun DrawingStudioBar(
                         }
                     }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        drawRect(
-                            color = tint,
-                            topLeft = Offset(size.width * 0.15f, size.height * 0.2f),
-                            size = Size(size.width * 0.48f, size.height * 0.48f),
-                            style = Stroke(width = 1.6.dp.toPx())
-                        )
-                        drawCircle(
-                            color = tint,
-                            radius = size.minDimension * 0.26f,
-                            center = Offset(size.width * 0.66f, size.height * 0.66f),
-                            style = Stroke(width = 1.6.dp.toPx())
-                        )
-                    }
+                    PenToolGlyph(tool = DrawingTool.SHAPE_RECTANGLE, tint = tint)
                 }
 
                 // Lasso Tool
@@ -556,47 +269,17 @@ fun DrawingStudioBar(
                         controller.selectTool(DrawingTool.LASSO)
                     }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        drawOval(
-                            color = tint,
-                            topLeft = Offset(size.width * 0.12f, size.height * 0.18f),
-                            size = Size(size.width * 0.76f, size.height * 0.60f),
-                            style = Stroke(
-                                width = 1.7.dp.toPx(),
-                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f), 0f)
-                            )
-                        )
-                    }
+                    PenToolGlyph(tool = DrawingTool.LASSO, tint = tint)
                 }
 
                 // Stylus-Only / Palm Rejection Toggle
                 StudioToolButton(
-                    label = if (isCompactMode) "El Reddi" else "Sadece Kalem",
+                    label = "El Reddi",
                     isSelected = controller.stylusOnlyMode,
                     accentColor = Color(0xFF10B981),
                     onClick = { controller.toggleStylusOnlyMode() }
                 ) { tint ->
-                    Canvas(modifier = Modifier.size(16.dp)) {
-                        val stylusPath = Path().apply {
-                            moveTo(size.width * 0.18f, size.height * 0.82f)
-                            lineTo(size.width * 0.28f, size.height * 0.56f)
-                            lineTo(size.width * 0.74f, size.height * 0.14f)
-                            lineTo(size.width * 0.86f, size.height * 0.26f)
-                            lineTo(size.width * 0.42f, size.height * 0.72f)
-                            close()
-                        }
-                        drawPath(
-                            path = stylusPath,
-                            color = tint,
-                            style = Stroke(width = 1.6.dp.toPx(), join = StrokeJoin.Round)
-                        )
-                        // Small palm-shield / lock indicator dot at bottom right
-                        drawCircle(
-                            color = tint,
-                            radius = 2.2.dp.toPx(),
-                            center = Offset(size.width * 0.78f, size.height * 0.78f)
-                        )
-                    }
+                    PenPalmRejectionGlyph(tint = tint)
                 }
 
                 VerticalDivider(
@@ -636,23 +319,7 @@ fun DrawingStudioBar(
                     modifier = Modifier.size(32.dp)
                 ) {
                     val tint = if (controller.canUndo) onSurfaceColor else onSurfaceColor.copy(alpha = 0.3f)
-                    Canvas(modifier = Modifier.size(17.dp)) {
-                        val path = Path().apply {
-                            moveTo(size.width * 0.42f, size.height * 0.22f)
-                            lineTo(size.width * 0.18f, size.height * 0.45f)
-                            lineTo(size.width * 0.42f, size.height * 0.68f)
-                        }
-                        drawPath(path, color = tint, style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                        drawArc(
-                            color = tint,
-                            startAngle = 180f,
-                            sweepAngle = 165f,
-                            useCenter = false,
-                            topLeft = Offset(size.width * 0.20f, size.height * 0.32f),
-                            size = Size(size.width * 0.65f, size.height * 0.50f),
-                            style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
-                        )
-                    }
+                    PenUndoGlyph(tint = tint)
                 }
 
                 // Redo (60 steps)
@@ -662,23 +329,7 @@ fun DrawingStudioBar(
                     modifier = Modifier.size(32.dp)
                 ) {
                     val tint = if (controller.canRedo) onSurfaceColor else onSurfaceColor.copy(alpha = 0.3f)
-                    Canvas(modifier = Modifier.size(17.dp)) {
-                        val path = Path().apply {
-                            moveTo(size.width * 0.58f, size.height * 0.22f)
-                            lineTo(size.width * 0.82f, size.height * 0.45f)
-                            lineTo(size.width * 0.58f, size.height * 0.68f)
-                        }
-                        drawPath(path, color = tint, style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                        drawArc(
-                            color = tint,
-                            startAngle = 195f,
-                            sweepAngle = 165f,
-                            useCenter = false,
-                            topLeft = Offset(size.width * 0.15f, size.height * 0.32f),
-                            size = Size(size.width * 0.65f, size.height * 0.50f),
-                            style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
-                        )
-                    }
+                    PenRedoGlyph(tint = tint)
                 }
 
                 // Clear All
@@ -715,7 +366,494 @@ fun DrawingStudioBar(
 }
 
 @Composable
-private fun StudioToolButton(
+fun PenShapePickerPanel(
+    controller: DrawingController,
+    modifier: Modifier = Modifier,
+    onDismiss: (() -> Unit)? = null
+) {
+    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
+    val activeTool = controller.activeTool
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "Şekil",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = onSurfaceColor.copy(alpha = 0.7f)
+        )
+        ShapeToolChip(
+            label = "Çizgi",
+            tool = DrawingTool.SHAPE_LINE,
+            isSelected = activeTool == DrawingTool.SHAPE_LINE,
+            onClick = { controller.selectTool(DrawingTool.SHAPE_LINE) }
+        )
+        ShapeToolChip(
+            label = "Ok",
+            tool = DrawingTool.SHAPE_ARROW,
+            isSelected = activeTool == DrawingTool.SHAPE_ARROW,
+            onClick = { controller.selectTool(DrawingTool.SHAPE_ARROW) }
+        )
+        ShapeToolChip(
+            label = "Dikdörtgen",
+            tool = DrawingTool.SHAPE_RECTANGLE,
+            isSelected = activeTool == DrawingTool.SHAPE_RECTANGLE,
+            onClick = { controller.selectTool(DrawingTool.SHAPE_RECTANGLE) }
+        )
+        ShapeToolChip(
+            label = "Elips",
+            tool = DrawingTool.SHAPE_ELLIPSE,
+            isSelected = activeTool == DrawingTool.SHAPE_ELLIPSE,
+            onClick = { controller.selectTool(DrawingTool.SHAPE_ELLIPSE) }
+        )
+        ShapeToolChip(
+            label = "Üçgen",
+            tool = DrawingTool.SHAPE_TRIANGLE,
+            isSelected = activeTool == DrawingTool.SHAPE_TRIANGLE,
+            onClick = { controller.selectTool(DrawingTool.SHAPE_TRIANGLE) }
+        )
+        if (onDismiss != null) {
+            IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Kapat",
+                    tint = onSurfaceColor.copy(alpha = 0.6f),
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PenLassoActionsPanel(
+    controller: DrawingController,
+    modifier: Modifier = Modifier,
+    onDismiss: (() -> Unit)? = null
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val onSurfaceColor = colorScheme.onSurface
+    val primaryColor = colorScheme.primary
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = when {
+                controller.hasSelection -> "${controller.selectedStrokeIds.size} seçili"
+                controller.hasLassoRegion -> "Alan seçili"
+                else -> "Alan çizin"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = primaryColor
+        )
+
+        if (controller.hasActiveLasso) {
+            MiniActionPill("Ekran Görüntüsü") {
+                controller.requestLassoScreenshot()
+            }
+        }
+        if (controller.hasSelection) {
+            MiniActionPill("Kes") { controller.cutSelected() }
+            MiniActionPill("Kopyala") { controller.copySelected() }
+        }
+        if (controller.hasClipboard) {
+            MiniActionPill("Yapıştır") { controller.pasteClipboard() }
+        }
+        if (controller.hasSelection) {
+            MiniActionPill(
+                label = "Sil",
+                isDestructive = true,
+                onClick = { controller.deleteSelected() }
+            )
+        }
+        if (controller.hasActiveLasso) {
+            MiniActionPill("Kapat") { controller.clearSelection() }
+        }
+        if (controller.hasSelection) {
+            Spacer(modifier = Modifier.width(4.dp))
+            STUDIO_COLOR_PALETTE.take(7).forEach { color ->
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(color)
+                        .border(1.dp, onSurfaceColor.copy(alpha = 0.3f), CircleShape)
+                        .clickable { controller.recolorSelected(color) }
+                )
+            }
+        }
+        if (onDismiss != null) {
+            IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Kapat",
+                    tint = onSurfaceColor.copy(alpha = 0.6f),
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PenStrokeSettingsPanel(
+    controller: DrawingController,
+    modifier: Modifier = Modifier,
+    onDismiss: (() -> Unit)? = null
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val onSurfaceColor = colorScheme.onSurface
+    val primaryColor = colorScheme.primary
+    val activeTool = controller.activeTool
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (onDismiss != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Kalem Ayarları",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = onSurfaceColor
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Kapat",
+                        tint = onSurfaceColor.copy(alpha = 0.6f),
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            STUDIO_COLOR_PALETTE.forEach { swatch ->
+                val isSelected = controller.penColor == swatch
+                Box(
+                    modifier = Modifier
+                        .size(if (isSelected) 28.dp else 24.dp)
+                        .clip(CircleShape)
+                        .background(swatch)
+                        .border(
+                            width = if (isSelected) 2.5.dp else 1.dp,
+                            color = if (isSelected) primaryColor else onSurfaceColor.copy(alpha = 0.25f),
+                            shape = CircleShape
+                        )
+                        .clickable {
+                            controller.updatePenColor(swatch)
+                            if (controller.hasSelection) {
+                                controller.recolorSelected(swatch)
+                            }
+                        }
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = if (activeTool.isEraserTool) "Boyut" else "Kalınlık",
+                style = MaterialTheme.typography.labelSmall,
+                color = onSurfaceColor.copy(alpha = 0.75f),
+                modifier = Modifier.width(64.dp)
+            )
+            val currentWidthValue = if (activeTool.isEraserTool) controller.eraserRadius else controller.strokeWidth
+            Slider(
+                value = currentWidthValue,
+                onValueChange = { controller.updateStrokeWidth(it) },
+                valueRange = if (activeTool.isEraserTool) 8f..48f else 1f..36f,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(28.dp),
+                colors = SliderDefaults.colors(
+                    thumbColor = primaryColor,
+                    activeTrackColor = primaryColor
+                )
+            )
+            Text(
+                text = "${currentWidthValue.roundToInt()} px",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = onSurfaceColor,
+                modifier = Modifier.width(38.dp)
+            )
+        }
+
+        if (!activeTool.isEraserTool) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Opaklık",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = onSurfaceColor.copy(alpha = 0.75f),
+                    modifier = Modifier.width(64.dp)
+                )
+                Slider(
+                    value = controller.alpha,
+                    onValueChange = { controller.updateAlpha(it) },
+                    valueRange = 0.15f..1.0f,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(28.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor = primaryColor,
+                        activeTrackColor = primaryColor
+                    )
+                )
+                Text(
+                    text = "%${(controller.alpha * 100).roundToInt()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = onSurfaceColor,
+                    modifier = Modifier.width(38.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PenToolGlyph(
+    tool: DrawingTool,
+    tint: Color,
+    modifier: Modifier = Modifier.size(16.dp)
+) {
+    when {
+        tool == DrawingTool.NONE -> {
+            Canvas(modifier = modifier) {
+                val path = Path().apply {
+                    moveTo(size.width * 0.25f, size.height * 0.15f)
+                    lineTo(size.width * 0.25f, size.height * 0.85f)
+                    lineTo(size.width * 0.48f, size.height * 0.65f)
+                    lineTo(size.width * 0.78f, size.height * 0.65f)
+                    close()
+                }
+                drawPath(path, color = tint, style = Stroke(width = 1.8.dp.toPx(), join = StrokeJoin.Round))
+            }
+        }
+        tool == DrawingTool.FOUNTAIN_PEN -> {
+            Icon(
+                imageVector = Icons.Default.Edit,
+                contentDescription = "Dolma Kalem",
+                tint = tint,
+                modifier = modifier
+            )
+        }
+        tool == DrawingTool.HIGHLIGHTER -> {
+            Canvas(modifier = modifier) {
+                drawRect(
+                    color = tint.copy(alpha = 0.45f),
+                    topLeft = Offset(size.width * 0.1f, size.height * 0.55f),
+                    size = Size(size.width * 0.8f, size.height * 0.3f)
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.25f, size.height * 0.7f),
+                    end = Offset(size.width * 0.75f, size.height * 0.2f),
+                    strokeWidth = 2.6.dp.toPx(),
+                    cap = StrokeCap.Square
+                )
+            }
+        }
+        tool == DrawingTool.TECHNICAL_PEN -> {
+            Canvas(modifier = modifier) {
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.2f, size.height * 0.8f),
+                    end = Offset(size.width * 0.8f, size.height * 0.2f),
+                    strokeWidth = 1.4.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawCircle(
+                    color = tint,
+                    radius = 1.6.dp.toPx(),
+                    center = Offset(size.width * 0.8f, size.height * 0.2f)
+                )
+            }
+        }
+        tool == DrawingTool.UNDERLINE_MARKER -> {
+            Canvas(modifier = modifier) {
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.12f, size.height * 0.78f),
+                    end = Offset(size.width * 0.88f, size.height * 0.78f),
+                    strokeWidth = 2.4.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = tint.copy(alpha = 0.6f),
+                    start = Offset(size.width * 0.25f, size.height * 0.35f),
+                    end = Offset(size.width * 0.75f, size.height * 0.35f),
+                    strokeWidth = 1.5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+        }
+        tool == DrawingTool.STROKE_ERASER -> {
+            Canvas(modifier = modifier) {
+                val path = Path().apply {
+                    moveTo(size.width * 0.2f, size.height * 0.65f)
+                    lineTo(size.width * 0.55f, size.height * 0.2f)
+                    lineTo(size.width * 0.85f, size.height * 0.45f)
+                    lineTo(size.width * 0.5f, size.height * 0.85f)
+                    close()
+                }
+                drawPath(path, color = tint, style = Stroke(width = 1.7.dp.toPx(), join = StrokeJoin.Round))
+            }
+        }
+        tool == DrawingTool.AREA_ERASER -> {
+            Canvas(modifier = modifier) {
+                drawCircle(
+                    color = tint,
+                    radius = size.minDimension * 0.38f,
+                    style = Stroke(
+                        width = 1.7.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 4f), 0f)
+                    )
+                )
+            }
+        }
+        tool.isShapeTool -> {
+            Canvas(modifier = modifier) {
+                drawRect(
+                    color = tint,
+                    topLeft = Offset(size.width * 0.15f, size.height * 0.2f),
+                    size = Size(size.width * 0.48f, size.height * 0.48f),
+                    style = Stroke(width = 1.6.dp.toPx())
+                )
+                drawCircle(
+                    color = tint,
+                    radius = size.minDimension * 0.26f,
+                    center = Offset(size.width * 0.66f, size.height * 0.66f),
+                    style = Stroke(width = 1.6.dp.toPx())
+                )
+            }
+        }
+        tool == DrawingTool.LASSO -> {
+            Canvas(modifier = modifier) {
+                drawOval(
+                    color = tint,
+                    topLeft = Offset(size.width * 0.12f, size.height * 0.18f),
+                    size = Size(size.width * 0.76f, size.height * 0.60f),
+                    style = Stroke(
+                        width = 1.7.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f), 0f)
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PenPalmRejectionGlyph(
+    tint: Color,
+    modifier: Modifier = Modifier.size(16.dp)
+) {
+    Canvas(modifier = modifier) {
+        val stylusPath = Path().apply {
+            moveTo(size.width * 0.18f, size.height * 0.82f)
+            lineTo(size.width * 0.28f, size.height * 0.56f)
+            lineTo(size.width * 0.74f, size.height * 0.14f)
+            lineTo(size.width * 0.86f, size.height * 0.26f)
+            lineTo(size.width * 0.42f, size.height * 0.72f)
+            close()
+        }
+        drawPath(
+            path = stylusPath,
+            color = tint,
+            style = Stroke(width = 1.6.dp.toPx(), join = StrokeJoin.Round)
+        )
+        drawCircle(
+            color = tint,
+            radius = 2.2.dp.toPx(),
+            center = Offset(size.width * 0.78f, size.height * 0.78f)
+        )
+    }
+}
+
+@Composable
+fun PenUndoGlyph(
+    tint: Color,
+    modifier: Modifier = Modifier.size(17.dp)
+) {
+    Canvas(modifier = modifier) {
+        val path = Path().apply {
+            moveTo(size.width * 0.42f, size.height * 0.22f)
+            lineTo(size.width * 0.18f, size.height * 0.45f)
+            lineTo(size.width * 0.42f, size.height * 0.68f)
+        }
+        drawPath(path, color = tint, style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawArc(
+            color = tint,
+            startAngle = 180f,
+            sweepAngle = 165f,
+            useCenter = false,
+            topLeft = Offset(size.width * 0.20f, size.height * 0.32f),
+            size = Size(size.width * 0.65f, size.height * 0.50f),
+            style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+        )
+    }
+}
+
+@Composable
+fun PenRedoGlyph(
+    tint: Color,
+    modifier: Modifier = Modifier.size(17.dp)
+) {
+    Canvas(modifier = modifier) {
+        val path = Path().apply {
+            moveTo(size.width * 0.58f, size.height * 0.22f)
+            lineTo(size.width * 0.82f, size.height * 0.45f)
+            lineTo(size.width * 0.58f, size.height * 0.68f)
+        }
+        drawPath(path, color = tint, style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawArc(
+            color = tint,
+            startAngle = 195f,
+            sweepAngle = 165f,
+            useCenter = false,
+            topLeft = Offset(size.width * 0.15f, size.height * 0.32f),
+            size = Size(size.width * 0.65f, size.height * 0.50f),
+            style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+        )
+    }
+}
+
+@Composable
+fun StudioToolButton(
     label: String,
     isSelected: Boolean,
     accentColor: Color,
@@ -723,8 +861,13 @@ private fun StudioToolButton(
     iconContent: @Composable (tint: Color) -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
+    val surface = MaterialTheme.colorScheme.surface
     val primary = MaterialTheme.colorScheme.primary
-    val effectiveAccent = if (accentColor == Color.White) primary else accentColor
+    val effectiveAccent = if (kotlin.math.abs(accentColor.luminance() - surface.luminance()) < 0.22f) {
+        primary
+    } else {
+        accentColor
+    }
     val bgColor = if (isSelected) effectiveAccent.copy(alpha = 0.16f) else Color.Transparent
     val borderColor = if (isSelected) effectiveAccent else onSurface.copy(alpha = 0.12f)
     val contentTint = if (isSelected) effectiveAccent else onSurface.copy(alpha = 0.8f)

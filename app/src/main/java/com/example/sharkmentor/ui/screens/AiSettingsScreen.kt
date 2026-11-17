@@ -72,8 +72,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.ai.AiProviderChoice
+import com.example.sharkmentor.core.ai.AiProviderConnectionResult
 import com.example.sharkmentor.core.ai.ApiKeyRotator
-import com.example.sharkmentor.core.ai.GeminiConnectionTestResult
 import com.example.sharkmentor.core.ai.GeminiModelOption
 import com.example.sharkmentor.core.ai.GeminiRestClient
 import com.example.sharkmentor.core.ai.MultiProviderAiClient
@@ -140,6 +140,8 @@ fun AiSettingsScreen(
     val hasCustomGeminiInput = remember(geminiKeysInput) {
         UserAiPreferences.parseGeminiKeyList(geminiKeysInput).isNotEmpty()
     }
+    val hasBuiltInDeepSeek = remember { UserAiPreferences.hasBuiltInDeepSeekKey() }
+    val hasBuiltInKimi = remember { UserAiPreferences.hasBuiltInKimiKey() }
 
     fun persistAll(showFeedback: Boolean = false) {
         userAiPrefs.saveSettings(
@@ -152,9 +154,9 @@ fun AiSettingsScreen(
             selectedGeminiModel = if (hasCustomGeminiInput) selectedGeminiModel else UserAiPreferences.STANDARD_GEMINI_MODEL,
             discoveredGeminiModels = if (hasCustomGeminiInput) discoveredGeminiModels else emptyList(),
             selectedDeepSeekModel = selectedDeepSeekModel,
-            discoveredDeepSeekModels = if (deepSeekInput.isNotBlank()) discoveredDeepSeekModels else emptyList(),
+            discoveredDeepSeekModels = if (deepSeekInput.isNotBlank() || hasBuiltInDeepSeek) discoveredDeepSeekModels else emptyList(),
             selectedKimiModel = selectedKimiModel,
-            discoveredKimiModels = if (kimiInput.isNotBlank()) discoveredKimiModels else emptyList(),
+            discoveredKimiModels = if (kimiInput.isNotBlank() || hasBuiltInKimi) discoveredKimiModels else emptyList(),
             selectedClaudeModel = selectedClaudeModel,
             discoveredClaudeModels = if (claudeInput.isNotBlank()) discoveredClaudeModels else emptyList(),
             selectedOpenAiModel = selectedOpenAiModel,
@@ -508,22 +510,24 @@ fun AiSettingsScreen(
                     keyPlaceholder = "sk-...",
                     keyValue = deepSeekInput,
                     hasConfiguredKey = deepSeekInput.isNotBlank(),
-                    allowTestWithoutUserKey = false,
+                    allowTestWithoutUserKey = hasBuiltInDeepSeek,
                     selectedModel = selectedDeepSeekModel,
                     discoveredModels = discoveredDeepSeekModels,
                     isPreferred = selectedProvider == AiProviderChoice.DEEPSEEK,
                     searchPlaceholder = "DeepSeek modeli ara (chat, reasoner)...",
                     onKeyChange = {
                         deepSeekInput = it
-                        if (it.isBlank()) {
+                        if (it.isBlank() && !hasBuiltInDeepSeek) {
                             selectedDeepSeekModel = UserAiPreferences.DEFAULT_DEEPSEEK_MODEL
                             discoveredDeepSeekModels = emptyList()
                         }
                     },
                     onClearKey = {
                         deepSeekInput = ""
-                        selectedDeepSeekModel = UserAiPreferences.DEFAULT_DEEPSEEK_MODEL
-                        discoveredDeepSeekModels = emptyList()
+                        if (!hasBuiltInDeepSeek) {
+                            selectedDeepSeekModel = UserAiPreferences.DEFAULT_DEEPSEEK_MODEL
+                            discoveredDeepSeekModels = emptyList()
+                        }
                     },
                     onSelectProvider = {
                         selectedProvider = AiProviderChoice.DEEPSEEK
@@ -561,22 +565,24 @@ fun AiSettingsScreen(
                     keyPlaceholder = "sk-...",
                     keyValue = kimiInput,
                     hasConfiguredKey = kimiInput.isNotBlank(),
-                    allowTestWithoutUserKey = false,
+                    allowTestWithoutUserKey = hasBuiltInKimi,
                     selectedModel = selectedKimiModel,
                     discoveredModels = discoveredKimiModels,
                     isPreferred = selectedProvider == AiProviderChoice.KIMI,
                     searchPlaceholder = "Kimi modeli ara (kimi-k2, moonshot)...",
                     onKeyChange = {
                         kimiInput = it
-                        if (it.isBlank()) {
+                        if (it.isBlank() && !hasBuiltInKimi) {
                             selectedKimiModel = UserAiPreferences.DEFAULT_KIMI_MODEL
                             discoveredKimiModels = emptyList()
                         }
                     },
                     onClearKey = {
                         kimiInput = ""
-                        selectedKimiModel = UserAiPreferences.DEFAULT_KIMI_MODEL
-                        discoveredKimiModels = emptyList()
+                        if (!hasBuiltInKimi) {
+                            selectedKimiModel = UserAiPreferences.DEFAULT_KIMI_MODEL
+                            discoveredKimiModels = emptyList()
+                        }
                     },
                     onSelectProvider = {
                         selectedProvider = AiProviderChoice.KIMI
@@ -648,7 +654,7 @@ private fun ProviderConfigCard(
     onSelectModel: (String) -> Unit,
     onModelsDiscovered: (List<GeminiModelOption>) -> Unit,
     onDiscover: suspend (String) -> com.example.sharkmentor.core.ai.GeminiModelDiscoveryResult,
-    onTest: suspend (String, String) -> GeminiConnectionTestResult
+    onTest: suspend (String, String) -> AiProviderConnectionResult
 ) {
     val scope = rememberCoroutineScope()
     var showKey by remember { mutableStateOf(false) }
@@ -657,17 +663,23 @@ private fun ProviderConfigCard(
     var searchQuery by remember { mutableStateOf("") }
     var modelsExpanded by remember(discoveredModels.isNotEmpty()) { mutableStateOf(discoveredModels.isNotEmpty()) }
     var isTesting by remember { mutableStateOf(false) }
-    var testResult by remember { mutableStateOf<GeminiConnectionTestResult?>(null) }
+    var testResult by remember { mutableStateOf<AiProviderConnectionResult?>(null) }
+    var lastAutoDiscoveredKey by remember { mutableStateOf(keyValue.trim()) }
 
-    // Automatically discover models shortly after pasting a valid key
+    // Automatically discover models shortly after pasting/editing a new valid key (no initial-load burst)
     LaunchedEffect(keyValue) {
         val clean = keyValue.trim()
         if (clean.length < 16 || !hasConfiguredKey) {
+            lastAutoDiscoveredKey = ""
             discoveryError = null
             searchQuery = ""
             return@LaunchedEffect
         }
+        if (clean == lastAutoDiscoveredKey) {
+            return@LaunchedEffect
+        }
         delay(800L)
+        lastAutoDiscoveredKey = clean
         isDiscovering = true
         discoveryError = null
         val discovery = onDiscover(keyValue)
@@ -728,16 +740,15 @@ private fun ProviderConfigCard(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = if (hasConfiguredKey) {
-                                "Seçili model: $selectedModel"
-                            } else if (provider == AiProviderChoice.GEMINI) {
-                                "Varsayılan model: ${UserAiPreferences.STANDARD_GEMINI_MODEL}"
-                            } else {
-                                "Anahtar girilmedi"
+                            text = when {
+                                hasConfiguredKey -> "Seçili model: $selectedModel"
+                                provider == AiProviderChoice.GEMINI -> "Varsayılan model: ${UserAiPreferences.STANDARD_GEMINI_MODEL}"
+                                allowTestWithoutUserKey -> "Yerleşik anahtar • Model: $selectedModel"
+                                else -> "Anahtar girilmedi"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             fontSize = 13.sp,
-                            color = if (hasConfiguredKey) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (hasConfiguredKey || allowTestWithoutUserKey) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -775,6 +786,7 @@ private fun ProviderConfigCard(
                 onToggleVisibility = { showKey = !showKey },
                 onClear = {
                     onClearKey()
+                    lastAutoDiscoveredKey = ""
                     discoveryError = null
                     testResult = null
                     searchQuery = ""
@@ -803,7 +815,7 @@ private fun ProviderConfigCard(
                             }
                         }
                     },
-                    enabled = !isDiscovering && hasConfiguredKey,
+                    enabled = !isDiscovering && (hasConfiguredKey || (provider != AiProviderChoice.GEMINI && allowTestWithoutUserKey)),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                     modifier = Modifier
@@ -911,7 +923,7 @@ private fun ProviderConfigCard(
             }
 
             // Discovered Models Selector (Large, Tablet-Friendly Cards)
-            if (hasConfiguredKey && discoveredModels.isNotEmpty()) {
+            if ((hasConfiguredKey || (provider != AiProviderChoice.GEMINI && allowTestWithoutUserKey)) && discoveredModels.isNotEmpty()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

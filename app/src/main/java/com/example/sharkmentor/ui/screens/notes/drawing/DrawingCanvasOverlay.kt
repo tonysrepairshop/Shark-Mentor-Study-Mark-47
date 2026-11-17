@@ -1,6 +1,13 @@
 package com.example.sharkmentor.ui.screens.notes.drawing
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.os.Build
 import android.os.SystemClock
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -156,11 +163,44 @@ fun DrawingCanvasOverlay(
     var usePolygonCrop by remember { mutableStateOf(true) }
     var isSavingCrop by remember { mutableStateOf(false) }
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
+    var dialogStatusMessage by remember { mutableStateOf<String?>(null) }
+    var pendingGalleryBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    fun performGallerySave(targetBitmap: Bitmap) {
+        if (isSavingCrop) return
+        isSavingCrop = true
+        coroutineScope.launch {
+            val result = DrawingScreenshotHelper.saveBitmapToGallery(context, targetBitmap)
+            isSavingCrop = false
+            val msg = if (result.isSuccess) {
+                "Galeriye kaydedildi"
+            } else {
+                val detail = result.exceptionOrNull()?.localizedMessage?.takeIf { it.isNotBlank() }
+                if (detail != null) "Galeriye kaydedilemedi: $detail" else "Galeriye kaydedilemedi"
+            }
+            dialogStatusMessage = msg
+            feedbackMessage = msg
+        }
+    }
+
+    val galleryPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val pending = pendingGalleryBitmap
+        pendingGalleryBitmap = null
+        if (granted && pending != null) {
+            performGallerySave(pending)
+        } else {
+            val msg = "Galeriye kaydetmek için depolama izni gerekiyor"
+            dialogStatusMessage = msg
+            feedbackMessage = msg
+        }
+    }
 
     // Auto-clear subtle toast/feedback pill
     LaunchedEffect(feedbackMessage) {
         if (feedbackMessage != null) {
-            delay(1800L)
+            delay(2200L)
             feedbackMessage = null
         }
     }
@@ -191,6 +231,7 @@ fun DrawingCanvasOverlay(
                     lassoPolygon = polygonSnapshot
                 )
                 if (result != null) {
+                    dialogStatusMessage = null
                     usePolygonCrop = result.polygonBitmap != null
                     capturedCrop = result
                 } else {
@@ -852,9 +893,10 @@ fun DrawingCanvasOverlay(
             } else {
                 crop.rectBitmap
             }
-            var dialogStatusMessage by remember(crop) { mutableStateOf<String?>(null) }
             val dismissPreview = {
                 capturedCrop = null
+                dialogStatusMessage = null
+                pendingGalleryBitmap = null
             }
 
             Dialog(onDismissRequest = { if (!isSavingCrop) dismissPreview() }) {
@@ -959,7 +1001,8 @@ fun DrawingCanvasOverlay(
                                         feedbackMessage = "Notlara eklendi"
                                         dismissPreview()
                                     } else {
-                                        dialogStatusMessage = "Not kaydedilemedi"
+                                        val detail = result.exceptionOrNull()?.localizedMessage?.takeIf { it.isNotBlank() }
+                                        dialogStatusMessage = if (detail != null) "Not kaydedilemedi: $detail" else "Not kaydedilemedi"
                                     }
                                 }
                             },
@@ -992,17 +1035,16 @@ fun DrawingCanvasOverlay(
                             OutlinedButton(
                                 onClick = {
                                     if (isSavingCrop) return@OutlinedButton
-                                    isSavingCrop = true
-                                    coroutineScope.launch {
-                                        val result = DrawingScreenshotHelper.saveBitmapToGallery(context, activeBitmap)
-                                        isSavingCrop = false
-                                        val msg = if (result.isSuccess) {
-                                            "Galeriye kaydedildi"
-                                        } else {
-                                            "Galeriye kaydedilemedi"
-                                        }
-                                        dialogStatusMessage = msg
-                                        feedbackMessage = msg
+                                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                                        ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                        ) != PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        pendingGalleryBitmap = activeBitmap
+                                        galleryPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                    } else {
+                                        performGallerySave(activeBitmap)
                                     }
                                 },
                                 enabled = !isSavingCrop,

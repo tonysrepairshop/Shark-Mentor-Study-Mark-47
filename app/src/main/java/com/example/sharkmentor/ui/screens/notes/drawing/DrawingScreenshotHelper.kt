@@ -1,10 +1,12 @@
 package com.example.sharkmentor.ui.screens.notes.drawing
 
+import android.Manifest
 import android.app.Activity
 import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -13,6 +15,7 @@ import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -21,6 +24,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.view.PixelCopy
 import android.view.Window
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.NoteEntity
@@ -164,6 +168,19 @@ object DrawingScreenshotHelper {
         }.getOrNull()
     }
 
+    private fun prepareWritableBitmap(bitmap: Bitmap): Pair<Bitmap, Boolean> {
+        if (bitmap.isRecycled) {
+            error("Görsel artık bellekte değil")
+        }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
+            val copy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                ?: error("Donanım bitmap'i dönüştürülemedi")
+            copy to true
+        } else {
+            bitmap to false
+        }
+    }
+
     /**
      * Saves the cropped bitmap to internal app storage and inserts a new [NoteEntity]
      * via [NoteRepositoryImpl] using the standard `[PDF_PAGE:...]` image tag so Notes render it natively.
@@ -175,37 +192,46 @@ object DrawingScreenshotHelper {
     ): Result<NoteEntity> = withContext(Dispatchers.IO) {
         runCatching {
             val appContext = context.applicationContext
-            val dir = File(appContext.filesDir, NOTE_CROPS_DIR).apply {
-                if (!exists()) mkdirs()
-            }
-            val imageFile = File(dir, "crop_${UUID.randomUUID()}.png")
-            FileOutputStream(imageFile).use { out ->
-                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                    error("Görsel dosyaya yazılamadı")
+            val (exportBitmap, shouldRecycleCopy) = prepareWritableBitmap(bitmap)
+            try {
+                val dir = File(appContext.filesDir, NOTE_CROPS_DIR).apply {
+                    if (!exists()) mkdirs()
+                }
+                val imageFile = File(dir, "crop_${UUID.randomUUID()}.png")
+                FileOutputStream(imageFile).use { out ->
+                    if (!exportBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                        error("Görsel dosyaya yazılamadı")
+                    }
+                    out.flush()
+                }
+
+                val now = System.currentTimeMillis()
+                val timestamp = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(now))
+                val note = NoteEntity(
+                    id = UUID.randomUUID().toString(),
+                    title = "$noteTitlePrefix ($timestamp)",
+                    content = "[PDF_PAGE:${imageFile.absolutePath}]\n\nKement ile kırpılan ekran görüntüsü (${exportBitmap.width}×${exportBitmap.height} px)",
+                    colorHex = "#F8FAFC",
+                    isPinned = false,
+                    createdAt = now,
+                    updatedAt = now
+                )
+                val db = SharkMentorDatabase.getDatabase(appContext)
+                val repo = NoteRepositoryImpl(db.noteDao(), appContext)
+                repo.insertOrUpdateNote(note)
+                note
+            } finally {
+                if (shouldRecycleCopy && !exportBitmap.isRecycled) {
+                    exportBitmap.recycle()
                 }
             }
-
-            val now = System.currentTimeMillis()
-            val timestamp = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(now))
-            val note = NoteEntity(
-                id = UUID.randomUUID().toString(),
-                title = "$noteTitlePrefix ($timestamp)",
-                content = "[PDF_PAGE:${imageFile.absolutePath}]\n\nKement ile kırpılan ekran görüntüsü (${bitmap.width}×${bitmap.height} px)",
-                colorHex = "#F8FAFC",
-                isPinned = false,
-                createdAt = now,
-                updatedAt = now
-            )
-            val db = SharkMentorDatabase.getDatabase(appContext)
-            val repo = NoteRepositoryImpl(db.noteDao(), appContext)
-            repo.insertOrUpdateNote(note)
-            note
         }
     }
 
     /**
-     * Exports the cropped bitmap as PNG to the device Gallery (`Pictures/SharkMentor`) via [MediaStore].
+     * Exports the cropped bitmap as PNG to the device Gallery across Android 9-16 (API 28-36).
      */
+    @Suppress("DEPRECATION")
     suspend fun saveBitmapToGallery(
         context: Context,
         bitmap: Bitmap
@@ -214,36 +240,97 @@ object DrawingScreenshotHelper {
             val appContext = context.applicationContext
             val resolver = appContext.contentResolver
             val fileName = "SharkMentor_Kirpim_${System.currentTimeMillis()}.png"
-
-            val values = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/SharkMentor")
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
-                }
-            }
-
-            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                ?: error("Galeri kaydı oluşturulamadı")
+            val (exportBitmap, shouldRecycleCopy) = prepareWritableBitmap(bitmap)
 
             try {
-                resolver.openOutputStream(uri)?.use { out ->
-                    if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                        error("PNG sıkıştırma başarısız oldu")
-                    }
-                } ?: error("Galeri yazma akışı açılamadı")
-
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val doneValues = ContentValues().apply {
-                        put(MediaStore.Images.Media.IS_PENDING, 0)
+                    val primaryCollection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                    val baseTitle = fileName.substringBeforeLast('.')
+
+                    fun tryInsert(collection: Uri, relativePath: String): Uri? {
+                        val values = ContentValues().apply {
+                            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                            put(MediaStore.Images.Media.TITLE, baseTitle)
+                            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                            put(MediaStore.Images.Media.RELATIVE_PATH, relativePath)
+                            put(MediaStore.Images.Media.IS_PENDING, 1)
+                        }
+                        return runCatching { resolver.insert(collection, values) }.getOrNull()
                     }
-                    resolver.update(uri, doneValues, null, null)
+
+                    val uri = tryInsert(primaryCollection, "${Environment.DIRECTORY_PICTURES}/SharkMentor")
+                        ?: tryInsert(primaryCollection, Environment.DIRECTORY_PICTURES)
+                        ?: tryInsert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, Environment.DIRECTORY_PICTURES)
+                        ?: error("Galeri kaydı oluşturulamadı")
+
+                    try {
+                        val outStream = resolver.openOutputStream(uri, "w")
+                            ?: resolver.openOutputStream(uri)
+                            ?: error("Galeri yazma akışı açılamadı")
+                        outStream.use { out ->
+                            if (!exportBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                                error("PNG sıkıştırma başarısız oldu")
+                            }
+                            out.flush()
+                        }
+
+                        val doneValues = ContentValues().apply {
+                            put(MediaStore.Images.Media.IS_PENDING, 0)
+                        }
+                        resolver.update(uri, doneValues, null, null)
+                        uri
+                    } catch (t: Throwable) {
+                        runCatching { resolver.delete(uri, null, null) }
+                        throw t
+                    }
+                } else {
+                    val hasWritePermission = ContextCompat.checkSelfPermission(
+                        appContext,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (!hasWritePermission) {
+                        error("Depolama izni verilmedi")
+                    }
+
+                    val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                    val targetDir = File(picturesDir, "SharkMentor").apply {
+                        if (!exists() && !mkdirs()) {
+                            // Fallback directly into Pictures if subfolder creation fails
+                            picturesDir.mkdirs()
+                        }
+                    }
+                    val actualDir = if (targetDir.exists() && targetDir.canWrite()) targetDir else picturesDir
+                    val outFile = File(actualDir, fileName)
+                    FileOutputStream(outFile).use { out ->
+                        if (!exportBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                            error("PNG sıkıştırma başarısız oldu")
+                        }
+                        out.flush()
+                    }
+
+                    val legacyValues = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                        put(MediaStore.Images.Media.TITLE, fileName.substringBeforeLast('.'))
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                        put(MediaStore.Images.Media.DATA, outFile.absolutePath)
+                        put(MediaStore.Images.Media.SIZE, outFile.length())
+                    }
+                    val insertedUri = runCatching {
+                        resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, legacyValues)
+                    }.getOrNull()
+
+                    MediaScannerConnection.scanFile(
+                        appContext,
+                        arrayOf(outFile.absolutePath),
+                        arrayOf("image/png"),
+                        null
+                    )
+                    insertedUri ?: Uri.fromFile(outFile)
                 }
-                uri
-            } catch (t: Throwable) {
-                runCatching { resolver.delete(uri, null, null) }
-                throw t
+            } finally {
+                if (shouldRecycleCopy && !exportBitmap.isRecycled) {
+                    exportBitmap.recycle()
+                }
             }
         }
     }
@@ -257,25 +344,33 @@ object DrawingScreenshotHelper {
     ): Result<Unit> = runCatching {
         val appContext = context.applicationContext
         val uri = withContext(Dispatchers.IO) {
-            val cacheDir = File(appContext.cacheDir, SHARED_CROPS_DIR).apply {
-                if (!exists()) mkdirs()
-                listFiles()?.forEach { oldFile ->
-                    if (System.currentTimeMillis() - oldFile.lastModified() > 60L * 60L * 1000L) {
-                        oldFile.delete()
+            val (exportBitmap, shouldRecycleCopy) = prepareWritableBitmap(bitmap)
+            try {
+                val cacheDir = File(appContext.cacheDir, SHARED_CROPS_DIR).apply {
+                    if (!exists()) mkdirs()
+                    listFiles()?.forEach { oldFile ->
+                        if (System.currentTimeMillis() - oldFile.lastModified() > 60L * 60L * 1000L) {
+                            oldFile.delete()
+                        }
                     }
                 }
-            }
-            val file = File(cacheDir, "sharkmentor_crop_${System.currentTimeMillis()}.png")
-            FileOutputStream(file).use { out ->
-                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                    error("Paylaşım görseli oluşturulamadı")
+                val file = File(cacheDir, "sharkmentor_crop_${System.currentTimeMillis()}.png")
+                FileOutputStream(file).use { out ->
+                    if (!exportBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                        error("Paylaşım görseli oluşturulamadı")
+                    }
+                    out.flush()
+                }
+                FileProvider.getUriForFile(
+                    appContext,
+                    "${appContext.packageName}.fileprovider",
+                    file
+                )
+            } finally {
+                if (shouldRecycleCopy && !exportBitmap.isRecycled) {
+                    exportBitmap.recycle()
                 }
             }
-            FileProvider.getUriForFile(
-                appContext,
-                "${appContext.packageName}.fileprovider",
-                file
-            )
         }
 
         val shareIntent = Intent(Intent.ACTION_SEND).apply {

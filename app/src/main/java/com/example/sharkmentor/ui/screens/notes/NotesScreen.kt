@@ -49,12 +49,15 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -131,8 +134,37 @@ fun NotesScreen(
     var editorPdfPreview by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var editorPdfPagePaths by remember { mutableStateOf<List<String>>(emptyList()) }
     var showEditor by remember { mutableStateOf(false) }
+    var editorSessionKey by remember { mutableIntStateOf(0) }
     var pendingPickedPdf by remember { mutableStateOf<ImportedPdfFile?>(null) }
     var showVaultBackupDialog by remember { mutableStateOf(false) }
+
+    fun openEditorSession(
+        noteId: String? = null,
+        initialTitle: String = "",
+        initialContent: String = "",
+        incomingUri: android.net.Uri? = null,
+        pdfPreview: android.graphics.Bitmap? = null,
+        pdfPagePaths: List<String> = emptyList()
+    ) {
+        selectedNoteId = noteId
+        editorInitialTitle = initialTitle
+        editorInitialContent = initialContent
+        editorIncomingUri = incomingUri
+        editorPdfPreview = pdfPreview
+        editorPdfPagePaths = pdfPagePaths
+        editorSessionKey++
+        showEditor = true
+    }
+
+    fun closeEditorSession() {
+        showEditor = false
+        selectedNoteId = null
+        editorInitialTitle = ""
+        editorInitialContent = ""
+        editorIncomingUri = null
+        editorPdfPreview = null
+        editorPdfPagePaths = emptyList()
+    }
 
     val pdfPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -163,13 +195,14 @@ fun NotesScreen(
 
     LaunchedEffect(importedNote) {
         if (importedNote != null) {
-            selectedNoteId = null
-            editorInitialTitle = importedNote.title
-            editorInitialContent = importedNote.content
-            editorIncomingUri = importedNote.sourceUri
-            editorPdfPreview = importedNote.pdfPreviewBitmap
-            editorPdfPagePaths = importedNote.pdfPageImagePaths
-            showEditor = true
+            openEditorSession(
+                noteId = null,
+                initialTitle = importedNote.title,
+                initialContent = importedNote.content,
+                incomingUri = importedNote.sourceUri,
+                pdfPreview = importedNote.pdfPreviewBitmap,
+                pdfPagePaths = importedNote.pdfPageImagePaths
+            )
             onImportedNoteConsumed()
         }
     }
@@ -213,13 +246,14 @@ fun NotesScreen(
                     if (extracted.isBlank()) {
                         Toast.makeText(context, "Belgede metin bulunamadı", Toast.LENGTH_SHORT).show()
                     }
-                    selectedNoteId = null
-                    editorInitialTitle = target.title
-                    editorInitialContent = extracted.take(30_000)
-                    editorIncomingUri = android.net.Uri.fromFile(target.localFile)
-                    editorPdfPreview = previewBmp
-                    editorPdfPagePaths = emptyList()
-                    showEditor = true
+                    openEditorSession(
+                        noteId = null,
+                        initialTitle = target.title,
+                        initialContent = extracted.take(30_000),
+                        incomingUri = android.net.Uri.fromFile(target.localFile),
+                        pdfPreview = previewBmp,
+                        pdfPagePaths = emptyList()
+                    )
                 }
             },
             onDismiss = {
@@ -229,19 +263,26 @@ fun NotesScreen(
     }
 
     if (showEditor) {
-        NoteDetailScreen(
-            noteId = selectedNoteId,
-            initialTitle = editorInitialTitle,
-            initialContent = editorInitialContent,
-            incomingFileUri = editorIncomingUri,
-            initialPdfPreview = editorPdfPreview,
-            initialPdfPagePaths = editorPdfPagePaths,
-            onOpenDrawer = onOpenDrawer,
-            onDismiss = { showEditor = false },
-            onSave = { _, _, _, _ ->
-                showEditor = false
-            }
-        )
+        key(editorSessionKey) {
+            val detailViewModel: NoteDetailViewModel = viewModel(
+                key = "note_detail_$editorSessionKey",
+                factory = NoteDetailViewModel.Factory(context)
+            )
+            NoteDetailScreen(
+                noteId = selectedNoteId,
+                initialTitle = editorInitialTitle,
+                initialContent = editorInitialContent,
+                incomingFileUri = editorIncomingUri,
+                initialPdfPreview = editorPdfPreview,
+                initialPdfPagePaths = editorPdfPagePaths,
+                viewModel = detailViewModel,
+                onOpenDrawer = onOpenDrawer,
+                onDismiss = { closeEditorSession() },
+                onSave = { _, _, _, _ ->
+                    closeEditorSession()
+                }
+            )
+        }
     } else {
         val openNoteOrPdf: (NoteEntity) -> Unit = { note ->
             val linkedPdfPath = extractPdfFilePathFromNote(note.content)
@@ -256,13 +297,14 @@ fun NotesScreen(
                     )
                 )
             } else {
-                selectedNoteId = note.id
-                editorInitialTitle = ""
-                editorInitialContent = ""
-                editorIncomingUri = null
-                editorPdfPreview = null
-                editorPdfPagePaths = emptyList()
-                showEditor = true
+                openEditorSession(
+                    noteId = note.id,
+                    initialTitle = "",
+                    initialContent = "",
+                    incomingUri = null,
+                    pdfPreview = null,
+                    pdfPagePaths = emptyList()
+                )
             }
         }
 
@@ -438,15 +480,7 @@ fun NotesScreen(
                 }
 
                 FloatingActionButton(
-                    onClick = {
-                        selectedNoteId = null
-                        editorInitialTitle = ""
-                        editorInitialContent = ""
-                        editorIncomingUri = null
-                        editorPdfPreview = null
-                        editorPdfPagePaths = emptyList()
-                        showEditor = true
-                    },
+                    onClick = { openEditorSession() },
                     containerColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
                     contentColor = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary
                 ) {
@@ -525,13 +559,18 @@ fun NoteCardItem(
 ) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
-    val accentColor = remember(note.colorHex, textColor) {
+    val accentColor = remember(note.colorHex, textColor, cardColor) {
         try {
             val tintHex = note.colorHex.substringBefore("|").trim()
             if (tintHex.isBlank() || tintHex.equals("#F8FAFC", ignoreCase = true) || tintHex.equals("#FFFFFF", ignoreCase = true)) {
                 textColor
             } else {
-                Color(android.graphics.Color.parseColor(tintHex))
+                val parsed = Color(android.graphics.Color.parseColor(tintHex))
+                if (kotlin.math.abs(parsed.luminance() - cardColor.luminance()) > 0.35f) {
+                    parsed
+                } else {
+                    textColor
+                }
             }
         } catch (_: Exception) {
             textColor

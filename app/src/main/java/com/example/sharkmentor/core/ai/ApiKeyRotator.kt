@@ -3,14 +3,15 @@ package com.example.sharkmentor.core.ai
 import android.content.Context
 import android.util.Log
 import com.example.sharkmentor.BuildConfig
-import com.google.ai.client.generativeai.type.InvalidAPIKeyException
-import com.google.ai.client.generativeai.type.QuotaExceededException
+import java.net.ConnectException
+import java.net.UnknownHostException
 import java.util.concurrent.atomic.AtomicInteger
 
 object ApiKeyRotator {
 
-    private fun cleanKey(raw: String): String =
-        raw.replace("\r", "")
+    private fun cleanKey(raw: String?): String =
+        raw.orEmpty()
+            .replace("\r", "")
             .replace("\n", "")
             .replace("\"", "")
             .replace("'", "")
@@ -22,20 +23,39 @@ object ApiKeyRotator {
         return key.startsWith("AQ.") || key.startsWith("AIza") || key.length >= 16
     }
 
-    private val cachedBuildConfigKeys: List<String> by lazy {
-        val fromMulti = BuildConfig.GEMINI_API_KEYS
+    private fun safeLogW(msg: String) {
+        runCatching { Log.w("ApiKeyRotator", msg) }
+    }
+
+    /**
+     * Pure-JVM helper for collecting, cleaning, and deduplicating built-in Gemini keys
+     * from comma/whitespace separated strings plus individual slot keys.
+     */
+    fun collectBuiltInKeysFromStrings(
+        csvKeys: String,
+        individualKeys: List<String>
+    ): List<String> {
+        val fromCsv = csvKeys
             .split(",", "\n", "\r", ";", " ", "\t")
             .map { cleanKey(it) }
-        val fromSingles = listOf(
-            BuildConfig.GEMINI_API_KEY,
-            BuildConfig.GEMINI_API_KEY_1,
-            BuildConfig.GEMINI_API_KEY_2,
-            BuildConfig.GEMINI_API_KEY_3
-        ).map { cleanKey(it) }
-
-        (fromMulti + fromSingles)
+        val fromSingles = individualKeys.map { cleanKey(it) }
+        return (fromCsv + fromSingles)
             .filter { isUsableKeyCandidate(it) }
             .distinct()
+    }
+
+    private val cachedBuildConfigKeys: List<String> by lazy {
+        runCatching {
+            collectBuiltInKeysFromStrings(
+                csvKeys = BuildConfig.GEMINI_API_KEYS,
+                individualKeys = listOf(
+                    BuildConfig.GEMINI_API_KEY,
+                    BuildConfig.GEMINI_API_KEY_1,
+                    BuildConfig.GEMINI_API_KEY_2,
+                    BuildConfig.GEMINI_API_KEY_3
+                )
+            )
+        }.getOrDefault(emptyList())
     }
 
     private val currentIndex = AtomicInteger(0)
@@ -45,6 +65,8 @@ object ApiKeyRotator {
 
     fun getBuildConfigKeys(): List<String> = cachedBuildConfigKeys
 
+    fun getAllBuiltInKeys(): List<String> = cachedBuildConfigKeys
+
     fun getAllEffectiveKeys(context: Context? = null): List<String> =
         resolveEffectiveKeys(context)
 
@@ -52,7 +74,7 @@ object ApiKeyRotator {
         resolveEffectiveKeys(context).isNotEmpty()
 
     private fun resolveEffectiveKeys(context: Context? = null): List<String> {
-        val prefs = UserAiPreferences.getOrNull(context)
+        val prefs = runCatching { UserAiPreferences.getOrNull(context) }.getOrNull()
         val userKeys = prefs?.getParsedUserGeminiKeys()
             .orEmpty()
             .map { cleanKey(it) }
@@ -70,7 +92,14 @@ object ApiKeyRotator {
     }
 
     fun hasCustomUserGeminiKeys(context: Context? = null): Boolean =
-        UserAiPreferences.getOrNull(context)?.getParsedUserGeminiKeys()?.isNotEmpty() == true
+        runCatching { UserAiPreferences.getOrNull(context)?.getParsedUserGeminiKeys()?.isNotEmpty() == true }
+            .getOrDefault(false)
+
+    fun getActiveKeyIndex(): Int {
+        val keys = resolveEffectiveKeys(null)
+        if (keys.isEmpty()) return 0
+        return Math.abs(currentIndex.get()) % keys.size
+    }
 
     fun getStartIndex(context: Context? = null): Int {
         val keys = resolveEffectiveKeys(context)
@@ -89,7 +118,7 @@ object ApiKeyRotator {
     fun getActiveKey(context: Context?): String {
         val keys = resolveEffectiveKeys(context)
         if (keys.isEmpty()) {
-            return cleanKey(BuildConfig.GEMINI_API_KEY)
+            return runCatching { cleanKey(BuildConfig.GEMINI_API_KEY) }.getOrDefault("")
         }
         val idx = Math.abs(currentIndex.get()) % keys.size
         return keys[idx]
@@ -101,7 +130,7 @@ object ApiKeyRotator {
         val keys = resolveEffectiveKeys(context)
         if (keys.size <= 1) return getActiveKey(context)
         val nextIdx = Math.abs(currentIndex.incrementAndGet()) % keys.size
-        Log.w("ApiKeyRotator", "Rotating Gemini API key to index: $nextIdx / ${keys.size}")
+        safeLogW("Rotating Gemini API key to index: $nextIdx / ${keys.size}")
         return keys[nextIdx]
     }
 
@@ -118,11 +147,28 @@ object ApiKeyRotator {
 
     fun getKeyCount(context: Context?): Int = resolveEffectiveKeys(context).size
 
+    fun getKeySlotLabel(slotIndex: Int): String = "Anahtar #${slotIndex + 1}"
+
+    fun maskApiKey(apiKey: String, slotIndex: Int? = null): String {
+        val clean = cleanKey(apiKey)
+        val masked = if (clean.length <= 8) "***" else "${clean.take(3)}...${clean.takeLast(4)}"
+        return if (slotIndex != null) {
+            "${getKeySlotLabel(slotIndex)} ($masked)"
+        } else {
+            masked
+        }
+    }
+
     fun shouldRotateKey(throwable: Throwable): Boolean {
-        if (throwable is QuotaExceededException ||
-            throwable is InvalidAPIKeyException
-        ) {
-            return true
+        if (throwable is UnknownHostException || throwable is ConnectException) {
+            return false
+        }
+
+        if (throwable is GeminiApiException) {
+            if (throwable.isModelNotFound) return false
+            return throwable.isQuotaOrRateLimit ||
+                throwable.isAuthOrKeyError ||
+                throwable.isOverloadOrTransient
         }
 
         val fullError = "${throwable.javaClass.simpleName} ${throwable.message} ${throwable.cause?.message} ${throwable.localizedMessage}".lowercase()
@@ -134,9 +180,7 @@ object ApiKeyRotator {
             fullError.contains("unknownhostexception") ||
             fullError.contains("connectexception") ||
             fullError.contains("software caused connection abort") ||
-            fullError.contains("no address associated with hostname") ||
-            throwable is java.net.ConnectException ||
-            throwable is java.net.UnknownHostException
+            fullError.contains("no address associated with hostname")
         ) {
             return false
         }
@@ -145,7 +189,8 @@ object ApiKeyRotator {
         if (fullError.contains("404") ||
             fullError.contains("not_found") ||
             fullError.contains("no longer available") ||
-            fullError.contains("not found for api version")
+            fullError.contains("not found for api version") ||
+            fullError.contains("is not supported")
         ) {
             return false
         }
@@ -171,12 +216,7 @@ object ApiKeyRotator {
             fullError.contains("permission_denied") ||
             fullError.contains("invalid") ||
             fullError.contains("overloaded") ||
-            fullError.contains("unavailable") ||
-            fullError.contains("serverexception") ||
-            fullError.contains("unknownexception") ||
-            fullError.contains("unexpected happened") ||
-            fullError.contains("serialization") ||
-            fullError.contains("missingfield")
+            fullError.contains("unavailable")
     }
 
     fun isQuotaExceeded(throwable: Throwable): Boolean = shouldRotateKey(throwable)

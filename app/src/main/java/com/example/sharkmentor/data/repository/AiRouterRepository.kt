@@ -10,6 +10,9 @@ import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
 import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.GeminiChatTurn
+import com.example.sharkmentor.core.ai.GeminiFunctionCall
+import com.example.sharkmentor.core.ai.GeminiFunctionDeclaration
+import com.example.sharkmentor.core.ai.GeminiSchemaProperty
 import com.example.sharkmentor.core.ai.MultiProviderAiClient
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.ImageStorageManager
@@ -22,10 +25,6 @@ import com.example.sharkmentor.data.local.entity.TargetPeriod
 import com.example.sharkmentor.data.local.entity.TargetType
 import com.example.sharkmentor.data.local.entity.TrainingFolderEntity
 import com.example.sharkmentor.data.local.entity.TrainingQuestionEntity
-import com.google.ai.client.generativeai.type.FunctionCallPart
-import com.google.ai.client.generativeai.type.FunctionDeclaration
-import com.google.ai.client.generativeai.type.Schema
-import com.google.ai.client.generativeai.type.Tool
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlinx.coroutines.CancellationException
@@ -34,40 +33,6 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.UUID
-
-/**
- * Speed/Depth Presets:
- * - Hızlı: gemini-3.6-flash, temperature = 0.3f
- * - Detaylı: gemini-3.6-flash, temperature = 0.45f
- */
-enum class AiModelPower(
-    val id: String,
-    val label: String,
-    val description: String,
-    val primaryModel: String,
-    val temperature: Float,
-    val maxOutputTokens: Int,
-    val topP: Float
-) {
-    FLASH(
-        id = "fast_3_6",
-        label = "Hızlı",
-        description = "Anlık ve sıfır laf kalabalığı yanıt",
-        primaryModel = "gemini-3.6-flash",
-        temperature = 0.3f,
-        maxOutputTokens = 4096,
-        topP = 0.8f
-    ),
-    PRO(
-        id = "deep_3_6",
-        label = "Detaylı",
-        description = "Adım adım derin problem çözümü ve sentez",
-        primaryModel = "gemini-3.6-flash",
-        temperature = 0.45f,
-        maxOutputTokens = 8192,
-        topP = 0.9f
-    )
-}
 
 enum class SharkAiCapability(
     val id: String,
@@ -281,8 +246,6 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
    - Bunun yerine öğrenciyi akışta tutan tek cümlelik doğal bir takip sorusu (kanca) sor (Örn: "Bu adımda kafana yatmayan bir yer var mı, yoksa benzer bir ikiz soruyla pekiştirelim mi?").
 """
 
-        fun getDepthDirective(modelPower: AiModelPower): String = ""
-
         const val SOLVER_ENGINE_SYSTEM_PROMPT = """
 Sen YKS/LGS düzeyinde uzman, pedagojik ve analitik bir Soru Çözüm Motorusun.
 Görevin görseldeki veya metindeki soruyu hatasız okumak ve doğrudan anlaşılır işlem adımlarıyla çözmektir.
@@ -388,59 +351,57 @@ $MANDATORY_PERSONA_RULES
         database.planFolderDao()
     )
 
-    val organizeErrorBankDeclaration: FunctionDeclaration = FunctionDeclaration(
+    val organizeErrorBankDeclaration: GeminiFunctionDeclaration = GeminiFunctionDeclaration(
         name = "organizeErrorBank",
         description = "Organizes the student's Error Bank (Hata Kumbarası) by classifying untagged questions by subject/topic, creating a training folder, or saving an attached question into the error bank.",
-        parameters = listOf(
-            Schema.str(
-                name = "subject",
+        parameters = mapOf(
+            "subject" to GeminiSchemaProperty(
+                type = "string",
                 description = "Subject name such as Matematik, Fizik, Kimya, Biyoloji, Türkçe, Tarih, Coğrafya"
             ),
-            Schema.str(
-                name = "topic",
+            "topic" to GeminiSchemaProperty(
+                type = "string",
                 description = "Sub-topic name such as Türev, İntegral, Optik, Paragraf"
             ),
-            Schema.str(
-                name = "folderTitle",
+            "folderTitle" to GeminiSchemaProperty(
+                type = "string",
                 description = "Title for the organized training folder"
             )
         ),
         requiredParameters = listOf("subject", "topic")
     )
 
-    val addStudyPlanItemDeclaration: FunctionDeclaration = FunctionDeclaration(
+    val addStudyPlanItemDeclaration: GeminiFunctionDeclaration = GeminiFunctionDeclaration(
         name = "addStudyPlanItem",
         description = "Adds a new study task or session item directly into the student's active Study Plan (Çalışma Planı).",
-        parameters = listOf(
-            Schema.str(
-                name = "subject",
+        parameters = mapOf(
+            "subject" to GeminiSchemaProperty(
+                type = "string",
                 description = "Subject name (e.g. Matematik, Fizik, Türkçe)"
             ),
-            Schema.str(
-                name = "topic",
+            "topic" to GeminiSchemaProperty(
+                type = "string",
                 description = "Topic or study focus (e.g. Türev Uygulamaları, Paragraf Rutini)"
             ),
-            Schema.int(
-                name = "dayOfWeek",
+            "dayOfWeek" to GeminiSchemaProperty(
+                type = "integer",
                 description = "Day of week from 1 (Monday / Pazartesi) to 7 (Sunday / Pazar)"
             ),
-            Schema.str(
-                name = "scheduledTime",
+            "scheduledTime" to GeminiSchemaProperty(
+                type = "string",
                 description = "Time slot formatted as HH:mm - HH:mm (e.g. 16:00 - 17:30)"
             ),
-            Schema.int(
-                name = "targetQuestions",
+            "targetQuestions" to GeminiSchemaProperty(
+                type = "integer",
                 description = "Target number of questions to solve (minimum 20, default 30)"
             )
         ),
         requiredParameters = listOf("subject", "topic", "dayOfWeek")
     )
 
-    val autonomousSharkTool: Tool = Tool(
-        functionDeclarations = listOf(
-            organizeErrorBankDeclaration,
-            addStudyPlanItemDeclaration
-        )
+    val autonomousSharkTools: List<GeminiFunctionDeclaration> = listOf(
+        organizeErrorBankDeclaration,
+        addStudyPlanItemDeclaration
     )
 
     /**
@@ -450,7 +411,6 @@ $MANDATORY_PERSONA_RULES
         userPrompt: String,
         contextInstruction: String = "",
         attachmentUri: Uri? = null,
-        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> {
         val cleanPrompt = userPrompt.trim().ifBlank {
@@ -463,15 +423,12 @@ $MANDATORY_PERSONA_RULES
             }
         }.trim()
 
-        val maxTokens = 4096
-
         return streamEnginePipeline(
             activeEngine = SharkAiEngine.SOLVER_ENGINE,
             prompt = cleanPrompt,
             systemInstruction = fullSystemInstruction,
             attachmentUri = attachmentUri,
-            modelPower = modelPower,
-            overrideMaxTokens = maxTokens,
+            overrideMaxTokens = 4096,
             onPartialText = onPartialText
         )
     }
@@ -483,7 +440,6 @@ $MANDATORY_PERSONA_RULES
         userPrompt: String,
         contextInstruction: String = "",
         attachmentUri: Uri? = null,
-        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> {
         val cleanPrompt = userPrompt.trim().ifBlank {
@@ -496,15 +452,12 @@ $MANDATORY_PERSONA_RULES
             }
         }.trim()
 
-        val maxTokens = 4096
-
         return streamEnginePipeline(
             activeEngine = SharkAiEngine.TWIN_QUESTION_ENGINE,
             prompt = cleanPrompt,
             systemInstruction = fullSystemInstruction,
             attachmentUri = attachmentUri,
-            modelPower = modelPower,
-            overrideMaxTokens = maxTokens,
+            overrideMaxTokens = 4096,
             onPartialText = onPartialText
         )
     }
@@ -516,7 +469,6 @@ $MANDATORY_PERSONA_RULES
         userPrompt: String,
         contextInstruction: String = "",
         attachmentUri: Uri? = null,
-        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> {
         val cleanPrompt = userPrompt.trim().ifBlank {
@@ -529,15 +481,12 @@ $MANDATORY_PERSONA_RULES
             }
         }.trim()
 
-        val maxTokens = 6144
-
         return streamEnginePipeline(
             activeEngine = SharkAiEngine.PLANNER_OR_ORGANIZER,
             prompt = cleanPrompt,
             systemInstruction = fullSystemInstruction,
             attachmentUri = attachmentUri,
-            modelPower = modelPower,
-            overrideMaxTokens = maxTokens,
+            overrideMaxTokens = 6144,
             onPartialText = onPartialText
         )
     }
@@ -549,7 +498,6 @@ $MANDATORY_PERSONA_RULES
         userPrompt: String,
         contextInstruction: String = "",
         attachmentUri: Uri? = null,
-        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> {
         val fullSystemInstruction = buildString {
@@ -564,7 +512,6 @@ $MANDATORY_PERSONA_RULES
             prompt = userPrompt,
             systemInstruction = fullSystemInstruction,
             attachmentUri = attachmentUri,
-            modelPower = modelPower,
             overrideMaxTokens = null,
             onPartialText = onPartialText
         )
@@ -574,13 +521,11 @@ $MANDATORY_PERSONA_RULES
         userPrompt: String,
         systemInstruction: String,
         attachmentUri: Uri? = null,
-        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = executeSolverEngine(
         userPrompt = userPrompt,
         contextInstruction = systemInstruction,
         attachmentUri = attachmentUri,
-        modelPower = modelPower,
         onPartialText = onPartialText
     )
 
@@ -588,13 +533,11 @@ $MANDATORY_PERSONA_RULES
         userPrompt: String,
         systemInstruction: String,
         attachmentUri: Uri? = null,
-        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = executeTwinQuestionEngine(
         userPrompt = userPrompt,
         contextInstruction = systemInstruction,
         attachmentUri = attachmentUri,
-        modelPower = modelPower,
         onPartialText = onPartialText
     )
 
@@ -603,7 +546,6 @@ $MANDATORY_PERSONA_RULES
         systemInstruction: String,
         attachmentUri: Uri? = null,
         enableTools: Boolean = false,
-        modelPower: AiModelPower = AiModelPower.FLASH,
         activeEngine: SharkAiEngine? = null,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> {
@@ -617,28 +559,24 @@ $MANDATORY_PERSONA_RULES
                 userPrompt = prompt,
                 contextInstruction = systemInstruction,
                 attachmentUri = attachmentUri,
-                modelPower = modelPower,
                 onPartialText = onPartialText
             )
             SharkAiEngine.TWIN_QUESTION_ENGINE -> executeTwinQuestionEngine(
                 userPrompt = prompt,
                 contextInstruction = systemInstruction,
                 attachmentUri = attachmentUri,
-                modelPower = modelPower,
                 onPartialText = onPartialText
             )
             SharkAiEngine.PLANNER_OR_ORGANIZER -> executeAutonomousPlannerEngine(
                 userPrompt = prompt,
                 contextInstruction = systemInstruction,
                 attachmentUri = attachmentUri,
-                modelPower = modelPower,
                 onPartialText = onPartialText
             )
             SharkAiEngine.CONVERSATIONAL_PEER -> executeConversationalPeerEngine(
                 userPrompt = prompt,
                 contextInstruction = systemInstruction,
                 attachmentUri = attachmentUri,
-                modelPower = modelPower,
                 onPartialText = onPartialText
             )
         }
@@ -652,17 +590,13 @@ $MANDATORY_PERSONA_RULES
         systemInstruction: String,
         attachmentUri: Uri,
         activeEngine: SharkAiEngine = SharkAiEngine.SOLVER_ENGINE,
-        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
         val attachments = resolveMultimodalAttachment(attachmentUri)
         val extraDecodedBitmaps = mutableListOf<Bitmap>()
 
         try {
-            val enrichedSystemInstruction = buildString {
-                append(systemInstruction.trim())
-                append(getDepthDirective(modelPower))
-            }.trim()
+            val enrichedSystemInstruction = systemInstruction.trim()
 
             val visionBitmaps = mutableListOf<Bitmap>()
             visionBitmaps.addAll(attachments.bitmaps)
@@ -884,13 +818,9 @@ $MANDATORY_PERSONA_RULES
         prompt: String,
         systemInstruction: String,
         chatHistory: List<com.example.sharkmentor.core.ai.OpenAiChatMessage> = emptyList(),
-        modelPower: AiModelPower = AiModelPower.FLASH,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
-        val enrichedSystemInstruction = buildString {
-            append(systemInstruction.trim())
-            append(getDepthDirective(modelPower))
-        }.trim()
+        val enrichedSystemInstruction = systemInstruction.trim()
 
         val prefs = UserAiPreferences.getOrNull(context)
         val selectedProvider = prefs?.getSelectedProvider() ?: AiProviderChoice.AUTO
@@ -913,7 +843,7 @@ $MANDATORY_PERSONA_RULES
 
         suspend fun runSpecificExternalProvider(provider: AiProviderChoice): Result<AiRouterResult> {
             return try {
-                val maxTokens = if (isAutonomousActionRequest) 4096 else 4096
+                val maxTokens = 4096
                 val resultText = MultiProviderAiClient.streamChatCompletion(
                     provider = provider,
                     systemPrompt = enrichedSystemInstruction,
@@ -976,7 +906,6 @@ $MANDATORY_PERSONA_RULES
                     prompt = prompt,
                     systemInstruction = enrichedSystemInstruction,
                     chatHistory = geminiHistory,
-                    modelPower = modelPower,
                     overrideMaxTokens = 6144,
                     forceInlineActionMode = isAutonomousActionRequest,
                     onPartialText = onPartialText
@@ -1002,7 +931,6 @@ $MANDATORY_PERSONA_RULES
                     prompt = prompt,
                     systemInstruction = enrichedSystemInstruction,
                     chatHistory = geminiHistory,
-                    modelPower = modelPower,
                     overrideMaxTokens = 6144,
                     forceInlineActionMode = isAutonomousActionRequest,
                     onPartialText = onPartialText
@@ -1023,7 +951,6 @@ $MANDATORY_PERSONA_RULES
                         prompt = prompt,
                         systemInstruction = enrichedSystemInstruction,
                         chatHistory = geminiHistory,
-                        modelPower = modelPower,
                         overrideMaxTokens = 6144,
                         forceInlineActionMode = true,
                         onPartialText = onPartialText
@@ -1048,7 +975,6 @@ $MANDATORY_PERSONA_RULES
                         prompt = prompt,
                         systemInstruction = enrichedSystemInstruction,
                         chatHistory = geminiHistory,
-                        modelPower = modelPower,
                         onPartialText = onPartialText
                     )
                     return@withContext if (geminiFallback.isSuccess) geminiFallback else autoExtAttempt
@@ -1059,7 +985,6 @@ $MANDATORY_PERSONA_RULES
                     prompt = prompt,
                     systemInstruction = enrichedSystemInstruction,
                     chatHistory = geminiHistory,
-                    modelPower = modelPower,
                     onPartialText = onPartialText
                 )
                 if (geminiAttempt.isSuccess || !hasAnyExternalKeys) {
@@ -1080,7 +1005,6 @@ $MANDATORY_PERSONA_RULES
         systemInstruction: String,
         attachmentUri: Uri? = null,
         chatHistory: List<com.example.sharkmentor.core.ai.OpenAiChatMessage> = emptyList(),
-        modelPower: AiModelPower = AiModelPower.FLASH,
         overrideMaxTokens: Int? = null,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> {
@@ -1090,7 +1014,6 @@ $MANDATORY_PERSONA_RULES
                 systemInstruction = systemInstruction,
                 attachmentUri = attachmentUri,
                 activeEngine = activeEngine,
-                modelPower = modelPower,
                 onPartialText = onPartialText
             )
         } else {
@@ -1099,7 +1022,6 @@ $MANDATORY_PERSONA_RULES
                 prompt = prompt,
                 systemInstruction = systemInstruction,
                 chatHistory = chatHistory,
-                modelPower = modelPower,
                 onPartialText = onPartialText
             )
         }
@@ -1113,24 +1035,23 @@ $MANDATORY_PERSONA_RULES
         prompt: String,
         systemInstruction: String,
         chatHistory: List<GeminiChatTurn> = emptyList(),
-        modelPower: AiModelPower = AiModelPower.FLASH,
         overrideMaxTokens: Int? = null,
         forceInlineActionMode: Boolean = false,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
         val shouldAttachTools = !forceInlineActionMode && activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER
-        val effectiveMaxTokens = overrideMaxTokens ?: if (modelPower == AiModelPower.PRO) 16384 else 6144
+        val effectiveMaxTokens = overrideMaxTokens ?: 8192
 
         var geminiResult = GeminiAiFactory.streamContentWithFailover(
             context = context,
             systemInstruction = systemInstruction,
             userPrompt = prompt,
             chatHistory = chatHistory,
-            tools = if (shouldAttachTools) listOf(autonomousSharkTool) else emptyList(),
+            tools = if (shouldAttachTools) autonomousSharkTools else emptyList(),
             responseJson = false,
-            temperature = modelPower.temperature,
+            temperature = 0.35f,
             maxOutputTokens = effectiveMaxTokens,
-            topP = modelPower.topP,
+            topP = 0.85f,
             timeoutMs = 75_000L,
             onPartialText = onPartialText
         )
@@ -1153,9 +1074,9 @@ $MANDATORY_PERSONA_RULES
                 chatHistory = chatHistory,
                 tools = emptyList(),
                 responseJson = false,
-                temperature = modelPower.temperature,
+                temperature = 0.35f,
                 maxOutputTokens = effectiveMaxTokens,
-                topP = modelPower.topP,
+                topP = 0.85f,
                 timeoutMs = 75_000L,
                 onPartialText = onPartialText
             )
@@ -1174,10 +1095,10 @@ $MANDATORY_PERSONA_RULES
         var createdFolderId: String? = null
 
         if (response.functionCalls.isNotEmpty()) {
-            for (call: FunctionCallPart in response.functionCalls) {
+            for (call: GeminiFunctionCall in response.functionCalls) {
                 val executionResult = executeToolCall(
                     call.name,
-                    call.args.mapValues { it.value.orEmpty() },
+                    call.args,
                     null
                 )
                 if (executionResult.note.isNotBlank()) {

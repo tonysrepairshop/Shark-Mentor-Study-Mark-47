@@ -24,6 +24,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -105,6 +107,12 @@ KESİN DAVRANIŞ KURALLARI:
     private val _aiSavedNewNoteId = MutableStateFlow<String?>(null)
     val aiSavedNewNoteId: StateFlow<String?> = _aiSavedNewNoteId.asStateFlow()
 
+    @Volatile
+    private var loadGeneration: Long = 0L
+    private var loadJob: Job? = null
+    private val _isNoteReadyForAutoSave = MutableStateFlow(true)
+    val isNoteReady: StateFlow<Boolean> = _isNoteReadyForAutoSave.asStateFlow()
+
     fun resetAiSavedNewNoteStatus() {
         _aiSavedNewNoteId.value = null
     }
@@ -130,15 +138,20 @@ KESİN DAVRANIŞ KURALLARI:
                 )
             }
                 .drop(1)
+                .filter { _isNoteReadyForAutoSave.value }
                 .debounce(600L)
                 .distinctUntilChanged { old, new ->
-                    old.title == new.title &&
+                    old.id == new.id &&
+                        old.title == new.title &&
                         old.content == new.content &&
                         old.colorHex == new.colorHex &&
                         old.isPinned == new.isPinned
                 }
                 .collectLatest { note ->
-                    if (note.title.isNotBlank() || note.content.isNotBlank()) {
+                    if (_isNoteReadyForAutoSave.value &&
+                        note.id == _noteId.value &&
+                        (note.title.isNotBlank() || note.content.isNotBlank())
+                    ) {
                         withContext(Dispatchers.IO) {
                             noteRepository.insertOrUpdateNote(note)
                         }
@@ -148,24 +161,36 @@ KESİN DAVRANIŞ KURALLARI:
     }
 
     fun loadNoteById(id: String) {
+        val targetGen = ++loadGeneration
+        loadJob?.cancel()
+        _isNoteReadyForAutoSave.value = false
         _noteId.value = id
+        _noteTitle.value = ""
+        _noteContent.value = ""
+        _colorHex.value = "#F8FAFC"
+        _isPinned.value = false
         _aiResult.value = null
         _aiError.value = null
-        viewModelScope.launch(Dispatchers.IO) {
+        loadJob = viewModelScope.launch(Dispatchers.IO) {
             val note = noteRepository.getNoteById(id)
-            if (note != null) {
-                withContext(Dispatchers.Main) {
+            withContext(Dispatchers.Main) {
+                if (targetGen != loadGeneration) return@withContext
+                if (note != null) {
                     _noteTitle.value = note.title
                     _noteContent.value = note.content
                     _colorHex.value = note.colorHex
                     _isPinned.value = note.isPinned
                     _createdAt.value = note.createdAt
                 }
+                _isNoteReadyForAutoSave.value = true
             }
         }
     }
 
     fun initializeEmptyNote() {
+        loadGeneration++
+        loadJob?.cancel()
+        _isNoteReadyForAutoSave.value = false
         _noteId.value = UUID.randomUUID().toString()
         _noteTitle.value = ""
         _noteContent.value = ""
@@ -174,6 +199,7 @@ KESİN DAVRANIŞ KURALLARI:
         _createdAt.value = System.currentTimeMillis()
         _aiResult.value = null
         _aiError.value = null
+        _isNoteReadyForAutoSave.value = true
     }
 
     fun initializeNote(
@@ -181,6 +207,9 @@ KESİN DAVRANIŞ KURALLARI:
         fallbackTitle: String = "",
         fallbackContent: String = ""
     ) {
+        loadGeneration++
+        loadJob?.cancel()
+        _isNoteReadyForAutoSave.value = false
         _noteId.value = initialNote?.id ?: UUID.randomUUID().toString()
         _noteTitle.value = initialNote?.title ?: fallbackTitle
         _noteContent.value = initialNote?.content ?: fallbackContent
@@ -189,6 +218,7 @@ KESİN DAVRANIŞ KURALLARI:
         _createdAt.value = initialNote?.createdAt ?: System.currentTimeMillis()
         _aiResult.value = null
         _aiError.value = null
+        _isNoteReadyForAutoSave.value = true
     }
 
     fun onTitleChanged(newTitle: String) {
@@ -483,6 +513,7 @@ KESİN DAVRANIŞ KURALLARI:
                         if (streamedResult.isNotBlank()) {
                             _aiResult.value = streamedResult
                             _aiError.value = null
+                            saveAiSummaryAsNewNote(streamedResult.trim())
                             return@launch
                         }
                     } catch (ce: CancellationException) {

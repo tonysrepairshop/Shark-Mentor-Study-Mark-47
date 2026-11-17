@@ -82,25 +82,32 @@ jobs:
                   sf.write(f"### 🔐 Build Secret Injection Status\n{summary}\n")
           PYEOF
 
-      - name: Build Debug APK & Capture Diagnostics
+      - name: Run Unit Tests & Build Debug APK
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x ./gradlew
           set +e
-          ./gradlew assembleDebug --no-daemon 2>&1 | tee build.log
-          BUILD_EXIT=${PIPESTATUS[0]}
+          ./gradlew testDebugUnitTest --no-daemon 2>&1 | tee test.log
+          TEST_EXIT=${PIPESTATUS[0]}
+          if [ $TEST_EXIT -eq 0 ]; then
+            ./gradlew assembleDebug --no-daemon 2>&1 | tee build.log
+            BUILD_EXIT=${PIPESTATUS[0]}
+          else
+            cp test.log build.log
+            BUILD_EXIT=$TEST_EXIT
+          fi
           set -e
           if [ $BUILD_EXIT -ne 0 ] || [ ! -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            echo "=== KOTLIN COMPILER ERRORS (e:) ===" > error_summary.txt
-            grep -E "e: |FAILURE:|What went wrong:|^\* |> Task .* FAILED" build.log >> error_summary.txt || true
+            echo "=== KOTLIN COMPILER / TEST ERRORS ===" > error_summary.txt
+            grep -E "e: |FAILURE:|What went wrong:|^\* |> Task .* FAILED|FAILED$" build.log >> error_summary.txt || true
             echo "=== TAIL OF BUILD LOG ===" >> error_summary.txt
             tail -n 60 build.log >> error_summary.txt
             python3 - << 'PYEOF'
           import subprocess, os
           content = open("error_summary.txt", errors="ignore").read()[:14000]
-          body = "### ❌ Build Diagnostic Log\n```\n" + content + "\n```"
+          body = "### ❌ Build / Test Diagnostic Log\n```\n" + content + "\n```"
           repo = os.environ["GITHUB_REPOSITORY"]
           sha = os.environ["GITHUB_SHA"]
           subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}/comments", "-f", f"body={body}"], check=False)
@@ -154,8 +161,21 @@ jobs:
           V3_OK=$(grep -c "Verified using v3 scheme (APK Signature Scheme v3): true" apksigner_out.txt || true)
 
           RESOURCES_INFO=$(unzip -v "$APK" | grep -E "resources\.arsc" || echo "resources.arsc not found")
-          TEST_ONLY=$( "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml | grep -E "testOnly|minSdkVersion|targetSdkVersion|versionCode|versionName|extractNativeLibs|isSplitRequired|debuggable" || true )
+          TEST_ONLY=$( "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml | grep -E "testOnly|minSdkVersion|targetSdkVersion|versionCode|versionName|extractNativeLibs|isSplitRequired|debuggable|compileSdkVersionCodename" || true )
           BADGING=$("$AAPT2" dump badging "$APK" | head -n 5 || true)
+
+          CODENAME_FOUND=0
+          if echo "$BADGING $TEST_ONLY" | grep -qi "compileSdkVersionCodename"; then
+            CODENAME_FOUND=1
+          fi
+          TEST_ONLY_FOUND=0
+          if echo "$TEST_ONLY" | grep -qiE "testOnly.*(true|0xffffffff)"; then
+            TEST_ONLY_FOUND=1
+          fi
+          RESOURCES_MISSING=0
+          if [ "$RESOURCES_INFO" = "resources.arsc not found" ] || [ -z "$RESOURCES_INFO" ]; then
+            RESOURCES_MISSING=1
+          fi
 
           rm -rf /tmp/so_check && mkdir -p /tmp/so_check
           unzip -q "$APK" "lib/*" -d /tmp/so_check 2>/dev/null || true
@@ -165,8 +185,15 @@ jobs:
             ALIGNS=$(readelf -lW "$sofile" 2>/dev/null | awk '$1 == "LOAD" {print $NF}' | sort -u | tr '\n' ' ')
             REL_SO=${sofile#/tmp/so_check/}
             if echo "$ALIGNS" | grep -qE "0x1000([^0-9a-fA-F]|$)|0x800([^0-9a-fA-F]|$)|0x400([^0-9a-fA-F]|$)"; then
-              SO_REPORT="${SO_REPORT}WARN_4KB: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
-              UNALIGNED_4KB=1
+              case "$REL_SO" in
+                lib/arm64-v8a/*|lib/x86_64/*)
+                  SO_REPORT="${SO_REPORT}FAIL_4KB_64BIT: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
+                  UNALIGNED_4KB=1
+                  ;;
+                *)
+                  SO_REPORT="${SO_REPORT}INFO_32BIT: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
+                  ;;
+              esac
             else
               SO_REPORT="${SO_REPORT}OK: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
             fi
@@ -182,7 +209,10 @@ jobs:
             echo "- **SHA-256:** \`${APK_SHA256}\`"
             echo "- **apksigner exit:** ${APKSIGNER_EXIT} (v1=${V1_OK}, v2=${V2_OK}, v3=${V3_OK})"
             echo "- **zipalign -P 16 exit:** ${ZIPALIGN_EXIT}"
-            echo "- **Unaligned 4KB .so detected:** ${UNALIGNED_4KB}"
+            echo "- **Unaligned 4KB 64-bit .so detected:** ${UNALIGNED_4KB}"
+            echo "- **Preview codename flag:** ${CODENAME_FOUND}"
+            echo "- **testOnly flag:** ${TEST_ONLY_FOUND}"
+            echo "- **resources.arsc missing:** ${RESOURCES_MISSING}"
             echo ""
             echo "#### apksigner verify"
             echo '```'
@@ -223,6 +253,10 @@ jobs:
           fi
           if [ "$ZIPALIGN_EXIT" -ne 0 ] || [ "$UNALIGNED_4KB" -ne 0 ]; then
             echo "16KB alignment check failed! (zipalign=$ZIPALIGN_EXIT, unaligned_4kb=$UNALIGNED_4KB)"
+            exit 1
+          fi
+          if [ "$CODENAME_FOUND" -ne 0 ] || [ "$TEST_ONLY_FOUND" -ne 0 ] || [ "$RESOURCES_MISSING" -ne 0 ]; then
+            echo "Manifest/resource packaging verification failed! (codename=$CODENAME_FOUND, testOnly=$TEST_ONLY_FOUND, resMissing=$RESOURCES_MISSING)"
             exit 1
           fi
 

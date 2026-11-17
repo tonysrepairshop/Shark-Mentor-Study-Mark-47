@@ -42,7 +42,7 @@ KESİN KURALLAR:
     }
 
     /**
-     * Streams a text chat completion using Mark 42's `GenerativeModel` SDK pipeline.
+     * Streams a text chat completion using the pure OkHttp+Gson REST pipeline (`GeminiAiFactory`).
      * Built-in keys strictly use `gemini-3.6-flash`; custom user keys use the selected model.
      */
     suspend fun streamTextChatWithGemini(

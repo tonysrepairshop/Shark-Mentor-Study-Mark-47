@@ -5,7 +5,6 @@ import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.Immutable
 import com.example.sharkmentor.core.ai.UserAiPreferences
-import com.example.sharkmentor.data.repository.AiModelPower
 import com.example.sharkmentor.data.repository.SharkAiEngine
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -57,7 +56,6 @@ data class PersistedChatSessionDto(
     val title: String = "Yeni Sohbet",
     val messages: List<PersistedAiChatMessageDto> = emptyList(),
     val personaId: String = AiPersona.SHARK_COACH.id,
-    val modelPowerId: String = AiModelPower.FLASH.id,
     val draftInputText: String = "",
     val lockedEngineId: String? = null,
     val createdAtMillis: Long = System.currentTimeMillis(),
@@ -66,7 +64,6 @@ data class PersistedChatSessionDto(
     fun toDomain(): PersistedChatSession {
         val domainMessages = messages.map { it.toDomain() }
         val resolvedPersona = AiPersona.entries.firstOrNull { it.id == personaId } ?: AiPersona.SHARK_COACH
-        val resolvedPower = AiModelPower.entries.firstOrNull { it.id == modelPowerId } ?: AiModelPower.FLASH
         val resolvedEngine = lockedEngineId?.let { id -> SharkAiEngine.entries.firstOrNull { it.id == id } }
         val resolvedTitle = SharkAiChatSessionStore.deriveSessionTitle(domainMessages, title)
         return PersistedChatSession(
@@ -74,7 +71,6 @@ data class PersistedChatSessionDto(
             title = resolvedTitle,
             messages = domainMessages,
             currentPersona = resolvedPersona,
-            modelPower = resolvedPower,
             draftInputText = draftInputText,
             lockedEngine = resolvedEngine,
             createdAtMillis = createdAtMillis,
@@ -90,7 +86,6 @@ data class PersistedChatSessionDto(
                 .takeLast(SharkAiChatSessionStore.MAX_PERSISTED_MESSAGES_PER_SESSION)
                 .map { PersistedAiChatMessageDto.fromDomain(it) },
             personaId = session.currentPersona.id,
-            modelPowerId = session.modelPower.id,
             draftInputText = session.draftInputText,
             lockedEngineId = session.lockedEngine?.id,
             createdAtMillis = session.createdAtMillis,
@@ -105,7 +100,6 @@ data class PersistedChatSession(
     val title: String = "Yeni Sohbet",
     val messages: List<AiChatMessage> = emptyList(),
     val currentPersona: AiPersona = AiPersona.SHARK_COACH,
-    val modelPower: AiModelPower = AiModelPower.FLASH,
     val draftInputText: String = "",
     val lockedEngine: SharkAiEngine? = null,
     val createdAtMillis: Long = System.currentTimeMillis(),
@@ -142,7 +136,6 @@ data class PersistedChatSessionSnapshot(
     val title: String = "Yeni Sohbet",
     val messages: List<AiChatMessage> = emptyList(),
     val currentPersona: AiPersona = AiPersona.SHARK_COACH,
-    val modelPower: AiModelPower = AiModelPower.FLASH,
     val draftInputText: String = "",
     val lockedEngine: SharkAiEngine? = null,
     val sessions: List<PersistedChatSession> = emptyList()
@@ -161,7 +154,6 @@ object SharkAiChatSessionStore {
     // Legacy single-session keys for seamless migration
     private const val KEY_MESSAGES_JSON = "messages_json"
     private const val KEY_PERSONA_ID = "persona_id"
-    private const val KEY_MODEL_POWER_ID = "model_power_id"
     private const val KEY_DRAFT_INPUT = "draft_input"
     private const val KEY_LOCKED_ENGINE_ID = "locked_engine_id"
 
@@ -205,7 +197,6 @@ object SharkAiChatSessionStore {
         if (inMemorySessions != null && !inMemoryActiveSessionId.isNullOrBlank()) {
             return
         }
-        val defaultPower = AiModelPower.FLASH
 
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val rawMultiJson = prefs.getString(KEY_MULTI_SESSIONS_JSON, null)
@@ -234,10 +225,6 @@ object SharkAiChatSessionStore {
 
             val personaId = prefs.getString(KEY_PERSONA_ID, AiPersona.SHARK_COACH.id) ?: AiPersona.SHARK_COACH.id
             val restoredPersona = AiPersona.entries.firstOrNull { it.id == personaId } ?: AiPersona.SHARK_COACH
-            val rawPowerId = prefs.getString(KEY_MODEL_POWER_ID, null)
-            val restoredPower = rawPowerId?.let { id ->
-                AiModelPower.entries.firstOrNull { it.id == id }
-            } ?: defaultPower
             val draftInput = prefs.getString(KEY_DRAFT_INPUT, "") ?: ""
             val lockedEngineId = prefs.getString(KEY_LOCKED_ENGINE_ID, null)
             val restoredLockedEngine = lockedEngineId?.let { id -> SharkAiEngine.entries.firstOrNull { it.id == id } }
@@ -247,7 +234,6 @@ object SharkAiChatSessionStore {
                 title = deriveSessionTitle(legacyMessages, "Yeni Sohbet"),
                 messages = legacyMessages,
                 currentPersona = restoredPersona,
-                modelPower = restoredPower,
                 draftInputText = draftInput,
                 lockedEngine = restoredLockedEngine
             )
@@ -255,7 +241,7 @@ object SharkAiChatSessionStore {
         }
 
         if (loadedList.isEmpty()) {
-            loadedList.add(PersistedChatSession(modelPower = defaultPower))
+            loadedList.add(PersistedChatSession())
         }
 
         val sorted = loadedList
@@ -298,7 +284,6 @@ object SharkAiChatSessionStore {
             title = active.title,
             messages = active.messages,
             currentPersona = active.currentPersona,
-            modelPower = active.modelPower,
             draftInputText = active.draftInputText,
             lockedEngine = active.lockedEngine,
             sessions = list.sortedByDescending { it.updatedAtMillis }
@@ -342,16 +327,6 @@ object SharkAiChatSessionStore {
     }
 
     @Synchronized
-    fun saveModelPower(context: Context, modelPower: AiModelPower): PersistedChatSessionSnapshot {
-        ensureLoaded(context)
-        val list = inMemorySessions!!
-        val activeIdx = list.indexOfFirst { it.id == inMemoryActiveSessionId }.let { if (it == -1) 0 else it }
-        list[activeIdx] = list[activeIdx].copy(modelPower = modelPower)
-        flushToPrefs(context)
-        return buildSnapshot(context)
-    }
-
-    @Synchronized
     fun saveDraftState(
         context: Context,
         draftInputText: String,
@@ -378,13 +353,11 @@ object SharkAiChatSessionStore {
      * - Otherwise preserves the active conversation and opens/activates a clean session.
      */
     @Synchronized
-    fun createNewSession(context: Context, keepModelPower: Boolean = true): PersistedChatSessionSnapshot {
+    fun createNewSession(context: Context): PersistedChatSessionSnapshot {
         ensureLoaded(context)
         val list = inMemorySessions!!
         val activeIdx = list.indexOfFirst { it.id == inMemoryActiveSessionId }.let { if (it == -1) 0 else it }
         val currentActive = list[activeIdx]
-        val defaultPower = AiModelPower.FLASH
-        val targetPower = if (keepModelPower) currentActive.modelPower else defaultPower
         val now = System.currentTimeMillis()
 
         if (isSessionUnused(currentActive)) {
@@ -392,7 +365,6 @@ object SharkAiChatSessionStore {
                 title = "Yeni Sohbet",
                 messages = emptyList(),
                 currentPersona = AiPersona.SHARK_COACH,
-                modelPower = targetPower,
                 draftInputText = "",
                 lockedEngine = null,
                 updatedAtMillis = now
@@ -406,7 +378,6 @@ object SharkAiChatSessionStore {
                     title = "Yeni Sohbet",
                     messages = emptyList(),
                     currentPersona = AiPersona.SHARK_COACH,
-                    modelPower = targetPower,
                     draftInputText = "",
                     lockedEngine = null,
                     updatedAtMillis = now
@@ -419,7 +390,6 @@ object SharkAiChatSessionStore {
                     title = "Yeni Sohbet",
                     messages = emptyList(),
                     currentPersona = AiPersona.SHARK_COACH,
-                    modelPower = targetPower,
                     draftInputText = "",
                     lockedEngine = null,
                     createdAtMillis = now,
@@ -462,8 +432,6 @@ object SharkAiChatSessionStore {
     fun deleteSession(context: Context, sessionId: String): PersistedChatSessionSnapshot {
         ensureLoaded(context)
         val list = inMemorySessions!!
-        val currentPower = (list.firstOrNull { it.id == inMemoryActiveSessionId } ?: list.firstOrNull())?.modelPower
-            ?: AiModelPower.FLASH
 
         list.removeAll { it.id == sessionId }
 
@@ -474,7 +442,6 @@ object SharkAiChatSessionStore {
                 title = "Yeni Sohbet",
                 messages = emptyList(),
                 currentPersona = AiPersona.SHARK_COACH,
-                modelPower = currentPower,
                 draftInputText = "",
                 lockedEngine = null,
                 createdAtMillis = now,
@@ -496,7 +463,7 @@ object SharkAiChatSessionStore {
      * Backward-compatible alias for creating/switching to a fresh session.
      */
     @Synchronized
-    fun clearSession(context: Context, keepModelPower: Boolean = true): PersistedChatSessionSnapshot {
-        return createNewSession(context, keepModelPower)
+    fun clearSession(context: Context): PersistedChatSessionSnapshot {
+        return createNewSession(context)
     }
 }
