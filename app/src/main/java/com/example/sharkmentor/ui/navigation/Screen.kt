@@ -133,6 +133,12 @@ sealed class Screen(
         icon = Icons.Default.StickyNote2,
     )
 
+    data object PaceKeep : Screen(
+        route = "pace_keep",
+        label = "PACE / KEEP",
+        icon = Icons.Default.Timer,
+    )
+
     companion object {
         /** Ordered list used to build the bottom navigation bar. */
         val bottomBarItems: List<Screen>

@@ -37,4 +37,11 @@
     public <init>(...);
 }
 
+# Preserve WebView @JavascriptInterface bridges
+-keepattributes JavascriptInterface
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keep class com.example.sharkmentor.ui.screens.pacekeep.PaceKeepBridge { *; }
+
 # Allow obfuscation of the rest

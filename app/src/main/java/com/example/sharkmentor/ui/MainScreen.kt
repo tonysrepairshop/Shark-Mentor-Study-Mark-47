@@ -93,6 +93,7 @@ import com.example.sharkmentor.ui.screens.ProfileScreen
 import com.example.sharkmentor.ui.screens.SharkLeagueScreen
 import com.example.sharkmentor.ui.screens.StudentCoachChatScreen
 import com.example.sharkmentor.ui.screens.notes.NotesScreen
+import com.example.sharkmentor.ui.screens.pacekeep.PaceKeepScreen
 import com.example.sharkmentor.ui.theme.SharkMentorTheme
 import com.example.sharkmentor.ui.viewmodel.ErrorBankViewModel
 import com.example.sharkmentor.ui.zen.AiZenCoachScreen
@@ -178,17 +179,23 @@ fun MainScreen(
                     }
                 ) {
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                        val isPaceKeep = currentDestination?.route == Screen.PaceKeep.route
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.background),
+                                .background(
+                                    if (isPaceKeep) androidx.compose.ui.graphics.Color(0xFF071426)
+                                    else MaterialTheme.colorScheme.background
+                                ),
                         ) {
                             Scaffold(
-                                modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .then(if (isPaceKeep) Modifier else Modifier.windowInsetsPadding(WindowInsets.statusBars)),
                                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                                containerColor = MaterialTheme.colorScheme.background,
+                                containerColor = if (isPaceKeep) androidx.compose.ui.graphics.Color(0xFF071426) else MaterialTheme.colorScheme.background,
                                 topBar = {
-                                    if (currentDestination?.route != Screen.Login.route && !isNoteEditorOpen) {
+                                    if (currentDestination?.route != Screen.Login.route && !isPaceKeep && !isNoteEditorOpen) {
                                         SharkMentorTopBar(
                                             countdown = countdownText, 
                                             isCampus = uiState.isCampus,
@@ -230,7 +237,7 @@ fun MainScreen(
                                 val isImeOpen = WindowInsets.isImeVisible
                                 val primaryTabRoutes = remember { setOf("home", "plans", "notes_screen", "resources", "analytics", "error_bank") }
                                 val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !isNoteEditorOpen
-                                val shouldShowTopBar = (currentDestination?.route != Screen.Login.route) && !isNoteEditorOpen
+                                val shouldShowTopBar = (currentDestination?.route != Screen.Login.route && !isPaceKeep) && !isNoteEditorOpen
                                 val effectiveTopPadding = if (shouldShowTopBar) innerPadding.calculateTopPadding() else 0.dp
                                 val effectiveBottomPadding = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
 
@@ -350,6 +357,11 @@ fun MainScreen(
                         }
                         composable("zen_room") {
                             ZenRoomScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable(Screen.PaceKeep.route) {
+                            PaceKeepScreen(
                                 onBackClick = { navController.popBackStack() }
                             )
                         }

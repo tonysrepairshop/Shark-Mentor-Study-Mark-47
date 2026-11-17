@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -262,6 +263,12 @@ fun ControlPanelContent(
             icon    = Icons.Default.SelfImprovement,
             label   = "Zen Odası & Zihin Tazeleyici",
             onClick = { onNavigate("zen_room") },
+        )
+
+        DrawerActionRow(
+            icon    = Icons.Default.Speed,
+            label   = "PACE / KEEP Sayaç",
+            onClick = { onNavigate(Screen.PaceKeep.route) },
         )
         
         DrawerActionRow(
