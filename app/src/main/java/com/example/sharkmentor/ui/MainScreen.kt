@@ -80,6 +80,7 @@ import com.example.sharkmentor.ui.components.ControlPanelContent
 import com.example.sharkmentor.ui.navigation.Screen
 import com.example.sharkmentor.ui.onboarding.OnboardingScreen
 import com.example.sharkmentor.ui.reflection.DailyReflectionDialog
+import com.example.sharkmentor.ui.screens.AiSettingsScreen
 import com.example.sharkmentor.ui.screens.CountdownSettingsScreen
 import com.example.sharkmentor.ui.screens.SharkScreen
 import com.example.sharkmentor.ui.screens.DetailedAnalyticsScreen
@@ -182,7 +183,9 @@ fun MainScreen(
             val drawerState = androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
             val scope = androidx.compose.runtime.rememberCoroutineScope()
 
-            val isNotesContext = currentDestination?.route == Screen.Notes.route || isNoteEditorOpen
+            val isNotesRoute = currentDestination?.route == Screen.Notes.route
+            val activeNoteEditor = isNoteEditorOpen && isNotesRoute
+            val isNotesContext = isNotesRoute || activeNoteEditor
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                 ModalNavigationDrawer(
                     drawerState = drawerState,
@@ -228,7 +231,7 @@ fun MainScreen(
                                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                                 containerColor = if (isPaceKeep) androidx.compose.ui.graphics.Color(0xFF071426) else MaterialTheme.colorScheme.background,
                                 topBar = {
-                                    if (currentDestination?.route != Screen.Login.route && !isPaceKeep && !isNoteEditorOpen) {
+                                    if (currentDestination?.route != Screen.Login.route && !isPaceKeep && !activeNoteEditor) {
                                         SharkMentorTopBar(
                                             countdown = countdownText, 
                                             isCampus = uiState.isCampus,
@@ -246,7 +249,7 @@ fun MainScreen(
                                     val dueQuestionsCount by errorBankViewModel.dueQuestionsCount.collectAsStateWithLifecycle(initialValue = 0)
                                     val isImeOpen = WindowInsets.isImeVisible
                                     val primaryTabRoutes = remember { setOf("home", "plans", "notes_screen", "resources", "analytics", "error_bank") }
-                                    val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !isNoteEditorOpen
+                                    val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !activeNoteEditor
 
                                     AnimatedVisibility(
                                         visible = shouldShowBottomBar,
@@ -269,8 +272,8 @@ fun MainScreen(
                             ) { innerPadding ->
                                 val isImeOpen = WindowInsets.isImeVisible
                                 val primaryTabRoutes = remember { setOf("home", "plans", "notes_screen", "resources", "analytics", "error_bank") }
-                                val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !isNoteEditorOpen
-                                val shouldShowTopBar = (currentDestination?.route != Screen.Login.route && !isPaceKeep) && !isNoteEditorOpen
+                                val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !activeNoteEditor
+                                val shouldShowTopBar = (currentDestination?.route != Screen.Login.route && !isPaceKeep) && !activeNoteEditor
                                 val effectiveTopPadding = if (shouldShowTopBar) innerPadding.calculateTopPadding() else 0.dp
                                 val effectiveBottomPadding = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
 
@@ -333,6 +336,7 @@ fun MainScreen(
                         composable(Screen.Notes.route) {
                             NotesScreen(
                                 onBackClick = { navController.popBackStack() },
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
                                 importedNote = pendingImportedNote,
                                 onImportedNoteConsumed = {
                                     pendingImportedNote = null
@@ -376,6 +380,11 @@ fun MainScreen(
                         composable("settings") {
                             com.example.sharkmentor.ui.screens.SettingsScreen(
                                 onBackClick = { navController.popBackStack() },
+                                onOpenAiSettings = {
+                                    navController.navigate("ai_settings") {
+                                        launchSingleTop = true
+                                    }
+                                },
                                 onOpenAppBlocker = { navController.navigate("app_blocker") },
                                 onOpenAnalysis = { navController.navigate("analysis") },
                                 onOpenHistory = { navController.navigate("history") },
@@ -386,6 +395,11 @@ fun MainScreen(
                                         popUpTo(0) { inclusive = true }
                                     }
                                 }
+                            )
+                        }
+                        composable("ai_settings") {
+                            AiSettingsScreen(
+                                onBackClick = { navController.popBackStack() }
                             )
                         }
                         composable("zen_room") {

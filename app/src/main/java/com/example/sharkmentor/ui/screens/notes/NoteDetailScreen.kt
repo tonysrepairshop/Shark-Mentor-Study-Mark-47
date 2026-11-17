@@ -89,6 +89,7 @@ import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -259,6 +260,7 @@ fun NoteDetailScreen(
     onBulletToggled: () -> Unit = {},
     onStyleToggled: (SpanStyle) -> Unit = {},
     onIsolatedNoteAiClick: (title: String, content: String) -> Unit = { _, _ -> },
+    onOpenDrawer: (() -> Unit)? = null,
     onDismiss: () -> Unit = {},
     onSave: (title: String, content: String, colorHex: String, isPinned: Boolean) -> Unit = { _, _, _, _ -> }
 ) {
@@ -1014,6 +1016,20 @@ fun NoteDetailScreen(
                                 showMoreMenu = false
                                 showDeleteConfirmDialog = true
                             }
+                        )
+                    }
+                }
+                if (onOpenDrawer != null) {
+                    IconButton(
+                        onClick = {
+                            saveCurrentNote()
+                            onOpenDrawer()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Menu,
+                            contentDescription = "Yan Panel",
+                            tint = noteTextColor
                         )
                     }
                 }

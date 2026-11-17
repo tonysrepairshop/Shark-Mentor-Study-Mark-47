@@ -22,16 +22,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SelfImprovement
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,19 +37,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.sharkmentor.core.ai.AiProviderChoice
-import com.example.sharkmentor.core.ai.ApiKeyRotator
-import com.example.sharkmentor.core.ai.GeminiAiFactory
-import com.example.sharkmentor.core.ai.GeminiConnectionTestResult
-import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.PreferredPowerMode
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.data.AppThemeMode
 import com.example.sharkmentor.core.data.ThemePalette
@@ -73,6 +61,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun SettingsScreen(
     onBackClick: () -> Unit,
+    onOpenAiSettings: () -> Unit = {},
     onOpenAppBlocker: () -> Unit,
     onOpenAnalysis: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -87,6 +76,15 @@ fun SettingsScreen(
     val themePrefs = remember { ThemePreferences.instance }
     val themeMode by themePrefs.themeMode.collectAsStateWithLifecycle()
     val currentPalette by themePrefs.palette.collectAsStateWithLifecycle()
+
+    val userAiPrefs = remember { UserAiPreferences.initialize(context) }
+    val savedGeminiKeys by userAiPrefs.userGeminiKeys.collectAsStateWithLifecycle()
+    val savedModel by userAiPrefs.selectedUserGeminiModel.collectAsStateWithLifecycle()
+    val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
+    val savedPowerMode by userAiPrefs.preferredPowerMode.collectAsStateWithLifecycle()
+    val hasCustomGemini = remember(savedGeminiKeys) {
+        UserAiPreferences.parseGeminiKeyList(savedGeminiKeys).isNotEmpty()
+    }
 
     if (showTimeDialog) {
         ReflectionTimeDialog(
@@ -125,7 +123,59 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            AiSettingsSection(snackbarHostState = snackbarHostState)
+            Text("Yapay Zeka & API", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenAiSettings)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = "API Anahtarları & Model Seçimi",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            val modelText = if (hasCustomGemini) savedModel else UserAiPreferences.STANDARD_GEMINI_MODEL
+                            val keySourceText = if (hasCustomGemini) "Özel Anahtar" else "Standart Anahtar"
+                            Text(
+                                text = "$keySourceText • $modelText • ${savedProvider.label} (${savedPowerMode.label})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
 
             HorizontalDivider()
 
@@ -197,449 +247,7 @@ fun SettingsScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
-@Composable
-fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val userAiPrefs = remember { UserAiPreferences.initialize(context) }
 
-    val savedGemini by userAiPrefs.userGeminiKeys.collectAsStateWithLifecycle()
-    val savedSelectedModel by userAiPrefs.selectedUserGeminiModel.collectAsStateWithLifecycle()
-    val savedDiscoveredModels by userAiPrefs.discoveredGeminiModels.collectAsStateWithLifecycle()
-    val savedDeepSeek by userAiPrefs.userDeepSeekKey.collectAsStateWithLifecycle()
-    val savedKimi by userAiPrefs.userKimiKey.collectAsStateWithLifecycle()
-    val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
-    val savedPowerMode by userAiPrefs.preferredPowerMode.collectAsStateWithLifecycle()
-
-    var geminiKeysInput by remember(savedGemini) { mutableStateOf(savedGemini) }
-    var selectedGeminiModel by remember(savedSelectedModel) { mutableStateOf(savedSelectedModel) }
-    var discoveredModels by remember(savedDiscoveredModels) { mutableStateOf(savedDiscoveredModels) }
-    var isDiscoveringModels by remember { mutableStateOf(false) }
-    var modelDiscoveryError by remember { mutableStateOf<String?>(null) }
-
-    var deepSeekInput by remember(savedDeepSeek) { mutableStateOf(savedDeepSeek) }
-    var kimiInput by remember(savedKimi) { mutableStateOf(savedKimi) }
-    var selectedProvider by remember(savedProvider) { mutableStateOf(savedProvider) }
-    var selectedPowerMode by remember(savedPowerMode) { mutableStateOf(savedPowerMode) }
-
-    var showGeminiKey by remember { mutableStateOf(false) }
-    var showDeepSeekKey by remember { mutableStateOf(false) }
-    var showKimiKey by remember { mutableStateOf(false) }
-    var isTestingConnection by remember { mutableStateOf(false) }
-    var connectionTestResult by remember { mutableStateOf<GeminiConnectionTestResult?>(null) }
-
-    val hasCustomGeminiInput = remember(geminiKeysInput) {
-        UserAiPreferences.parseGeminiKeyList(geminiKeysInput).isNotEmpty()
-    }
-
-    LaunchedEffect(geminiKeysInput) {
-        val parsed = UserAiPreferences.parseGeminiKeyList(geminiKeysInput)
-        if (parsed.isEmpty()) {
-            selectedGeminiModel = UserAiPreferences.STANDARD_GEMINI_MODEL
-            modelDiscoveryError = null
-            isDiscoveringModels = false
-            return@LaunchedEffect
-        }
-        val firstKey = parsed.firstOrNull().orEmpty()
-        if (firstKey.length < 16) return@LaunchedEffect
-
-        kotlinx.coroutines.delay(750L)
-        isDiscoveringModels = true
-        modelDiscoveryError = null
-        val discovery = GeminiRestClient.fetchSupportedModels(geminiKeysInput)
-        isDiscoveringModels = false
-        if (discovery.success && discovery.models.isNotEmpty()) {
-            discoveredModels = discovery.models
-            if (discovery.models.none { it.id == selectedGeminiModel }) {
-                selectedGeminiModel = discovery.models
-                    .firstOrNull { it.id == UserAiPreferences.STANDARD_GEMINI_MODEL }
-                    ?.id ?: discovery.models.first().id
-            }
-        } else if (discoveredModels.isEmpty()) {
-            modelDiscoveryError = discovery.summary
-        }
-    }
-
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Yapay Zeka & API",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                val badgeText = if (hasCustomGeminiInput) {
-                    "Model: $selectedGeminiModel"
-                } else {
-                    "Standart: ${UserAiPreferences.STANDARD_GEMINI_MODEL}"
-                }
-                Text(
-                    text = badgeText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                )
-            }
-        }
-
-        if (!hasCustomGeminiInput || deepSeekInput.isBlank() || kimiInput.isBlank()) {
-            Text(
-                text = if (!hasCustomGeminiInput) {
-                    "Boş bırakılırsa 3 standart anahtar (${UserAiPreferences.STANDARD_GEMINI_MODEL}) kullanılır."
-                } else {
-                    "Boş bırakılan sağlayıcılar için standart anahtarlar kullanılır."
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-
-        ApiKeyInputField(
-            value = geminiKeysInput,
-            onValueChange = {
-                geminiKeysInput = it
-                connectionTestResult = null
-            },
-            label = "Gemini API Key",
-            placeholder = "key1, key2",
-            isVisible = showGeminiKey,
-            onToggleVisibility = { showGeminiKey = !showGeminiKey },
-            onClear = {
-                geminiKeysInput = ""
-                selectedGeminiModel = UserAiPreferences.STANDARD_GEMINI_MODEL
-                modelDiscoveryError = null
-                connectionTestResult = null
-            }
-        )
-
-        if (hasCustomGeminiInput) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Anahtarın Desteklediği Modeller",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    TextButton(
-                        onClick = {
-                            if (isDiscoveringModels) return@TextButton
-                            scope.launch {
-                                isDiscoveringModels = true
-                                modelDiscoveryError = null
-                                val discovery = GeminiRestClient.fetchSupportedModels(geminiKeysInput)
-                                isDiscoveringModels = false
-                                if (discovery.success && discovery.models.isNotEmpty()) {
-                                    discoveredModels = discovery.models
-                                    if (discovery.models.none { it.id == selectedGeminiModel }) {
-                                        selectedGeminiModel = discovery.models
-                                            .firstOrNull { it.id == UserAiPreferences.STANDARD_GEMINI_MODEL }
-                                            ?.id ?: discovery.models.first().id
-                                    }
-                                } else {
-                                    modelDiscoveryError = discovery.summary
-                                }
-                            }
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        if (isDiscoveringModels) {
-                            CircularProgressIndicator(modifier = Modifier.size(13.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Taranıyor...", fontSize = 11.sp)
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Modelleri Getir", fontSize = 11.sp)
-                        }
-                    }
-                }
-
-                modelDiscoveryError?.let { errText ->
-                    Text(
-                        text = errText,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-
-                if (discoveredModels.isNotEmpty()) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        discoveredModels.forEach { modelOpt ->
-                            val isSelected = selectedGeminiModel == modelOpt.id
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = {
-                                    selectedGeminiModel = modelOpt.id
-                                    connectionTestResult = null
-                                },
-                                label = {
-                                    Text(
-                                        text = modelOpt.id,
-                                        fontSize = 11.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        maxLines = 1
-                                    )
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        ApiKeyInputField(
-            value = deepSeekInput,
-            onValueChange = { deepSeekInput = it },
-            label = "DeepSeek API Key",
-            placeholder = "",
-            isVisible = showDeepSeekKey,
-            onToggleVisibility = { showDeepSeekKey = !showDeepSeekKey },
-            onClear = { deepSeekInput = "" }
-        )
-
-        ApiKeyInputField(
-            value = kimiInput,
-            onValueChange = { kimiInput = it },
-            label = "Kimi API Key",
-            placeholder = "",
-            isVisible = showKimiKey,
-            onToggleVisibility = { showKimiKey = !showKimiKey },
-            onClear = { kimiInput = "" }
-        )
-
-        Text(
-            text = "Sağlayıcı",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            AiProviderChoice.entries.forEach { provider ->
-                val isSelected = selectedProvider == provider
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { selectedProvider = provider },
-                    label = {
-                        Text(
-                            text = provider.label,
-                            fontSize = 12.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            maxLines = 1
-                        )
-                    },
-                    shape = RoundedCornerShape(10.dp),
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                )
-            }
-        }
-
-        Text(
-            text = "Model Modu",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            PreferredPowerMode.entries.forEachIndexed { index, mode ->
-                SegmentedButton(
-                    selected = selectedPowerMode == mode,
-                    onClick = { selectedPowerMode = mode },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = PreferredPowerMode.entries.size
-                    )
-                ) {
-                    Text(mode.label, fontSize = 12.sp)
-                }
-            }
-        }
-
-        Button(
-            onClick = {
-                userAiPrefs.saveSettings(
-                    geminiKeys = geminiKeysInput,
-                    deepSeekKey = deepSeekInput,
-                    kimiKey = kimiInput,
-                    provider = selectedProvider,
-                    powerMode = selectedPowerMode,
-                    selectedGeminiModel = if (hasCustomGeminiInput) {
-                        selectedGeminiModel
-                    } else {
-                        UserAiPreferences.STANDARD_GEMINI_MODEL
-                    },
-                    discoveredModels = if (hasCustomGeminiInput) discoveredModels else emptyList()
-                )
-                ApiKeyRotator.invalidateAndReset()
-                scope.launch {
-                    snackbarHostState.showSnackbar("AI ayarları kaydedildi")
-                }
-            },
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
-            ),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Kaydet", fontWeight = FontWeight.Bold)
-        }
-
-        OutlinedButton(
-            onClick = {
-                if (isTestingConnection) return@OutlinedButton
-                isTestingConnection = true
-                connectionTestResult = null
-                scope.launch {
-                    val result = GeminiRestClient.testApiConnection(
-                        context = context,
-                        candidateUserKeysRaw = geminiKeysInput,
-                        candidateModelId = if (hasCustomGeminiInput) selectedGeminiModel else null
-                    )
-                    connectionTestResult = result
-                    isTestingConnection = false
-                }
-            },
-            enabled = !isTestingConnection,
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            if (isTestingConnection) {
-                val testLabel = if (hasCustomGeminiInput) selectedGeminiModel else UserAiPreferences.STANDARD_GEMINI_MODEL
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Bağlantı Test Ediliyor ($testLabel)...")
-            } else {
-                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Bağlantıyı Test Et", fontWeight = FontWeight.SemiBold)
-            }
-        }
-
-        connectionTestResult?.let { result ->
-            val containerColor = if (result.success) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-            } else {
-                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
-            }
-            val contentColor = if (result.success) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onErrorContainer
-            }
-            Surface(
-                color = containerColor,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = result.summary,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = contentColor
-                    )
-                    result.details.forEach { detailLine ->
-                        Text(
-                            text = "• $detailLine",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = contentColor.copy(alpha = 0.9f)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ApiKeyInputField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    label: String,
-    placeholder: String,
-    isVisible: Boolean,
-    onToggleVisibility: () -> Unit,
-    onClear: () -> Unit
-) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        placeholder = if (placeholder.isNotBlank()) {
-            { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-        } else null,
-        singleLine = true,
-        visualTransformation = if (isVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = onToggleVisibility,
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = if (isVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                        contentDescription = if (isVisible) "Gizle" else "Göster",
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                if (value.isNotEmpty()) {
-                    IconButton(
-                        onClick = onClear,
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Temizle",
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-            }
-        },
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
-    )
-}
 
 @Composable
 fun ThemeSelectorSection(

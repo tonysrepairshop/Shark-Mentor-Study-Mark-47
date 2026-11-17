@@ -96,6 +96,7 @@ import java.io.File
 @Composable
 fun NotesScreen(
     onBackClick: (() -> Unit)? = null,
+    onOpenDrawer: (() -> Unit)? = null,
     showTopBar: Boolean = true,
     importedNote: ImportedNotePayload? = null,
     onImportedNoteConsumed: () -> Unit = {},
@@ -235,6 +236,7 @@ fun NotesScreen(
             incomingFileUri = editorIncomingUri,
             initialPdfPreview = editorPdfPreview,
             initialPdfPagePaths = editorPdfPagePaths,
+            onOpenDrawer = onOpenDrawer,
             onDismiss = { showEditor = false },
             onSave = { _, _, _, _ ->
                 showEditor = false
