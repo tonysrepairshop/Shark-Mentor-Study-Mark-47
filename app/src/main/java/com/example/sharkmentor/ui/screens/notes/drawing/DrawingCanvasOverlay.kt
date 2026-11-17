@@ -54,10 +54,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -77,6 +79,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
@@ -127,7 +134,8 @@ private val QUICK_LASSO_COLORS = listOf(
 @Composable
 fun DrawingCanvasOverlay(
     controller: DrawingController,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onTwoFingerScroll: ((deltaY: Float, deltaX: Float) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -236,34 +244,111 @@ fun DrawingCanvasOverlay(
         }
     }
 
+    var lastStylusActivityMs by remember { mutableLongStateOf(0L) }
+    val currentOnTwoFingerScroll by rememberUpdatedState(onTwoFingerScroll)
+
+    val stylusTrackerModifier = Modifier.pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val hasStylus = event.changes.any {
+                    it.type == PointerType.Stylus || it.type == PointerType.Eraser
+                }
+                if (hasStylus) {
+                    lastStylusActivityMs = SystemClock.elapsedRealtime()
+                }
+            }
+        }
+    }
+
     val activeTool = controller.activeTool
     val pointerModifier = if (activeTool == DrawingTool.NONE) {
         Modifier
     } else {
-        Modifier.pointerInput(activeTool, controller.penColor, controller.strokeWidth, controller.alpha, controller.eraserRadius) {
+        Modifier.pointerInput(
+            activeTool,
+            controller.penColor,
+            controller.strokeWidth,
+            controller.alpha,
+            controller.eraserRadius,
+            controller.stylusOnlyMode,
+            controller.smartPalmRejectionEnabled,
+            onTwoFingerScroll != null
+        ) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
-                down.consume()
+                if (down.type == PointerType.Stylus || down.type == PointerType.Eraser) {
+                    lastStylusActivityMs = SystemClock.elapsedRealtime()
+                }
+
+                val shouldRejectTouch = down.type == PointerType.Touch && (
+                    controller.stylusOnlyMode ||
+                        (controller.smartPalmRejectionEnabled &&
+                            SystemClock.elapsedRealtime() - lastStylusActivityMs < 1500L)
+                    )
+
+                var activeDown: PointerInputChange = down
+                if (shouldRejectTouch) {
+                    down.consume()
+                    var promotedStylus: PointerInputChange? = null
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pressedChanges = event.changes.filter { it.pressed }
+                        if (pressedChanges.isEmpty()) break
+
+                        val stylusPressed = pressedChanges.firstOrNull {
+                            it.type == PointerType.Stylus || it.type == PointerType.Eraser
+                        }
+                        if (stylusPressed != null) {
+                            lastStylusActivityMs = SystemClock.elapsedRealtime()
+                            stylusPressed.consume()
+                            promotedStylus = stylusPressed
+                            break
+                        }
+
+                        val touchPressedCount = pressedChanges.count { it.type == PointerType.Touch }
+                        val scrollCallback = currentOnTwoFingerScroll
+                        if (touchPressedCount >= 2 && scrollCallback != null) {
+                            runTwoFingerScrollLoop(event, scrollCallback)
+                            break
+                        }
+
+                        event.changes.forEach { it.consume() }
+                    }
+
+                    if (promotedStylus == null) {
+                        return@awaitEachGesture
+                    }
+                    activeDown = promotedStylus
+                } else {
+                    down.consume()
+                }
+
+                val effectiveTool = if (activeDown.type == PointerType.Eraser) {
+                    DrawingTool.STROKE_ERASER
+                } else {
+                    activeTool
+                }
 
                 val gestureStartMs = SystemClock.elapsedRealtime()
-                val startX = down.position.x
-                val startY = down.position.y
+                val startX = activeDown.position.x
+                val startY = activeDown.position.y
                 val startPoint = DrawingPoint(startX, startY)
 
                 inProgressPoints.clear()
                 var cancelledByMultiTouch = false
 
                 when {
-                    activeTool.isEraserTool -> {
+                    effectiveTool.isEraserTool -> {
                         controller.beginEraserGesture()
-                        eraserCursorPos = down.position
-                        if (activeTool == DrawingTool.STROKE_ERASER) {
+                        eraserCursorPos = activeDown.position
+                        if (effectiveTool == DrawingTool.STROKE_ERASER) {
                             controller.eraseStrokeAt(startX, startY, controller.eraserRadius)
                         } else {
                             controller.eraseAreaAt(startX, startY, controller.eraserRadius)
                         }
                     }
-                    activeTool == DrawingTool.LASSO -> {
+                    effectiveTool == DrawingTool.LASSO -> {
                         val selBounds = controller.selectionBounds()?.inflate(18f)
                         if (selBounds != null && selBounds.contains(startX, startY)) {
                             isMovingLassoSelection = true
@@ -274,7 +359,7 @@ fun DrawingCanvasOverlay(
                             inProgressPoints.add(startPoint)
                         }
                     }
-                    activeTool.isShapeTool || activeTool == DrawingTool.UNDERLINE_MARKER -> {
+                    effectiveTool.isShapeTool || effectiveTool == DrawingTool.UNDERLINE_MARKER -> {
                         inProgressPoints.add(startPoint)
                         inProgressPoints.add(startPoint)
                     }
@@ -286,16 +371,53 @@ fun DrawingCanvasOverlay(
 
                 while (true) {
                     val event = awaitPointerEvent()
-                    val pressedCount = event.changes.count { it.pressed }
-                    if (pressedCount > 1 && inProgressPoints.size <= 5 && !isMovingLassoSelection) {
-                        // Multi-touch gesture (e.g. 2-finger pinch zoom): abort stroke preview
+                    val pressedChanges = event.changes.filter { it.pressed }
+                    val pressedCount = pressedChanges.size
+
+                    val hasStylusInEvent = event.changes.any {
+                        it.type == PointerType.Stylus || it.type == PointerType.Eraser
+                    }
+                    if (hasStylusInEvent) {
+                        lastStylusActivityMs = SystemClock.elapsedRealtime()
+                    }
+
+                    if (activeDown.type == PointerType.Touch &&
+                        controller.smartPalmRejectionEnabled &&
+                        inProgressPoints.size <= 6 &&
+                        hasStylusInEvent
+                    ) {
                         cancelledByMultiTouch = true
                         inProgressPoints.clear()
                         eraserCursorPos = null
+                        if (effectiveTool.isEraserTool) {
+                            controller.endEraserGesture()
+                        } else if (isMovingLassoSelection) {
+                            isMovingLassoSelection = false
+                        }
+                        event.changes.forEach { it.consume() }
                         break
                     }
 
-                    val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
+                    if (activeDown.type == PointerType.Touch &&
+                        pressedCount >= 2 &&
+                        inProgressPoints.size <= 6 &&
+                        !isMovingLassoSelection
+                    ) {
+                        // Multi-touch gesture (e.g. 2-finger scroll or pinch zoom): abort stroke preview
+                        cancelledByMultiTouch = true
+                        inProgressPoints.clear()
+                        eraserCursorPos = null
+                        if (effectiveTool.isEraserTool) {
+                            controller.endEraserGesture()
+                        }
+                        val scrollCallback = currentOnTwoFingerScroll
+                        if (scrollCallback != null) {
+                            runTwoFingerScrollLoop(event, scrollCallback)
+                        }
+                        break
+                    }
+
+                    val change = event.changes.firstOrNull { it.id == activeDown.id }
                     if (change == null || !change.pressed) {
                         break
                     }
@@ -305,15 +427,15 @@ fun DrawingCanvasOverlay(
                     change.consume()
 
                     when {
-                        activeTool.isEraserTool -> {
+                        effectiveTool.isEraserTool -> {
                             eraserCursorPos = pos
-                            if (activeTool == DrawingTool.STROKE_ERASER) {
+                            if (effectiveTool == DrawingTool.STROKE_ERASER) {
                                 controller.eraseStrokeAt(pos.x, pos.y, controller.eraserRadius)
                             } else {
                                 controller.eraseAreaAt(pos.x, pos.y, controller.eraserRadius)
                             }
                         }
-                        activeTool == DrawingTool.LASSO -> {
+                        effectiveTool == DrawingTool.LASSO -> {
                             if (isMovingLassoSelection) {
                                 controller.moveSelectionBy(delta.x, delta.y)
                             } else {
@@ -324,7 +446,7 @@ fun DrawingCanvasOverlay(
                                 }
                             }
                         }
-                        activeTool == DrawingTool.UNDERLINE_MARKER -> {
+                        effectiveTool == DrawingTool.UNDERLINE_MARKER -> {
                             val first = inProgressPoints.firstOrNull() ?: startPoint
                             // Snap to clean horizontal underline unless dragged steeply (> 25 deg)
                             val dx = abs(pos.x - first.x)
@@ -340,7 +462,7 @@ fun DrawingCanvasOverlay(
                                 inProgressPoints.add(endPt)
                             }
                         }
-                        activeTool.isShapeTool -> {
+                        effectiveTool.isShapeTool -> {
                             val current = DrawingPoint(pos.x, pos.y)
                             if (inProgressPoints.size >= 2) {
                                 inProgressPoints[1] = current
@@ -362,10 +484,10 @@ fun DrawingCanvasOverlay(
                 eraserCursorPos = null
                 if (!cancelledByMultiTouch) {
                     when {
-                        activeTool.isEraserTool -> {
+                        effectiveTool.isEraserTool -> {
                             controller.endEraserGesture()
                         }
-                        activeTool == DrawingTool.LASSO -> {
+                        effectiveTool == DrawingTool.LASSO -> {
                             if (isMovingLassoSelection) {
                                 controller.endMoveSelection()
                                 isMovingLassoSelection = false
@@ -374,15 +496,15 @@ fun DrawingCanvasOverlay(
                             }
                             inProgressPoints.clear()
                         }
-                        activeTool.isShapeTool || activeTool == DrawingTool.UNDERLINE_MARKER -> {
+                        effectiveTool.isShapeTool || effectiveTool == DrawingTool.UNDERLINE_MARKER -> {
                             if (inProgressPoints.size >= 2) {
                                 val p0 = inProgressPoints.first()
                                 val p1 = inProgressPoints.last()
                                 if (p0.distanceTo(p1) >= 4f) {
                                     controller.addStroke(
                                         DrawingStroke(
-                                            tool = activeTool,
-                                            shapeKind = activeTool.toShapeKind(),
+                                            tool = effectiveTool,
+                                            shapeKind = effectiveTool.toShapeKind(),
                                             colorArgb = controller.penColor.toArgb(),
                                             strokeWidth = controller.strokeWidth,
                                             alpha = controller.alpha,
@@ -395,13 +517,13 @@ fun DrawingCanvasOverlay(
                             }
                             inProgressPoints.clear()
                         }
-                        activeTool.isPenTool -> {
+                        effectiveTool.isPenTool -> {
                             if (inProgressPoints.isNotEmpty()) {
                                 val gestureDurationMs = SystemClock.elapsedRealtime() - gestureStartMs
                                 val rawPoints = inProgressPoints.toList()
-                                val isFreehandPen = activeTool == DrawingTool.FOUNTAIN_PEN ||
-                                    activeTool == DrawingTool.TECHNICAL_PEN ||
-                                    activeTool == DrawingTool.HIGHLIGHTER
+                                val isFreehandPen = effectiveTool == DrawingTool.FOUNTAIN_PEN ||
+                                    effectiveTool == DrawingTool.TECHNICAL_PEN ||
+                                    effectiveTool == DrawingTool.HIGHLIGHTER
 
                                 val erasedByScribble = if (
                                     isFreehandPen &&
@@ -425,7 +547,7 @@ fun DrawingCanvasOverlay(
                                     }
                                     controller.addStroke(
                                         DrawingStroke(
-                                            tool = activeTool,
+                                            tool = effectiveTool,
                                             shapeKind = ShapeKind.NONE,
                                             colorArgb = controller.penColor.toArgb(),
                                             strokeWidth = controller.strokeWidth,
@@ -450,6 +572,7 @@ fun DrawingCanvasOverlay(
 
     Box(
         modifier = modifier
+            .then(stylusTrackerModifier)
             .onSizeChanged { canvasSize = it }
             .onGloballyPositioned { coords -> canvasWindowBounds = coords.boundsInWindow() }
     ) {
@@ -936,6 +1059,36 @@ fun DrawingCanvasOverlay(
                 }
             }
         }
+    }
+}
+
+private suspend fun AwaitPointerEventScope.runTwoFingerScrollLoop(
+    initialEvent: PointerEvent,
+    onTwoFingerScroll: (deltaY: Float, deltaX: Float) -> Unit
+) {
+    var scrollEvent = initialEvent
+    while (true) {
+        val activePointers = scrollEvent.changes.filter { it.pressed }
+        if (activePointers.isEmpty()) break
+        if (activePointers.size >= 2) {
+            var sumDx = 0f
+            var sumDy = 0f
+            for (ptr in activePointers) {
+                val delta = ptr.positionChange()
+                sumDx += delta.x
+                sumDy += delta.y
+                ptr.consume()
+            }
+            val count = activePointers.size.toFloat()
+            val avgDx = sumDx / count
+            val avgDy = sumDy / count
+            if (avgDy != 0f || avgDx != 0f) {
+                onTwoFingerScroll(avgDy, avgDx)
+            }
+        } else {
+            activePointers.forEach { it.consume() }
+        }
+        scrollEvent = awaitPointerEvent()
     }
 }
 

@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -139,6 +140,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
@@ -1242,10 +1244,34 @@ fun NoteDetailScreen(
                 }
             }
 
+            val noteListState = rememberLazyListState()
+
             // Main Editor Area Background
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .pointerInput(drawingController.isDrawingActive) {
+                        if (!drawingController.isDrawingActive) return@pointerInput
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val unconsumedTouches = event.changes.filter {
+                                    it.pressed && !it.isConsumed && it.type == PointerType.Touch
+                                }
+                                if (unconsumedTouches.size >= 2) {
+                                    var sumDy = 0f
+                                    for (ptr in unconsumedTouches) {
+                                        sumDy += ptr.positionChange().y
+                                        ptr.consume()
+                                    }
+                                    val avgDy = sumDy / unconsumedTouches.size.toFloat()
+                                    if (avgDy != 0f) {
+                                        noteListState.dispatchRawDelta(-avgDy)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     .drawBehind {
                     val patternColor = notePatternColor
                     val marginLineColor = noteMarginLineColor
@@ -1329,6 +1355,7 @@ fun NoteDetailScreen(
             }
 
             LazyColumn(
+                state = noteListState,
                 modifier = Modifier
                     .fillMaxHeight()
                     .widthIn(max = 840.dp)
@@ -1680,7 +1707,8 @@ fun NoteDetailScreen(
                         // Kalem & Çizim Stüdyosu Katmanı
                         DrawingCanvasOverlay(
                             controller = drawingController,
-                            modifier = Modifier.matchParentSize()
+                            modifier = Modifier.matchParentSize(),
+                            onTwoFingerScroll = { dy, _ -> noteListState.dispatchRawDelta(-dy) }
                         )
                     }
 

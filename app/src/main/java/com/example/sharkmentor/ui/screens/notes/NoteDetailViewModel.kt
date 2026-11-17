@@ -9,8 +9,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
-import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.NoteStyleParser
 import com.example.sharkmentor.core.util.PaperPattern
@@ -384,14 +383,13 @@ KESİN DAVRANIŞ KURALLARI:
                                 "Bu PDF belgesindeki sayfaları detaylıca incele, ana konuları özetle ve önemli noktaları maddeler halinde çıkar."
                             }
 
-                            val visionResult = GeminiRestClient.streamWithFailover(
+                            val visionResult = GeminiAiFactory.streamContentWithFailover(
                                 context = appContext,
                                 systemInstruction = visionSystemInstruction,
                                 userPrompt = visionPrompt,
                                 bitmaps = pageBitmaps,
                                 responseJson = false,
                                 maxOutputTokens = 8192,
-                                thinkingLevel = GeminiThinkingLevel.LOW,
                                 timeoutMs = 75_000L,
                                 onPartialText = { partial ->
                                     _aiResult.value = partial
@@ -478,13 +476,12 @@ KESİN DAVRANIŞ KURALLARI:
                     }
                 }
 
-                val geminiResult = GeminiRestClient.streamWithFailover(
+                val geminiResult = GeminiAiFactory.streamContentWithFailover(
                     context = appContext,
                     systemInstruction = ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
                     userPrompt = contextualPrompt,
                     responseJson = false,
                     maxOutputTokens = 6144,
-                    thinkingLevel = GeminiThinkingLevel.LOW,
                     timeoutMs = 60_000L,
                     onPartialText = { partial ->
                         _aiResult.value = partial.trimStart()

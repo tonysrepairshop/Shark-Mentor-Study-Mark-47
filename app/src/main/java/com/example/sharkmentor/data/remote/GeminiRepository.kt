@@ -3,8 +3,7 @@ package com.example.sharkmentor.data.remote
 import android.util.Log
 import com.example.sharkmentor.BuildConfig
 import com.example.sharkmentor.core.ai.ApiKeyRotator
-import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -22,18 +21,18 @@ class GeminiRepository @Inject constructor() {
         prompt: String,
         activeApiKey: String = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() }
     ): Result<String> = withContext(Dispatchers.IO) {
-        Log.d("GeminiRepository", "Dispatching JSON request to model: $MODEL_NAME...")
-        GeminiRestClient.generateWithFailover(
+        Log.d("GeminiRepository", "Dispatching JSON request via Mark 42 SDK pipeline...")
+        GeminiAiFactory.generateContentWithFailover(
             systemInstruction = "",
             userPrompt = prompt,
             responseJson = true,
+            temperature = 0.2f,
             maxOutputTokens = 8192,
-            thinkingLevel = GeminiThinkingLevel.LOW,
             timeoutMs = 75_000L
         ).mapCatching { result ->
             val jsonText = result.text.trim()
-            if (jsonText.isBlank()) throw Exception("Model boş yanıt döndürdü ($MODEL_NAME).")
-            Log.d("GeminiRepository", "Success on model: $MODEL_NAME (${result.gatewayUsed})")
+            if (jsonText.isBlank()) throw Exception("Model boş yanıt döndürdü (${result.modelUsed}).")
+            Log.d("GeminiRepository", "Success on model: ${result.modelUsed} (key #${result.usedKeyIndex + 1})")
             jsonText
         }
     }
@@ -43,18 +42,18 @@ class GeminiRepository @Inject constructor() {
         activeApiKey: String = ApiKeyRotator.getActiveKey().ifBlank { BuildConfig.GEMINI_API_KEY.trim() },
         systemInstruction: String? = null
     ): Result<String> = withContext(Dispatchers.IO) {
-        Log.d("GeminiRepository", "Dispatching text request to model: $MODEL_NAME...")
-        GeminiRestClient.generateWithFailover(
+        Log.d("GeminiRepository", "Dispatching text request via Mark 42 SDK pipeline...")
+        GeminiAiFactory.generateContentWithFailover(
             systemInstruction = systemInstruction.orEmpty(),
             userPrompt = prompt,
             responseJson = false,
+            temperature = 0.35f,
             maxOutputTokens = 6144,
-            thinkingLevel = GeminiThinkingLevel.LOW,
             timeoutMs = 75_000L
         ).mapCatching { result ->
             val text = result.text.trim()
-            if (text.isBlank()) throw Exception("Model boş yanıt döndürdü ($MODEL_NAME).")
-            Log.d("GeminiRepository", "Success on model: $MODEL_NAME (${result.gatewayUsed})")
+            if (text.isBlank()) throw Exception("Model boş yanıt döndürdü (${result.modelUsed}).")
+            Log.d("GeminiRepository", "Success on model: ${result.modelUsed} (key #${result.usedKeyIndex + 1})")
             text
         }
     }

@@ -38,12 +38,11 @@ object GeminiPlanAnalyzer {
                 }
             """.trimIndent()
 
-            val response = GeminiRestClient.generateWithFailover(
+            val response = GeminiAiFactory.generateContentWithFailover(
                 userPrompt = prompt,
                 bitmaps = bitmaps,
                 responseJson = true,
                 maxOutputTokens = 8192,
-                thinkingLevel = GeminiThinkingLevel.MEDIUM,
                 timeoutMs = 75_000L
             ).getOrThrow()
 

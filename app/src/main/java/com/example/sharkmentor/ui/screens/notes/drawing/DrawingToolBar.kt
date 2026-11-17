@@ -569,6 +569,36 @@ fun DrawingStudioBar(
                     }
                 }
 
+                // Stylus-Only / Palm Rejection Toggle
+                StudioToolButton(
+                    label = if (isCompactMode) "El Reddi" else "Sadece Kalem",
+                    isSelected = controller.stylusOnlyMode,
+                    accentColor = Color(0xFF10B981),
+                    onClick = { controller.toggleStylusOnlyMode() }
+                ) { tint ->
+                    Canvas(modifier = Modifier.size(16.dp)) {
+                        val stylusPath = Path().apply {
+                            moveTo(size.width * 0.18f, size.height * 0.82f)
+                            lineTo(size.width * 0.28f, size.height * 0.56f)
+                            lineTo(size.width * 0.74f, size.height * 0.14f)
+                            lineTo(size.width * 0.86f, size.height * 0.26f)
+                            lineTo(size.width * 0.42f, size.height * 0.72f)
+                            close()
+                        }
+                        drawPath(
+                            path = stylusPath,
+                            color = tint,
+                            style = Stroke(width = 1.6.dp.toPx(), join = StrokeJoin.Round)
+                        )
+                        // Small palm-shield / lock indicator dot at bottom right
+                        drawCircle(
+                            color = tint,
+                            radius = 2.2.dp.toPx(),
+                            center = Offset(size.width * 0.78f, size.height * 0.78f)
+                        )
+                    }
+                }
+
                 VerticalDivider(
                     modifier = Modifier
                         .height(26.dp)

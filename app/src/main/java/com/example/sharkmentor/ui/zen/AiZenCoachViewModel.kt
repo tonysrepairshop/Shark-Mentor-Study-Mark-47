@@ -5,8 +5,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -100,13 +99,13 @@ class AiZenCoachViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _isLoading.value = true
             try {
-                val result = GeminiRestClient.generateWithFailover(
+                val result = GeminiAiFactory.generateContentWithFailover(
                     context = getApplication(),
                     systemInstruction = zenCoachSystemPrompt,
                     userPrompt = questionText.trim(),
                     responseJson = false,
+                    temperature = 0.45f,
                     maxOutputTokens = 1024,
-                    thinkingLevel = GeminiThinkingLevel.MINIMAL,
                     timeoutMs = 45_000L
                 )
                 val aiReply = result.getOrThrow().text.takeIf { it.isNotBlank() }

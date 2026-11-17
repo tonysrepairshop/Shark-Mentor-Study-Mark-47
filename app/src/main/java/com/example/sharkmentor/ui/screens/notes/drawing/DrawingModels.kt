@@ -303,6 +303,8 @@ class DrawingController(
     var strokeWidth by mutableFloatStateOf(DrawingTool.FOUNTAIN_PEN.defaultWidth)
     var alpha by mutableFloatStateOf(DrawingTool.FOUNTAIN_PEN.defaultAlpha)
     var eraserRadius by mutableFloatStateOf(22f)
+    var stylusOnlyMode by mutableStateOf(false)
+    var smartPalmRejectionEnabled by mutableStateOf(true)
 
     // Per-tool saved settings so switching between Fountain Pen, Highlighter, and Technical Pen preserves user preferences
     private val toolWidths = mutableMapOf(
@@ -366,6 +368,14 @@ class DrawingController(
 
     val hasClipboard: Boolean
         get() = clipboardStrokes.isNotEmpty()
+
+    fun toggleStylusOnlyMode() {
+        stylusOnlyMode = !stylusOnlyMode
+    }
+
+    fun setStylusOnlyMode(enabled: Boolean) {
+        stylusOnlyMode = enabled
+    }
 
     fun requestLassoScreenshot() {
         if (selectionBounds() != null) {

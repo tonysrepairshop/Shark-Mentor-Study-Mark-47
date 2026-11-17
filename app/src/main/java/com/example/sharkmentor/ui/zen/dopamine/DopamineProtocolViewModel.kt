@@ -4,8 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.ui.zen.dopamine.model.DopamineProtocolState
 import com.example.sharkmentor.ui.zen.dopamine.model.ReflectionMessage
@@ -216,13 +215,13 @@ class DopamineProtocolViewModel : ViewModel() {
                     "${if (msg.sender == "user") "Ã–ÄŸrenci" else "KoÃ§"}: ${msg.text}"
                 }
                 val appContext = runCatching { FirebaseApp.getInstance().applicationContext }.getOrNull()
-                val reply = GeminiRestClient.generateWithFailover(
+                val reply = GeminiAiFactory.generateContentWithFailover(
                     context = appContext,
                     systemInstruction = reflectionSystemPrompt,
                     userPrompt = history,
                     responseJson = false,
+                    temperature = 0.45f,
                     maxOutputTokens = 1024,
-                    thinkingLevel = GeminiThinkingLevel.MINIMAL,
                     timeoutMs = 45_000L
                 ).getOrThrow().text.trim().ifBlank { "Seni dinliyorum, devam et." }
                 _reflectionMessages.value = _reflectionMessages.value +

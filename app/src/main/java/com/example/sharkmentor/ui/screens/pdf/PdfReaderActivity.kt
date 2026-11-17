@@ -118,8 +118,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
-import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.data.ThemePreferences
 import com.example.sharkmentor.core.theme.ThemeManager
@@ -980,14 +979,13 @@ fun PdfReaderScreen(
                         append("[KULLANICI İSTEĞİ]: $effectivePrompt")
                     }
 
-                    val visionResult = GeminiRestClient.streamWithFailover(
+                    val visionResult = GeminiAiFactory.streamContentWithFailover(
                         context = context,
                         systemInstruction = visionSystem,
                         userPrompt = visionPrompt,
                         bitmaps = listOf(currentPageBitmap),
                         responseJson = false,
                         maxOutputTokens = 6144,
-                        thinkingLevel = GeminiThinkingLevel.LOW,
                         timeoutMs = 75_000L,
                         onPartialText = { partial ->
                             if (partial.isNotEmpty()) {
@@ -1074,13 +1072,12 @@ fun PdfReaderScreen(
                     }
                 }
 
-                val geminiTextResult = GeminiRestClient.streamWithFailover(
+                val geminiTextResult = GeminiAiFactory.streamContentWithFailover(
                     context = context,
                     systemInstruction = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
                     userPrompt = contextualPrompt,
                     responseJson = false,
                     maxOutputTokens = 6144,
-                    thinkingLevel = GeminiThinkingLevel.LOW,
                     timeoutMs = 75_000L,
                     onPartialText = { partial ->
                         if (partial.isNotEmpty()) {
@@ -1505,7 +1502,12 @@ fun PdfReaderScreen(
                         isNearVisible = isNearVisible,
                         currentVisiblePage = currentPageIndex,
                         renderer = lazyRenderer,
-                        drawingController = pageController
+                        drawingController = pageController,
+                        onTwoFingerScroll = if (zoomScale <= 1.05f) {
+                            { dy, _ -> listState.dispatchRawDelta(-dy) }
+                        } else {
+                            null
+                        }
                     )
                 }
             }
@@ -1845,7 +1847,8 @@ private fun LazyPdfPageCard(
     isNearVisible: Boolean,
     currentVisiblePage: Int,
     renderer: LazyPdfPageRenderer,
-    drawingController: DrawingController
+    drawingController: DrawingController,
+    onTwoFingerScroll: ((Float, Float) -> Unit)? = null
 ) {
     var pageBitmap by remember(pageIndex) {
         mutableStateOf(renderer.getCachedPage(pageIndex))
@@ -1909,7 +1912,8 @@ private fun LazyPdfPageCard(
             // Per-page interactive Drawing & Annotation Canvas Overlay
             DrawingCanvasOverlay(
                 controller = drawingController,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                onTwoFingerScroll = onTwoFingerScroll
             )
 
             // Subtle page number corner badge

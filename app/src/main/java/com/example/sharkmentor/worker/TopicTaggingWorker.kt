@@ -8,8 +8,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.sharkmentor.core.ai.ApiKeyRotator
-import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.data.local.SharkMentorDatabase
@@ -118,13 +117,13 @@ class TopicTaggingWorker(
                     buildTaggingPromptTextOnly(question.subject, question.topic)
                 }
 
-                val responseResult = GeminiRestClient.generateWithFailover(
+                val responseResult = GeminiAiFactory.generateContentWithFailover(
                     context = context,
                     userPrompt = prompt,
                     bitmaps = if (bitmap != null && !bitmap.isRecycled) listOf(bitmap) else emptyList(),
                     responseJson = false,
+                    temperature = 0.2f,
                     maxOutputTokens = 512,
-                    thinkingLevel = GeminiThinkingLevel.MINIMAL,
                     timeoutMs = 45_000L
                 )
 

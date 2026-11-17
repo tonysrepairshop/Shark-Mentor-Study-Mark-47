@@ -42,7 +42,8 @@ KESİN KURALLAR:
     }
 
     /**
-     * Streams a text chat completion strictly via `gemini-3.6-flash` using user keys first and BuildConfig fallback.
+     * Streams a text chat completion using Mark 42's `GenerativeModel` SDK pipeline.
+     * Built-in keys strictly use `gemini-3.6-flash`; custom user keys use the selected model.
      */
     suspend fun streamTextChatWithGemini(
         systemInstruction: String,
@@ -55,17 +56,16 @@ KESİN KURALLAR:
         val geminiTurns = chatHistory.takeLast(6).map { msg ->
             GeminiChatTurn(role = msg.role, text = msg.content)
         }
-        val thinkingLevel = if (maxTokens >= 6000) GeminiThinkingLevel.MEDIUM else GeminiThinkingLevel.LOW
         val effectiveMaxTokens = maxTokens.coerceAtLeast(4096)
 
-        GeminiRestClient.streamWithFailover(
+        GeminiAiFactory.streamContentWithFailover(
             context = context,
             systemInstruction = systemInstruction.trim(),
             userPrompt = userPrompt,
             chatHistory = geminiTurns,
             responseJson = false,
+            temperature = temperature,
             maxOutputTokens = effectiveMaxTokens,
-            thinkingLevel = thinkingLevel,
             timeoutMs = 60_000L,
             onPartialText = onPartialText
         ).mapCatching { response ->
@@ -82,8 +82,7 @@ KESİN KURALLAR:
         prompt: String,
         errorMsg: String,
         responseJson: Boolean = false,
-        maxOutputTokens: Int = 4096,
-        thinkingLevel: GeminiThinkingLevel = GeminiThinkingLevel.LOW
+        maxOutputTokens: Int = 4096
     ): String {
         val uri = Uri.parse(uriString)
         val mimeType = getMimeType(uri)
@@ -115,7 +114,7 @@ KESİN KURALLAR:
                 bitmaps = listOf(bitmap)
             }
 
-            val result = GeminiRestClient.generateWithFailover(
+            val result = GeminiAiFactory.generateContentWithFailover(
                 context = context,
                 systemInstruction = SYSTEM_PERSONA_RULES,
                 userPrompt = prompt,
@@ -123,7 +122,6 @@ KESİN KURALLAR:
                 inlineFiles = inlineFiles,
                 responseJson = responseJson,
                 maxOutputTokens = maxOutputTokens,
-                thinkingLevel = thinkingLevel,
                 timeoutMs = 60_000L
             ).getOrThrow()
 
@@ -154,8 +152,7 @@ KESİN KURALLAR:
                 prompt = prompt,
                 errorMsg = "Soru belgesi okunamadı.",
                 responseJson = false,
-                maxOutputTokens = 1024,
-                thinkingLevel = GeminiThinkingLevel.LOW
+                maxOutputTokens = 1024
             )
             Result.success(text)
         } catch (ce: CancellationException) {
@@ -185,8 +182,7 @@ KESİN KURALLAR:
                 prompt = prompt,
                 errorMsg = "Soru belgesi okunamadı.",
                 responseJson = true,
-                maxOutputTokens = 4096,
-                thinkingLevel = GeminiThinkingLevel.LOW
+                maxOutputTokens = 4096
             )
             val startIdx = raw.indexOf('{')
             val endIdx = raw.lastIndexOf('}')
@@ -224,8 +220,7 @@ KESİN KURALLAR:
                 prompt = prompt,
                 errorMsg = "Belge okunamadı.",
                 responseJson = true,
-                maxOutputTokens = 4096,
-                thinkingLevel = GeminiThinkingLevel.LOW
+                maxOutputTokens = 4096
             )
             val start = raw.indexOf('[')
             val end = raw.lastIndexOf(']')
@@ -272,8 +267,7 @@ KESİN KURALLAR:
                 prompt = prompt,
                 errorMsg = "Plan belgesi okunamadı.",
                 responseJson = true,
-                maxOutputTokens = 6144,
-                thinkingLevel = GeminiThinkingLevel.LOW
+                maxOutputTokens = 6144
             )
             val start = raw.indexOf('{')
             val end = raw.lastIndexOf('}')
@@ -325,13 +319,12 @@ KESİN KURALLAR:
             Metni doğrudan öğrenciye hitap eden, motive edici, maddeler halinde ve 150 kelimeyi geçmeyecek netlikte Türkçe olarak yaz.
         """.trimIndent()
 
-        GeminiRestClient.generateWithFailover(
+        GeminiAiFactory.generateContentWithFailover(
             context = context,
             systemInstruction = SYSTEM_PERSONA_RULES,
             userPrompt = prompt,
             responseJson = false,
             maxOutputTokens = 2048,
-            thinkingLevel = GeminiThinkingLevel.LOW,
             timeoutMs = 45_000L
         ).map { res ->
             res.text.trim().ifBlank { "Hedef analizi tamamlanamadı." }
@@ -362,13 +355,12 @@ KESİN KURALLAR:
             Samimi, disiplinli bir mentör dili kullan. 3 cümleyi geçme.
         """.trimIndent()
 
-        GeminiRestClient.generateWithFailover(
+        GeminiAiFactory.generateContentWithFailover(
             context = context,
             systemInstruction = SYSTEM_PERSONA_RULES,
             userPrompt = prompt,
             responseJson = false,
             maxOutputTokens = 1024,
-            thinkingLevel = GeminiThinkingLevel.MINIMAL,
             timeoutMs = 45_000L
         ).map { res ->
             res.text.trim().ifBlank { "Çalışmalarını düzenli sürdürerek hedeflerine adım adım yaklaşabilirsin." }

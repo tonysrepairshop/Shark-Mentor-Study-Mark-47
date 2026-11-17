@@ -7,8 +7,8 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -99,13 +99,12 @@ class ScheduleScannerEngine @Inject constructor() {
             ]
             """.trimIndent()
 
-            val response = GeminiRestClient.generateWithFailover(
+            val response = GeminiAiFactory.generateContentWithFailover(
                 context = context,
                 userPrompt = prompt,
                 bitmaps = listOf(bitmap),
                 responseJson = true,
                 maxOutputTokens = 8192,
-                thinkingLevel = GeminiThinkingLevel.LOW,
                 timeoutMs = 75_000L
             ).getOrThrow()
 

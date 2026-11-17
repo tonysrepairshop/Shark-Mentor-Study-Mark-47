@@ -2,10 +2,10 @@ package com.example.sharkmentor.data.repository
 
 import android.content.Context
 import android.graphics.Bitmap
-import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.GeminiAiFactory
+import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.ImageStorageManager
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -16,23 +16,8 @@ class AiSolverRepository @Inject constructor(
     private val context: Context
 ) {
 
-    private val apiKey: String
-        get() = ApiKeyRotator.getActiveKey().takeIf { it.isNotBlank() && it != "null" } ?: "YOUR_API_KEY"
-
-    // Primary Tier: Fast & stable model
-    private val primaryModel by lazy {
-        GenerativeModel(
-            modelName = "gemini-3.6-flash",
-            apiKey = apiKey
-        )
-    }
-
-    // Fallback Tier: Stable fallback model
-    private val fallbackModel by lazy {
-        GenerativeModel(
-            modelName = "gemini-3.6-flash",
-            apiKey = apiKey
-        )
+    init {
+        UserAiPreferences.initialize(context)
     }
 
     suspend fun getFullSolution(
@@ -41,15 +26,16 @@ class AiSolverRepository @Inject constructor(
         optionsText: String? = null,
         questionImage: Bitmap? = null
     ): Result<String> = withContext(Dispatchers.IO) {
-        
+
         var actualQuestionText = questionText
         var actualImage = questionImage
+        var ownsLoadedBitmap = false
 
-        // Preserve original URI loading logic for backwards compatibility
         if (questionText.startsWith("content://") || questionText.startsWith("file://") || questionText.startsWith("/")) {
             actualQuestionText = "Görsel ektedir."
             if (actualImage == null) {
                 actualImage = ImageStorageManager.getOptimizedBitmap(context, questionText)
+                ownsLoadedBitmap = actualImage != null
             }
         }
 
@@ -80,41 +66,39 @@ class AiSolverRepository @Inject constructor(
             LaTeX KODU (${'$'} veya \) KULLANMA. İyonları Unicode yaz (NO₃⁻, PO₄³⁻).
         """.trimIndent()
 
-        // 1. Try Primary Model (gemini-3.6-flash)
         try {
-            val response = executeGeneration(primaryModel, prompt, actualImage)
-            val text = response?.text
-            if (!text.isNullOrBlank()) {
-                return@withContext Result.success(sanitizeLatexToReadableText(text))
-            }
-        } catch (primaryError: Exception) {
-            // Log primary failure and continue to fallback
-            android.util.Log.w("AiSolverRepository", "Primary model failed. Triggering fallback: ${primaryError.localizedMessage}")
-        }
-
-        // 2. Try Fallback Model (gemini-3.6-flash)
-        try {
-            val fallbackResponse = executeGeneration(fallbackModel, prompt, actualImage)
-            val fallbackText = fallbackResponse?.text
-            if (!fallbackText.isNullOrBlank()) {
-                return@withContext Result.success(sanitizeLatexToReadableText(fallbackText))
-            } else {
-                return@withContext Result.failure(Exception("Yedek modelden boş yanıt döndü."))
-            }
-        } catch (fallbackError: Exception) {
-            return@withContext Result.failure(
-                Exception("Çözüm üretilemedi. Sistem bağlantısını kontrol edin patron. Hata: ${fallbackError.localizedMessage}")
+            val result = GeminiAiFactory.generateContentWithFailover(
+                context = context,
+                userPrompt = prompt,
+                bitmaps = if (actualImage != null && !actualImage.isRecycled) listOf(actualImage) else emptyList(),
+                responseJson = false,
+                temperature = 0.2f,
+                maxOutputTokens = 4096,
+                timeoutMs = 60_000L
             )
+            val text = result.getOrThrow().text
+            if (text.isNotBlank()) {
+                Result.success(sanitizeLatexToReadableText(text))
+            } else {
+                Result.failure(Exception("Modelden boş yanıt döndü."))
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Result.failure(
+                Exception("Çözüm üretilemedi. Sistem bağlantısını kontrol edin patron. Hata: ${e.localizedMessage}", e)
+            )
+        } finally {
+            if (ownsLoadedBitmap && actualImage != null && !actualImage.isRecycled) {
+                runCatching { actualImage.recycle() }
+            }
         }
     }
 
     private fun sanitizeLatexToReadableText(raw: String): String {
         return raw
-            // Markdown header hashtaglerini temizle
             .replace(Regex("^#{1,6}\\s*", RegexOption.MULTILINE), "")
-            // \text{...} kalıplarını içindeki metne çevir
             .replace(Regex("""\\text\{([^}]+)\}"""), "$1")
-            // Yaygın LaTeX sembollerini temiz Unicode'a çevir
             .replace("\\rightarrow", "→")
             .replace("\\Rightarrow", "⇒")
             .replace("\\implies", "⇒")
@@ -123,25 +107,9 @@ class AiSolverRepository @Inject constructor(
             .replace("\\pm", "±")
             .replace("\\le", "≤")
             .replace("\\ge", "≥")
-            // Dolar ($) işaretlerini tamamen kaldır
             .replace("$", "")
-            // Gereksiz süslü parantez artıklarını toparla
             .replace("{", "")
             .replace("}", "")
             .trim()
-    }
-
-    private suspend fun executeGeneration(
-        model: GenerativeModel,
-        prompt: String,
-        image: Bitmap?
-    ) = if (image != null) {
-        val inputContent = content {
-            image(image)
-            text(prompt)
-        }
-        model.generateContent(inputContent)
-    } else {
-        model.generateContent(prompt)
     }
 }

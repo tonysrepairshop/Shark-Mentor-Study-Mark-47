@@ -8,11 +8,8 @@ import android.util.Base64
 import android.util.Log
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
-import com.example.sharkmentor.core.ai.GeminiApiException
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.GeminiChatTurn
-import com.example.sharkmentor.core.ai.GeminiFunctionDeclaration
-import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.core.util.PdfBitmapConverter
@@ -24,13 +21,15 @@ import com.example.sharkmentor.data.local.entity.TargetPeriod
 import com.example.sharkmentor.data.local.entity.TargetType
 import com.example.sharkmentor.data.local.entity.TrainingFolderEntity
 import com.example.sharkmentor.data.local.entity.TrainingQuestionEntity
+import com.google.ai.client.generativeai.type.FunctionCallPart
+import com.google.ai.client.generativeai.type.FunctionDeclaration
+import com.google.ai.client.generativeai.type.Schema
+import com.google.ai.client.generativeai.type.Tool
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.UUID
@@ -393,78 +392,60 @@ $MANDATORY_PERSONA_RULES
         database.planFolderDao()
     )
 
-    private val autonomousToolDeclarations: List<GeminiFunctionDeclaration> by lazy {
-        listOf(
-            GeminiFunctionDeclaration(
-                name = "organizeErrorBank",
-                description = "Organizes the student's Error Bank (Hata Kumbarası) by classifying untagged questions by subject/topic, creating a training folder, or saving an attached question into the error bank.",
-                parametersJsonSchema = JSONObject().apply {
-                    put("type", "OBJECT")
-                    put("properties", JSONObject().apply {
-                        put(
-                            "subject",
-                            JSONObject()
-                                .put("type", "STRING")
-                                .put("description", "Subject name such as Matematik, Fizik, Kimya, Biyoloji, Türkçe, Tarih, Coğrafya")
-                        )
-                        put(
-                            "topic",
-                            JSONObject()
-                                .put("type", "STRING")
-                                .put("description", "Sub-topic name such as Türev, İntegral, Optik, Paragraf")
-                        )
-                        put(
-                            "folderTitle",
-                            JSONObject()
-                                .put("type", "STRING")
-                                .put("description", "Title for the organized training folder")
-                        )
-                    })
-                    put("required", JSONArray().put("subject").put("topic"))
-                }
+    val organizeErrorBankDeclaration: FunctionDeclaration = FunctionDeclaration(
+        name = "organizeErrorBank",
+        description = "Organizes the student's Error Bank (Hata Kumbarası) by classifying untagged questions by subject/topic, creating a training folder, or saving an attached question into the error bank.",
+        parameters = listOf(
+            Schema.str(
+                name = "subject",
+                description = "Subject name such as Matematik, Fizik, Kimya, Biyoloji, Türkçe, Tarih, Coğrafya"
             ),
-            GeminiFunctionDeclaration(
-                name = "addStudyPlanItem",
-                description = "Adds a new study task or session item directly into the student's active Study Plan (Çalışma Planı).",
-                parametersJsonSchema = JSONObject().apply {
-                    put("type", "OBJECT")
-                    put("properties", JSONObject().apply {
-                        put(
-                            "subject",
-                            JSONObject()
-                                .put("type", "STRING")
-                                .put("description", "Subject name (e.g. Matematik, Fizik, Türkçe)")
-                        )
-                        put(
-                            "topic",
-                            JSONObject()
-                                .put("type", "STRING")
-                                .put("description", "Topic or study focus (e.g. Türev Uygulamaları, Paragraf Rutini)")
-                        )
-                        put(
-                            "dayOfWeek",
-                            JSONObject()
-                                .put("type", "INTEGER")
-                                .put("description", "Day of week from 1 (Monday / Pazartesi) to 7 (Sunday / Pazar)")
-                        )
-                        put(
-                            "scheduledTime",
-                            JSONObject()
-                                .put("type", "STRING")
-                                .put("description", "Time slot formatted as HH:mm - HH:mm (e.g. 16:00 - 17:30)")
-                        )
-                        put(
-                            "targetQuestions",
-                            JSONObject()
-                                .put("type", "INTEGER")
-                                .put("description", "Target number of questions to solve (minimum 20, default 30)")
-                        )
-                    })
-                    put("required", JSONArray().put("subject").put("topic").put("dayOfWeek"))
-                }
+            Schema.str(
+                name = "topic",
+                description = "Sub-topic name such as Türev, İntegral, Optik, Paragraf"
+            ),
+            Schema.str(
+                name = "folderTitle",
+                description = "Title for the organized training folder"
             )
+        ),
+        requiredParameters = listOf("subject", "topic")
+    )
+
+    val addStudyPlanItemDeclaration: FunctionDeclaration = FunctionDeclaration(
+        name = "addStudyPlanItem",
+        description = "Adds a new study task or session item directly into the student's active Study Plan (Çalışma Planı).",
+        parameters = listOf(
+            Schema.str(
+                name = "subject",
+                description = "Subject name (e.g. Matematik, Fizik, Türkçe)"
+            ),
+            Schema.str(
+                name = "topic",
+                description = "Topic or study focus (e.g. Türev Uygulamaları, Paragraf Rutini)"
+            ),
+            Schema.int(
+                name = "dayOfWeek",
+                description = "Day of week from 1 (Monday / Pazartesi) to 7 (Sunday / Pazar)"
+            ),
+            Schema.str(
+                name = "scheduledTime",
+                description = "Time slot formatted as HH:mm - HH:mm (e.g. 16:00 - 17:30)"
+            ),
+            Schema.int(
+                name = "targetQuestions",
+                description = "Target number of questions to solve (minimum 20, default 30)"
+            )
+        ),
+        requiredParameters = listOf("subject", "topic", "dayOfWeek")
+    )
+
+    val autonomousSharkTool: Tool = Tool(
+        functionDeclarations = listOf(
+            organizeErrorBankDeclaration,
+            addStudyPlanItemDeclaration
         )
-    }
+    )
 
     /**
      * Standalone Engine 1: `SolverEngine` (Soru Çözücü Modülü)
@@ -707,14 +688,9 @@ $MANDATORY_PERSONA_RULES
                 return@withContext Result.failure(IllegalStateException("Eklenen dosya veya görsel okunamadı."))
             }
 
-            val thinkingLevel = if (modelPower == AiModelPower.PRO) {
-                GeminiThinkingLevel.MEDIUM
-            } else {
-                GeminiThinkingLevel.LOW
-            }
             val maxTokens = if (modelPower == AiModelPower.PRO) 12288 else 6144
 
-            val geminiResult = GeminiRestClient.streamWithFailover(
+            val geminiResult = GeminiAiFactory.streamContentWithFailover(
                 context = context,
                 systemInstruction = enrichedSystemInstruction,
                 userPrompt = prompt.trim().ifBlank { "Eklenen görseli veya belgeyi incele." },
@@ -722,8 +698,9 @@ $MANDATORY_PERSONA_RULES
                 inlineFiles = inlineFiles,
                 tools = emptyList(),
                 responseJson = false,
+                temperature = 0.1f,
                 maxOutputTokens = maxTokens,
-                thinkingLevel = thinkingLevel,
+                topP = 0.8f,
                 timeoutMs = 75_000L,
                 onPartialText = onPartialText
             )
@@ -1029,22 +1006,18 @@ $MANDATORY_PERSONA_RULES
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
         val shouldAttachTools = !forceInlineActionMode && activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER
-        val thinkingLevel = if (modelPower == AiModelPower.PRO) {
-            GeminiThinkingLevel.MEDIUM
-        } else {
-            GeminiThinkingLevel.LOW
-        }
         val effectiveMaxTokens = overrideMaxTokens ?: if (modelPower == AiModelPower.PRO) 16384 else 6144
 
-        var geminiResult = GeminiRestClient.streamWithFailover(
+        var geminiResult = GeminiAiFactory.streamContentWithFailover(
             context = context,
             systemInstruction = systemInstruction,
             userPrompt = prompt,
             chatHistory = chatHistory,
-            tools = if (shouldAttachTools) autonomousToolDeclarations else emptyList(),
+            tools = if (shouldAttachTools) listOf(autonomousSharkTool) else emptyList(),
             responseJson = false,
+            temperature = modelPower.temperature,
             maxOutputTokens = effectiveMaxTokens,
-            thinkingLevel = thinkingLevel,
+            topP = modelPower.topP,
             timeoutMs = 75_000L,
             onPartialText = onPartialText
         )
@@ -1052,17 +1025,24 @@ $MANDATORY_PERSONA_RULES
         val err = geminiResult.exceptionOrNull()
         if (err is CancellationException) throw err
 
-        if (geminiResult.isFailure && shouldAttachTools && (err as? GeminiApiException)?.httpCode == 400) {
-            Log.w("AiRouterRepository", "Tool schema returned HTTP 400; retrying without tools...")
-            geminiResult = GeminiRestClient.streamWithFailover(
+        val errMsg = err?.message.orEmpty().lowercase(Locale.ROOT)
+        val isToolSchemaError = errMsg.contains("400") ||
+            errMsg.contains("invalid") ||
+            errMsg.contains("schema") ||
+            errMsg.contains("tool")
+
+        if (geminiResult.isFailure && shouldAttachTools && isToolSchemaError) {
+            Log.w("AiRouterRepository", "Tool schema error (${err?.message}); retrying without tools...")
+            geminiResult = GeminiAiFactory.streamContentWithFailover(
                 context = context,
                 systemInstruction = systemInstruction,
                 userPrompt = prompt,
                 chatHistory = chatHistory,
                 tools = emptyList(),
                 responseJson = false,
+                temperature = modelPower.temperature,
                 maxOutputTokens = effectiveMaxTokens,
-                thinkingLevel = thinkingLevel,
+                topP = modelPower.topP,
                 timeoutMs = 75_000L,
                 onPartialText = onPartialText
             )
@@ -1081,8 +1061,12 @@ $MANDATORY_PERSONA_RULES
         var createdFolderId: String? = null
 
         if (response.functionCalls.isNotEmpty()) {
-            for (call in response.functionCalls) {
-                val executionResult = executeToolCall(call.name, call.args, null)
+            for (call: FunctionCallPart in response.functionCalls) {
+                val executionResult = executeToolCall(
+                    call.name,
+                    call.args.mapValues { it.value.orEmpty() },
+                    null
+                )
                 if (executionResult.note.isNotBlank()) {
                     toolNotes.add(executionResult.note)
                 }

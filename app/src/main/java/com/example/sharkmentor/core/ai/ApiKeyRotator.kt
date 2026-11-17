@@ -125,12 +125,6 @@ object ApiKeyRotator {
             return true
         }
 
-        if (throwable is GeminiApiException) {
-            return throwable.isKeyOrAuthIssue ||
-                throwable.isTransientServerIssue ||
-                throwable.httpCode in listOf(400, 401, 403, 429, 500, 502, 503, 504)
-        }
-
         val fullError = "${throwable.javaClass.simpleName} ${throwable.message} ${throwable.cause?.message} ${throwable.localizedMessage}".lowercase()
 
         // Explicitly ignore pure offline network and DNS resolution errors.

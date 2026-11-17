@@ -5,8 +5,8 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.sharkmentor.core.ai.ApiKeyRotator
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.data.local.SharkMentorDatabase
@@ -159,13 +159,12 @@ class AiStudyPlannerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     private suspend fun executeWithKeyRotation(promptText: String, systemPrompt: String): String {
-        val result = GeminiRestClient.generateWithFailover(
+        val result = GeminiAiFactory.generateContentWithFailover(
             context = getApplication(),
             systemInstruction = systemPrompt,
             userPrompt = promptText,
             responseJson = true,
             maxOutputTokens = 8192,
-            thinkingLevel = GeminiThinkingLevel.MEDIUM,
             timeoutMs = 55_000L
         )
         val raw = result.getOrElse { err ->

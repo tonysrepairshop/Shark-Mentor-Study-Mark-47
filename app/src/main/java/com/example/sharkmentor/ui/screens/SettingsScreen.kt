@@ -205,12 +205,19 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
     val userAiPrefs = remember { UserAiPreferences.initialize(context) }
 
     val savedGemini by userAiPrefs.userGeminiKeys.collectAsStateWithLifecycle()
+    val savedSelectedModel by userAiPrefs.selectedUserGeminiModel.collectAsStateWithLifecycle()
+    val savedDiscoveredModels by userAiPrefs.discoveredGeminiModels.collectAsStateWithLifecycle()
     val savedDeepSeek by userAiPrefs.userDeepSeekKey.collectAsStateWithLifecycle()
     val savedKimi by userAiPrefs.userKimiKey.collectAsStateWithLifecycle()
     val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
     val savedPowerMode by userAiPrefs.preferredPowerMode.collectAsStateWithLifecycle()
 
     var geminiKeysInput by remember(savedGemini) { mutableStateOf(savedGemini) }
+    var selectedGeminiModel by remember(savedSelectedModel) { mutableStateOf(savedSelectedModel) }
+    var discoveredModels by remember(savedDiscoveredModels) { mutableStateOf(savedDiscoveredModels) }
+    var isDiscoveringModels by remember { mutableStateOf(false) }
+    var modelDiscoveryError by remember { mutableStateOf<String?>(null) }
+
     var deepSeekInput by remember(savedDeepSeek) { mutableStateOf(savedDeepSeek) }
     var kimiInput by remember(savedKimi) { mutableStateOf(savedKimi) }
     var selectedProvider by remember(savedProvider) { mutableStateOf(savedProvider) }
@@ -221,6 +228,38 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
     var showKimiKey by remember { mutableStateOf(false) }
     var isTestingConnection by remember { mutableStateOf(false) }
     var connectionTestResult by remember { mutableStateOf<GeminiConnectionTestResult?>(null) }
+
+    val hasCustomGeminiInput = remember(geminiKeysInput) {
+        UserAiPreferences.parseGeminiKeyList(geminiKeysInput).isNotEmpty()
+    }
+
+    LaunchedEffect(geminiKeysInput) {
+        val parsed = UserAiPreferences.parseGeminiKeyList(geminiKeysInput)
+        if (parsed.isEmpty()) {
+            selectedGeminiModel = UserAiPreferences.STANDARD_GEMINI_MODEL
+            modelDiscoveryError = null
+            isDiscoveringModels = false
+            return@LaunchedEffect
+        }
+        val firstKey = parsed.firstOrNull().orEmpty()
+        if (firstKey.length < 16) return@LaunchedEffect
+
+        kotlinx.coroutines.delay(750L)
+        isDiscoveringModels = true
+        modelDiscoveryError = null
+        val discovery = GeminiRestClient.fetchSupportedModels(geminiKeysInput)
+        isDiscoveringModels = false
+        if (discovery.success && discovery.models.isNotEmpty()) {
+            discoveredModels = discovery.models
+            if (discovery.models.none { it.id == selectedGeminiModel }) {
+                selectedGeminiModel = discovery.models
+                    .firstOrNull { it.id == UserAiPreferences.STANDARD_GEMINI_MODEL }
+                    ?.id ?: discovery.models.first().id
+            }
+        } else if (discoveredModels.isEmpty()) {
+            modelDiscoveryError = discovery.summary
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(
@@ -238,8 +277,13 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(8.dp)
             ) {
+                val badgeText = if (hasCustomGeminiInput) {
+                    "Model: $selectedGeminiModel"
+                } else {
+                    "Standart: ${UserAiPreferences.STANDARD_GEMINI_MODEL}"
+                }
                 Text(
-                    text = GeminiAiFactory.SOLE_GEMINI_MODEL,
+                    text = badgeText,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -247,12 +291,16 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
             }
         }
 
-        if (geminiKeysInput.isBlank() || deepSeekInput.isBlank() || kimiInput.isBlank()) {
+        if (!hasCustomGeminiInput || deepSeekInput.isBlank() || kimiInput.isBlank()) {
             Text(
-                text = "Boş bırakılırsa standart uygulama anahtarları kullanılır.",
+                text = if (!hasCustomGeminiInput) {
+                    "Boş bırakılırsa 3 standart anahtar (${UserAiPreferences.STANDARD_GEMINI_MODEL}) kullanılır."
+                } else {
+                    "Boş bırakılan sağlayıcılar için standart anahtarlar kullanılır."
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
         }
@@ -269,9 +317,99 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
             onToggleVisibility = { showGeminiKey = !showGeminiKey },
             onClear = {
                 geminiKeysInput = ""
+                selectedGeminiModel = UserAiPreferences.STANDARD_GEMINI_MODEL
+                modelDiscoveryError = null
                 connectionTestResult = null
             }
         )
+
+        if (hasCustomGeminiInput) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Anahtarın Desteklediği Modeller",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    TextButton(
+                        onClick = {
+                            if (isDiscoveringModels) return@TextButton
+                            scope.launch {
+                                isDiscoveringModels = true
+                                modelDiscoveryError = null
+                                val discovery = GeminiRestClient.fetchSupportedModels(geminiKeysInput)
+                                isDiscoveringModels = false
+                                if (discovery.success && discovery.models.isNotEmpty()) {
+                                    discoveredModels = discovery.models
+                                    if (discovery.models.none { it.id == selectedGeminiModel }) {
+                                        selectedGeminiModel = discovery.models
+                                            .firstOrNull { it.id == UserAiPreferences.STANDARD_GEMINI_MODEL }
+                                            ?.id ?: discovery.models.first().id
+                                    }
+                                } else {
+                                    modelDiscoveryError = discovery.summary
+                                }
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        if (isDiscoveringModels) {
+                            CircularProgressIndicator(modifier = Modifier.size(13.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Taranıyor...", fontSize = 11.sp)
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Modelleri Getir", fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                modelDiscoveryError?.let { errText ->
+                    Text(
+                        text = errText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                if (discoveredModels.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        discoveredModels.forEach { modelOpt ->
+                            val isSelected = selectedGeminiModel == modelOpt.id
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    selectedGeminiModel = modelOpt.id
+                                    connectionTestResult = null
+                                },
+                                label = {
+                                    Text(
+                                        text = modelOpt.id,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        maxLines = 1
+                                    )
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
         ApiKeyInputField(
             value = deepSeekInput,
@@ -355,7 +493,13 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
                     deepSeekKey = deepSeekInput,
                     kimiKey = kimiInput,
                     provider = selectedProvider,
-                    powerMode = selectedPowerMode
+                    powerMode = selectedPowerMode,
+                    selectedGeminiModel = if (hasCustomGeminiInput) {
+                        selectedGeminiModel
+                    } else {
+                        UserAiPreferences.STANDARD_GEMINI_MODEL
+                    },
+                    discoveredModels = if (hasCustomGeminiInput) discoveredModels else emptyList()
                 )
                 ApiKeyRotator.invalidateAndReset()
                 scope.launch {
@@ -382,7 +526,8 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
                 scope.launch {
                     val result = GeminiRestClient.testApiConnection(
                         context = context,
-                        candidateUserKeysRaw = geminiKeysInput
+                        candidateUserKeysRaw = geminiKeysInput,
+                        candidateModelId = if (hasCustomGeminiInput) selectedGeminiModel else null
                     )
                     connectionTestResult = result
                     isTestingConnection = false
@@ -393,12 +538,13 @@ fun AiSettingsSection(snackbarHostState: SnackbarHostState) {
             modifier = Modifier.fillMaxWidth()
         ) {
             if (isTestingConnection) {
+                val testLabel = if (hasCustomGeminiInput) selectedGeminiModel else UserAiPreferences.STANDARD_GEMINI_MODEL
                 CircularProgressIndicator(
                     modifier = Modifier.size(16.dp),
                     strokeWidth = 2.dp
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Bağlantı Test Ediliyor (${GeminiRestClient.MODEL_ID})...")
+                Text("Bağlantı Test Ediliyor ($testLabel)...")
             } else {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))

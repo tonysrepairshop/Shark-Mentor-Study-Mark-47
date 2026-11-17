@@ -1,8 +1,8 @@
 package com.example.sharkmentor.data.remote
 
 import android.util.Log
+import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.GeminiRestClient
-import com.example.sharkmentor.core.ai.GeminiThinkingLevel
 import com.example.sharkmentor.data.local.dao.InstitutionScheduleDao
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -102,12 +102,11 @@ ${heavySubjectNote}- Tüm seanslar çakışmasız ve ardışık olmalıdır.
             """.trimIndent())
             }
 
-            val response = GeminiRestClient.generateWithFailover(
+            val response = GeminiAiFactory.generateContentWithFailover(
                 systemInstruction = systemPrompt,
                 userPrompt = "ÖĞRENCİ TALEBİ / BİLGİSİ: $userPrompt",
                 responseJson = true,
                 maxOutputTokens = 8192,
-                thinkingLevel = GeminiThinkingLevel.LOW,
                 timeoutMs = 75_000L
             ).getOrThrow()
 
