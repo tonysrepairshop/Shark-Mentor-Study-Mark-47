@@ -139,6 +139,9 @@
     <string name="plan_empty_state">Henüz kayıtlı bir çalışma planınız yok.\nSağ alttaki \'+/AI\' butonunu kullanarak PDF veya fotoğraf üzerinden anında plan oluşturabilirsiniz.</string>
 
     <string name="widget_description">SharkMentor günlük çalışma süresi, ustalık puanı ve hızlı odaklanma paneli.</string>
+    <string name="desk_widget_description">Günlük odak süresi, hedef ilerleme çubuğu ve tek dokunuşla masa modu kontrolü.</string>
+    <string name="focus_widget_description">Canlı odak sayacı durumu ve tek dokunuşla Başlat/Duraklat kontrolü.</string>
+    <string name="streak_widget_description">Günlük çalışma serisi, 7 günlük mini durum göstergesi ve hızlı odak başlatıcı.</string>
 
     <!-- Training & AI Solver -->
     <string name="progress_completed_format">Hedef Tamamlanma: %%%d</string>

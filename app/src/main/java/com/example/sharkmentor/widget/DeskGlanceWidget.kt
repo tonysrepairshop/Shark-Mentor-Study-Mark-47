@@ -2,102 +2,241 @@ package com.example.sharkmentor.widget
 
 import android.content.Context
 import android.content.Intent
-import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.glance.*
+import androidx.glance.ColorFilter
+import androidx.glance.GlanceId
+import androidx.glance.GlanceModifier
+import androidx.glance.GlanceTheme
+import androidx.glance.Image
+import androidx.glance.ImageProvider
+import androidx.glance.LocalContext
+import androidx.glance.LocalSize
 import androidx.glance.action.ActionParameters
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
+import androidx.glance.appwidget.LinearProgressIndicator
+import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
+import androidx.glance.appwidget.action.actionStartActivity
+import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
-import androidx.glance.color.ColorProvider
-import androidx.glance.layout.*
+import androidx.glance.layout.Alignment
+import androidx.glance.layout.Box
+import androidx.glance.layout.Column
+import androidx.glance.layout.Row
+import androidx.glance.layout.Spacer
+import androidx.glance.layout.fillMaxSize
+import androidx.glance.layout.fillMaxWidth
+import androidx.glance.layout.height
+import androidx.glance.layout.padding
+import androidx.glance.layout.size
+import androidx.glance.layout.width
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
+import com.example.sharkmentor.MainActivity
+import com.example.sharkmentor.R
+import com.example.sharkmentor.core.widget.RefreshWidgetAction
+import com.example.sharkmentor.core.widget.WidgetSnapshot
+import com.example.sharkmentor.core.widget.WidgetThemeTokens
+import com.example.sharkmentor.core.widget.WidgetUpdateManager
 import com.example.sharkmentor.service.blocker.StrictAppBlockerService
-import java.util.Locale
 
 class DeskGlanceWidget : GlanceAppWidget() {
 
-    override suspend fun provideGlance(context: Context, id: GlanceId) {
-        // Read daily focus time (minutes) from SharedPreferences
-        val prefs = context.getSharedPreferences("shark_desk_prefs", Context.MODE_PRIVATE)
-        val dailyMinutes = prefs.getInt("daily_total_minutes", 225) // Example: 3h 45m
-        val isDeskActive = prefs.getBoolean("is_desk_active", false)
+    companion object {
+        private val SIZE_COMPACT = DpSize(180.dp, 64.dp)
+        private val SIZE_MEDIUM = DpSize(240.dp, 100.dp)
+        private val SIZE_EXPANDED = DpSize(280.dp, 140.dp)
+    }
 
-        val hours = dailyMinutes / 60
-        val mins = dailyMinutes % 60
-        val timeDisplay = String.format(Locale.US, "%02d:%02d sa", hours, mins)
+    override val sizeMode: SizeMode = SizeMode.Responsive(
+        setOf(SIZE_COMPACT, SIZE_MEDIUM, SIZE_EXPANDED)
+    )
+
+    override suspend fun provideGlance(context: Context, id: GlanceId) {
+        val snapshot = WidgetUpdateManager.loadSnapshot(context)
 
         provideContent {
             GlanceTheme {
+                DeskWidgetContent(snapshot = snapshot)
+            }
+        }
+    }
+
+    @Composable
+    private fun DeskWidgetContent(snapshot: WidgetSnapshot) {
+        val context = LocalContext.current
+        val size = LocalSize.current
+        val isCompact = size.height < 90.dp
+
+        val isDeskActive = snapshot.isDeskActive
+        val todayMinutes = snapshot.todayFocusMinutes
+        val goalMinutes = snapshot.dailyGoalMinutes
+        val goalProgress = (todayMinutes.toFloat() / goalMinutes.toFloat()).coerceIn(0f, 1f)
+        val goalPercent = (goalProgress * 100).toInt().coerceIn(0, 100)
+
+        val openDeskIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("EXTRA_TARGET_ROUTE", "home")
+        }
+
+        Box(
+            modifier = GlanceModifier
+                .fillMaxSize()
+                .background(WidgetThemeTokens.DeepOceanBg)
+                .cornerRadius(24.dp)
+                .padding(if (isCompact) 10.dp else 12.dp)
+                .clickable(actionStartActivity(openDeskIntent))
+        ) {
+            Column(modifier = GlanceModifier.fillMaxSize()) {
                 Row(
-                    modifier = GlanceModifier
-                        .fillMaxSize()
-                        .background(Color(0xFF070D14))
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    modifier = GlanceModifier.fillMaxWidth().defaultWeight(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Left Column: Total Study Time and Status
-                    Column(
-                        modifier = GlanceModifier.defaultWeight(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "GÜNLÜK ODAK",
-                            style = TextStyle(
-                                color = ColorProvider(day = Color(0xFF64748B), night = Color(0xFF64748B)),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                        Text(
-                            text = timeDisplay,
-                            style = TextStyle(
-                                color = ColorProvider(day = Color.White, night = Color.White),
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                        Spacer(modifier = GlanceModifier.height(2.dp))
-                        Text(
-                            text = if (isDeskActive) "Masada • Aktif" else "Boşta",
-                            style = TextStyle(
-                                color = ColorProvider(
-                                    day = if (isDeskActive) Color(0xFF2EC4B6) else Color(0xFF94A3B8),
-                                    night = if (isDeskActive) Color(0xFF2EC4B6) else Color(0xFF94A3B8)
+                    Column(modifier = GlanceModifier.defaultWeight()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "GÜNLÜK ODAK",
+                                style = TextStyle(
+                                    color = WidgetThemeTokens.MutedBlue,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
                                 ),
-                                fontSize = 11.sp
+                                maxLines = 1
                             )
-                        )
+                            Spacer(modifier = GlanceModifier.width(6.dp))
+                            Box(
+                                modifier = GlanceModifier
+                                    .background(
+                                        if (isDeskActive) WidgetThemeTokens.SuccessGreenBg else WidgetThemeTokens.ElevatedCardBg
+                                    )
+                                    .cornerRadius(8.dp)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = if (isDeskActive) "Masada" else "Boşta",
+                                    style = TextStyle(
+                                        color = if (isDeskActive) WidgetThemeTokens.OceanTeal else WidgetThemeTokens.MutedBlue,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = GlanceModifier.height(2.dp))
+
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                text = WidgetUpdateManager.formatMinutesCompact(todayMinutes),
+                                style = TextStyle(
+                                    color = WidgetThemeTokens.OffWhite,
+                                    fontSize = if (isCompact) 18.sp else 20.sp,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                maxLines = 1
+                            )
+                            Spacer(modifier = GlanceModifier.width(6.dp))
+                            Text(
+                                text = "/ ${WidgetUpdateManager.formatMinutesCompact(goalMinutes)}",
+                                style = TextStyle(
+                                    color = WidgetThemeTokens.MutedBlue,
+                                    fontSize = 11.sp
+                                ),
+                                maxLines = 1
+                            )
+                        }
                     }
 
-                    // Right Button: 1-Tap Trigger
+                    if (!isCompact) {
+                        Box(
+                            modifier = GlanceModifier
+                                .size(30.dp)
+                                .background(WidgetThemeTokens.ElevatedCardBg)
+                                .cornerRadius(12.dp)
+                                .clickable(actionRunCallback<RefreshWidgetAction>()),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                provider = ImageProvider(R.drawable.ic_widget_refresh),
+                                contentDescription = "Yenile",
+                                modifier = GlanceModifier.size(14.dp),
+                                colorFilter = ColorFilter.tint(WidgetThemeTokens.IceBlue)
+                            )
+                        }
+                        Spacer(modifier = GlanceModifier.width(6.dp))
+                    }
+
+                    // 1-Tap Desk Toggle Button
                     Box(
                         modifier = GlanceModifier
-                            .background(if (isDeskActive) Color(0xFF1E293B) else Color(0xFF2EC4B6))
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .background(
+                                if (isDeskActive) WidgetThemeTokens.PauseRedBg else WidgetThemeTokens.OceanTeal
+                            )
+                            .cornerRadius(16.dp)
+                            .padding(horizontal = 12.dp, vertical = 9.dp)
                             .clickable(actionRunCallback<ToggleDeskActionCallback>()),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = if (isDeskActive) "Bitir" else "Masaya Geç",
-                            style = TextStyle(
-                                color = ColorProvider(
-                                    day = if (isDeskActive) Color.White else Color.Black,
-                                    night = if (isDeskActive) Color.White else Color.Black
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Image(
+                                provider = ImageProvider(
+                                    if (isDeskActive) R.drawable.ic_widget_stop else R.drawable.ic_widget_desk
                                 ),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
+                                contentDescription = null,
+                                modifier = GlanceModifier.size(15.dp),
+                                colorFilter = ColorFilter.tint(
+                                    if (isDeskActive) WidgetThemeTokens.PauseRed else WidgetThemeTokens.DarkOnAccent
+                                )
                             )
-                        )
+                            Spacer(modifier = GlanceModifier.width(5.dp))
+                            Text(
+                                text = if (isDeskActive) "Bitir" else "Masaya Geç",
+                                style = TextStyle(
+                                    color = if (isDeskActive) WidgetThemeTokens.OffWhite else WidgetThemeTokens.DarkOnAccent,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                ),
+                                maxLines = 1
+                            )
+                        }
                     }
+                }
+
+                Spacer(modifier = GlanceModifier.height(6.dp))
+
+                // Goal Progress Row
+                Row(
+                    modifier = GlanceModifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LinearProgressIndicator(
+                        progress = goalProgress,
+                        modifier = GlanceModifier
+                            .defaultWeight()
+                            .height(6.dp)
+                            .cornerRadius(3.dp),
+                        color = if (isDeskActive) WidgetThemeTokens.OceanTeal else WidgetThemeTokens.IceBlue,
+                        backgroundColor = WidgetThemeTokens.TrackBg
+                    )
+                    Spacer(modifier = GlanceModifier.width(8.dp))
+                    Text(
+                        text = "%$goalPercent",
+                        style = TextStyle(
+                            color = WidgetThemeTokens.IceBlue,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        maxLines = 1
+                    )
                 }
             }
         }
@@ -112,14 +251,17 @@ class ToggleDeskActionCallback : ActionCallback {
         val serviceIntent = Intent(context, StrictAppBlockerService::class.java).apply {
             action = if (isDeskActive) StrictAppBlockerService.ACTION_STOP_SERVICE else null
         }
-        if (isDeskActive) {
-            context.startService(serviceIntent)
-        } else {
-            context.startForegroundService(serviceIntent)
+
+        runCatching {
+            if (isDeskActive) {
+                context.startService(serviceIntent)
+            } else {
+                context.startForegroundService(serviceIntent)
+            }
         }
 
         prefs.edit().putBoolean("is_desk_active", !isDeskActive).apply()
-        DeskGlanceWidget().update(context, glanceId)
+        WidgetUpdateManager.updateAllWidgets(context)
     }
 }
 

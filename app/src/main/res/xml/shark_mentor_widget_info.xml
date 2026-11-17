@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
-    android:minWidth="180dp"
-    android:minHeight="80dp"
+    android:minWidth="220dp"
+    android:minHeight="96dp"
+    android:minResizeWidth="180dp"
+    android:minResizeHeight="80dp"
     android:targetCellWidth="4"
     android:targetCellHeight="2"
     android:maxResizeWidth="512dp"
@@ -9,5 +11,5 @@
     android:resizeMode="horizontal|vertical"
     android:updatePeriodMillis="1800000"
     android:description="@string/widget_description"
-    android:initialLayout="@layout/glance_default_loading_layout">
-</appwidget-provider>
+    android:initialLayout="@layout/glance_default_loading_layout"
+    android:widgetCategory="home_screen" />

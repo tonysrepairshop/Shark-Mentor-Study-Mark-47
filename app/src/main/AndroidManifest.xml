@@ -254,13 +254,27 @@
         <receiver
             android:name="com.example.sharkmentor.ui.widget.FocusTimerWidgetReceiver"
             android:enabled="true"
-            android:exported="true">
+            android:exported="true"
+            android:label="Odak Sayacı">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/focus_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.SharkStreakWidgetReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:label="SharkMentor Seri">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/streak_widget_info" />
         </receiver>
 
         <service
