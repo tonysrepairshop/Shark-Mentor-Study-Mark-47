@@ -80,6 +80,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FormatBold
 import androidx.compose.material.icons.filled.FormatColorReset
 import androidx.compose.material.icons.filled.FormatItalic
@@ -126,6 +127,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -161,7 +163,14 @@ import com.example.sharkmentor.core.util.PaperTint
 import com.example.sharkmentor.core.util.PdfBitmapConverter
 import com.example.sharkmentor.core.util.PdfExporter
 import com.example.sharkmentor.data.local.entity.NoteEntity
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingCanvasOverlay
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStudioBar
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
+import com.example.sharkmentor.ui.screens.pdf.PdfReaderActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -237,6 +246,7 @@ fun NoteDetailScreen(
     val primaryColor = colorScheme.primary
     val textMutedColor = colorScheme.onSurface.copy(alpha = 0.6f)
 
+    val vmNoteId by viewModel.noteId.collectAsStateWithLifecycle()
     val vmTitle by viewModel.noteTitle.collectAsStateWithLifecycle()
     val vmContent by viewModel.noteContent.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
@@ -245,6 +255,31 @@ fun NoteDetailScreen(
     val isAiLoading by viewModel.isAiLoading.collectAsStateWithLifecycle()
     val aiError by viewModel.aiError.collectAsStateWithLifecycle()
     val aiSavedNewNoteId by viewModel.aiSavedNewNoteId.collectAsStateWithLifecycle()
+
+    val drawingScope = rememberCoroutineScope()
+    var showDrawingStudioBar by rememberSaveable { mutableStateOf(false) }
+    var localPdfFilePath by remember(incomingFileUri) { mutableStateOf<String?>(null) }
+
+    val drawingController = remember(vmNoteId) {
+        DrawingController(
+            maxHistorySteps = 60,
+            onStrokesChanged = { updatedStrokes ->
+                val targetId = vmNoteId
+                drawingScope.launch(Dispatchers.IO) {
+                    DrawingSerializer.saveNoteDrawing(context, targetId, updatedStrokes)
+                }
+            }
+        )
+    }
+
+    LaunchedEffect(vmNoteId) {
+        if (vmNoteId.isNotBlank()) {
+            val loadedStrokes = withContext(Dispatchers.IO) {
+                DrawingSerializer.loadNoteDrawing(context, vmNoteId)
+            }
+            drawingController.setInitialStrokes(loadedStrokes)
+        }
+    }
 
     val isDark = colorScheme.background.luminance() < 0.5f
     val currentPattern = remember(colorHex) {
@@ -470,18 +505,14 @@ fun NoteDetailScreen(
                 val mimeType = resolver.getType(incomingFileUri)
                 val isPdf = mimeType == "application/pdf" || displayName.endsWith(".pdf", ignoreCase = true)
 
-                var renderedPaths = emptyList<String>()
-                var previewBmp: Bitmap? = null
+                var copiedPdfPath: String? = null
+                var effectiveUri = incomingFileUri
 
-                if (isPdf && pdfPagePaths.isEmpty()) {
-                    renderedPaths = runCatching {
-                        PdfBitmapConverter.convertPdfUriToPagePaths(context, incomingFileUri, maxPages = 25)
-                    }.getOrDefault(emptyList())
-
-                    if (renderedPaths.isEmpty() && pdfPreviewBitmap == null) {
-                        previewBmp = runCatching {
-                            PdfBitmapConverter.convertPdfUriToBitmaps(context, incomingFileUri, maxPages = 1).firstOrNull()
-                        }.getOrNull()
+                if (isPdf) {
+                    val copied = PdfBitmapConverter.copyUriToPrivatePdfsDir(context, incomingFileUri)
+                    if (copied != null) {
+                        copiedPdfPath = copied.localFile.absolutePath
+                        effectiveUri = copied.localUri
                     }
                 }
 
@@ -491,7 +522,7 @@ fun NoteDetailScreen(
 
                 val rawContent: String = DocumentTextExtractor.extractCleanText(
                     context = context,
-                    uri = incomingFileUri,
+                    uri = effectiveUri,
                     displayName = displayName,
                     mimeType = mimeType
                 )
@@ -503,24 +534,20 @@ fun NoteDetailScreen(
                 }
 
                 withContext(Dispatchers.Main) {
-                    if (renderedPaths.isNotEmpty()) {
-                        pdfPagePaths = renderedPaths
-                    }
-                    if (previewBmp != null && pdfPreviewBitmap == null) {
-                        pdfPreviewBitmap = previewBmp
+                    if (copiedPdfPath != null) {
+                        localPdfFilePath = copiedPdfPath
                     }
                     if (vmTitle.isBlank()) {
                         viewModel.onTitleChanged(resolvedTitle)
                     }
                     if (safeContent.isNotBlank() && noteFieldValue.text.isBlank()) {
-                        val activePaths = if (renderedPaths.isNotEmpty()) renderedPaths else pdfPagePaths
                         val parsed = NoteRichTextHelper.parseTaggedText(safeContent)
                         noteFieldValue = TextFieldValue(
                             annotatedString = parsed,
                             selection = TextRange(parsed.text.length)
                         )
                         viewModel.onContentChanged(
-                            composeContentWithPdfPageTags(safeContent, activePaths)
+                            composeContentWithPdfPageTags(safeContent, pdfPagePaths)
                         )
                     }
                 }
@@ -605,12 +632,22 @@ fun NoteDetailScreen(
         val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths)
         viewModel.onContentChanged(fullContent)
         viewModel.saveImmediately()
+        val currentId = vmNoteId
+        val currentStrokes = drawingController.strokes
+        drawingScope.launch(Dispatchers.IO) {
+            DrawingSerializer.saveNoteDrawing(context, currentId, currentStrokes)
+        }
     }
 
     BackHandler {
-        saveCurrentNote()
-        onSave(vmTitle, NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString), colorHex, isPinned)
-        onDismiss()
+        if (drawingController.isDrawingActive) {
+            drawingController.selectTool(DrawingTool.NONE)
+            showDrawingStudioBar = false
+        } else {
+            saveCurrentNote()
+            onSave(vmTitle, NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString), colorHex, isPinned)
+            onDismiss()
+        }
     }
 
     val isImeOpen = WindowInsets.isImeVisible
@@ -662,6 +699,39 @@ fun NoteDetailScreen(
                 }
             },
             actions = {
+                // Kalem & Çizim Stüdyosu Toggle
+                IconButton(
+                    onClick = {
+                        showDrawingStudioBar = !showDrawingStudioBar
+                        if (showDrawingStudioBar && drawingController.activeTool == DrawingTool.NONE) {
+                            drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                        } else if (!showDrawingStudioBar) {
+                            drawingController.selectTool(DrawingTool.NONE)
+                        }
+                    }
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (showDrawingStudioBar || drawingController.isDrawingActive) {
+                            primaryColor.copy(alpha = 0.20f)
+                        } else {
+                            Color.Transparent
+                        },
+                        border = if (showDrawingStudioBar || drawingController.isDrawingActive) {
+                            androidx.compose.foundation.BorderStroke(1.dp, primaryColor)
+                        } else null,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Kalem ve Çizim Stüdyosu",
+                                tint = if (showDrawingStudioBar || drawingController.isDrawingActive) primaryColor else onSurfaceColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
                 IconButton(
                     onClick = {
                         onIsolatedNoteAiClick(vmTitle, noteFieldValue.text)
@@ -737,6 +807,27 @@ fun NoteDetailScreen(
                         )
 
                         DropdownMenuItem(
+                            text = { Text(if (showDrawingStudioBar) "Çizim Stüdyosunu Kapat" else "Kalem & Çizim Stüdyosu") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = null,
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                showDrawingStudioBar = !showDrawingStudioBar
+                                if (showDrawingStudioBar && drawingController.activeTool == DrawingTool.NONE) {
+                                    drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                                } else if (!showDrawingStudioBar) {
+                                    drawingController.selectTool(DrawingTool.NONE)
+                                }
+                            }
+                        )
+
+                        DropdownMenuItem(
                             text = { Text("PDF Olarak Dışa Aktar") },
                             leadingIcon = {
                                 Icon(
@@ -803,8 +894,12 @@ fun NoteDetailScreen(
                             },
                             onClick = {
                                 showMoreMenu = false
+                                val sourceId = vmNoteId
                                 saveCurrentNote()
-                                viewModel.duplicateCurrentNote {
+                                viewModel.duplicateCurrentNote { newNoteId ->
+                                    drawingScope.launch(Dispatchers.IO) {
+                                        DrawingSerializer.duplicateNoteDrawing(context, sourceId, newNoteId)
+                                    }
                                     Toast.makeText(context, "Notun kopyası oluşturuldu", Toast.LENGTH_SHORT).show()
                                 }
                             }
@@ -866,6 +961,18 @@ fun NoteDetailScreen(
                 actionIconContentColor = primaryColor
             )
         )
+
+        // Expandable Drawing & Pen Studio Toolbar
+        AnimatedVisibility(visible = showDrawingStudioBar) {
+            DrawingStudioBar(
+                controller = drawingController,
+                onCloseStudio = {
+                    showDrawingStudioBar = false
+                    drawingController.selectTool(DrawingTool.NONE)
+                },
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
 
         // Movable Toolbar & Editor Area
         BoxWithConstraints(
@@ -1165,6 +1272,7 @@ fun NoteDetailScreen(
                     .widthIn(max = 840.dp)
                     .fillMaxWidth()
                     .align(Alignment.TopCenter),
+                userScrollEnabled = !drawingController.isDrawingActive,
                 contentPadding = editorContentPadding
             ) {
                 item(key = "note_title_header") {
@@ -1194,6 +1302,83 @@ fun NoteDetailScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                     HorizontalDivider(color = noteTextColor.copy(alpha = 0.12f))
                     Spacer(modifier = Modifier.height(12.dp))
+                }
+
+                if (localPdfFilePath != null) {
+                    item(key = "pdf_reader_launcher_card") {
+                        val safePdfPath = localPdfFilePath ?: ""
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = surfaceColor,
+                            tonalElevation = 2.dp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp)
+                                .border(
+                                    width = 1.dp,
+                                    color = primaryColor.copy(alpha = 0.3f),
+                                    shape = RoundedCornerShape(14.dp)
+                                )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.PictureAsPdf,
+                                                contentDescription = null,
+                                                tint = Color(0xFFEF4444),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                    Column {
+                                        Text(
+                                            text = "Orijinal PDF Dosyası",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = onSurfaceColor
+                                        )
+                                        Text(
+                                            text = "Tam ekran PDF okuyucu, fosforlu kalem ve sayfa çizim stüdyosunda aç",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = textMutedColor
+                                        )
+                                    }
+                                }
+                                TextButton(
+                                    onClick = {
+                                        PdfReaderActivity.startWithLocalFile(
+                                            context = context,
+                                            pdfFilePath = safePdfPath,
+                                            title = vmTitle.ifBlank { "PDF Belgesi" }
+                                        )
+                                    }
+                                ) {
+                                    Text(
+                                        text = "PDF Okuyucuda Aç",
+                                        color = primaryColor,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if (pdfPagePaths.isNotEmpty()) {
@@ -1367,67 +1552,79 @@ fun NoteDetailScreen(
                         color = noteTextColor
                     )
 
-                    BasicTextField(
-                        value = noteFieldValue,
-                        onValueChange = { updatedValue ->
-                            val enterHandled = NoteRichTextHelper.handleEnterOnListItem(noteFieldValue, updatedValue)
-                            noteFieldValue = if (enterHandled != null) {
-                                enterHandled
-                            } else {
-                                NoteRichTextHelper.handleTextChange(
-                                    oldValue = noteFieldValue,
-                                    newValue = updatedValue,
-                                    isBoldActive = isBoldActive,
-                                    isItalicActive = isItalicActive,
-                                    isUnderlineActive = isUnderlineActive,
-                                    activeTextColor = selectedTextColor,
-                                    activeHighlightColor = selectedHighlightColor
-                                )
-                            }
-                        },
-                        onTextLayout = { textLayoutResult = it },
-                        textStyle = bodyTextStyle,
-                        cursorBrush = SolidColor(primaryColor),
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .defaultMinSize(minHeight = 220.dp)
-                            .pointerInput(noteFieldValue.text) {
-                                detectTapGestures { tapOffset ->
-                                    val layout = textLayoutResult ?: return@detectTapGestures
-                                    val charOffset = layout.getOffsetForPosition(tapOffset)
-                                    val text = noteFieldValue.text
-                                    if (charOffset in 0..text.length) {
-                                        val lineStart = text.lastIndexOf('\n', (charOffset - 1).coerceAtLeast(0)).let {
-                                            if (it == -1) 0 else it + 1
-                                        }
-                                        val lineEnd = text.indexOf('\n', lineStart).let { if (it == -1) text.length else it }
-                                        val currentLine = text.substring(lineStart, lineEnd)
-                                        val isCheckboxLine = currentLine.startsWith("[ ] ") || currentLine.startsWith("[✓] ") ||
-                                            currentLine.startsWith("[x] ") || currentLine.startsWith("[X] ") ||
-                                            currentLine.startsWith("☐ ") || currentLine.startsWith("☑ ")
-                                        val prefixLen = if (currentLine.startsWith("[")) 4 else 2
-                                        if (isCheckboxLine && charOffset <= lineStart + prefixLen + 1) {
-                                            noteFieldValue = NoteRichTextHelper.toggleCheckboxAtOffset(noteFieldValue, charOffset)
-                                            val styles = NoteRichTextHelper.getStylesAtCursor(noteFieldValue)
-                                            isCheckboxChecked = styles.isCheckboxChecked
-                                            isCheckboxActive = styles.isCheckbox
-                                        }
-                                    }
-                                }
-                            },
-                        decorationBox = { innerTextField ->
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                if (noteFieldValue.text.isEmpty()) {
-                                    Text(
-                                        text = "Notunuzu yazın...",
-                                        fontSize = 16.sp,
-                                        color = noteMutedTextColor
+                            .defaultMinSize(minHeight = 420.dp)
+                    ) {
+                        BasicTextField(
+                            value = noteFieldValue,
+                            onValueChange = { updatedValue ->
+                                val enterHandled = NoteRichTextHelper.handleEnterOnListItem(noteFieldValue, updatedValue)
+                                noteFieldValue = if (enterHandled != null) {
+                                    enterHandled
+                                } else {
+                                    NoteRichTextHelper.handleTextChange(
+                                        oldValue = noteFieldValue,
+                                        newValue = updatedValue,
+                                        isBoldActive = isBoldActive,
+                                        isItalicActive = isItalicActive,
+                                        isUnderlineActive = isUnderlineActive,
+                                        activeTextColor = selectedTextColor,
+                                        activeHighlightColor = selectedHighlightColor
                                     )
                                 }
-                                innerTextField()
+                            },
+                            onTextLayout = { textLayoutResult = it },
+                            textStyle = bodyTextStyle,
+                            cursorBrush = SolidColor(primaryColor),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 420.dp)
+                                .pointerInput(noteFieldValue.text) {
+                                    detectTapGestures { tapOffset ->
+                                        val layout = textLayoutResult ?: return@detectTapGestures
+                                        val charOffset = layout.getOffsetForPosition(tapOffset)
+                                        val text = noteFieldValue.text
+                                        if (charOffset in 0..text.length) {
+                                            val lineStart = text.lastIndexOf('\n', (charOffset - 1).coerceAtLeast(0)).let {
+                                                if (it == -1) 0 else it + 1
+                                            }
+                                            val lineEnd = text.indexOf('\n', lineStart).let { if (it == -1) text.length else it }
+                                            val currentLine = text.substring(lineStart, lineEnd)
+                                            val isCheckboxLine = currentLine.startsWith("[ ] ") || currentLine.startsWith("[✓] ") ||
+                                                currentLine.startsWith("[x] ") || currentLine.startsWith("[X] ") ||
+                                                currentLine.startsWith("☐ ") || currentLine.startsWith("☑ ")
+                                            val prefixLen = if (currentLine.startsWith("[")) 4 else 2
+                                            if (isCheckboxLine && charOffset <= lineStart + prefixLen + 1) {
+                                                noteFieldValue = NoteRichTextHelper.toggleCheckboxAtOffset(noteFieldValue, charOffset)
+                                                val styles = NoteRichTextHelper.getStylesAtCursor(noteFieldValue)
+                                                isCheckboxChecked = styles.isCheckboxChecked
+                                                isCheckboxActive = styles.isCheckbox
+                                            }
+                                        }
+                                    }
+                                },
+                            decorationBox = { innerTextField ->
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    if (noteFieldValue.text.isEmpty()) {
+                                        Text(
+                                            text = "Notunuzu yazın...",
+                                            fontSize = 16.sp,
+                                            color = noteMutedTextColor
+                                        )
+                                    }
+                                    innerTextField()
+                                }
                             }
-                        }
-                    )
+                        )
+
+                        // Kalem & Çizim Stüdyosu Katmanı
+                        DrawingCanvasOverlay(
+                            controller = drawingController,
+                            modifier = Modifier.matchParentSize()
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -1679,7 +1876,11 @@ fun NoteDetailScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
+                        val idToDelete = vmNoteId
                         viewModel.deleteNote {
+                            if (idToDelete > 0L) {
+                                DrawingSerializer.deleteNoteDrawing(context, idToDelete)
+                            }
                             showDeleteConfirmDialog = false
                             onDismiss()
                         }

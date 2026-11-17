@@ -1,22 +1,286 @@
 package com.example.sharkmentor.core.util
 
+import android.content.ContentResolver
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
 import android.util.Log
+import android.util.LruCache
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.UUID
+import kotlin.math.abs
+
+data class ImportedPdfFile(
+    val localFile: File,
+    val localUri: Uri,
+    val displayName: String,
+    val title: String,
+    val pageCount: Int
+)
+
+/**
+ * OOM-safe, on-demand PDF page renderer backed by Android SDK [PdfRenderer] and [LruCache].
+ * Renders only visible ± 1 pages and automatically evicts distant pages.
+ */
+class LazyPdfPageRenderer(private val pdfFile: File) {
+
+    private val renderMutex = Mutex()
+    private var fileDescriptor: ParcelFileDescriptor? = null
+    private var pdfRenderer: PdfRenderer? = null
+    private var isClosed = false
+
+    var pageCount: Int = 0
+        private set
+
+    // Memory-bounded LruCache (max 1/10th of heap, capped at 24 MB, and max ~5 pages around visible page)
+    private val maxCacheKb: Int = ((Runtime.getRuntime().maxMemory() / 1024L) / 10L)
+        .toInt()
+        .coerceIn(6 * 1024, 24 * 1024)
+
+    private val pageCache = object : LruCache<Int, Bitmap>(maxCacheKb) {
+        override fun sizeOf(key: Int, value: Bitmap): Int {
+            return (value.allocationByteCount / 1024).coerceAtLeast(1)
+        }
+    }
+
+    init {
+        runCatching {
+            if (pdfFile.exists()) {
+                val pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
+                fileDescriptor = pfd
+                val renderer = PdfRenderer(pfd)
+                pdfRenderer = renderer
+                pageCount = renderer.pageCount
+            }
+        }.onFailure { e ->
+            Log.e("LazyPdfPageRenderer", "Failed to open PdfRenderer for ${pdfFile.absolutePath}", e)
+        }
+    }
+
+    fun getCachedPage(pageIndex: Int): Bitmap? {
+        return synchronized(pageCache) {
+            pageCache.get(pageIndex)?.takeIf { !it.isRecycled }
+        }
+    }
+
+    /**
+     * Evicts any cached page further than [keepRadius] (default 1 => visible ±1 page)
+     * so memory footprint stays tiny even on 1000+ page PDFs.
+     */
+    fun trimAroundVisiblePage(visiblePage: Int, keepRadius: Int = 1) {
+        synchronized(pageCache) {
+            val keys = pageCache.snapshot().keys.toList()
+            for (k in keys) {
+                if (abs(k - visiblePage) > keepRadius) {
+                    pageCache.remove(k)
+                }
+            }
+        }
+    }
+
+    suspend fun renderPage(
+        pageIndex: Int,
+        maxWidthPx: Int = 1200,
+        visiblePageHint: Int = pageIndex
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        getCachedPage(pageIndex)?.let { return@withContext it }
+
+        renderMutex.withLock {
+            if (isClosed) return@withLock null
+            getCachedPage(pageIndex)?.let { return@withLock it }
+
+            trimAroundVisiblePage(visiblePageHint, keepRadius = 1)
+
+            val renderer = pdfRenderer ?: return@withLock null
+            if (pageIndex !in 0 until renderer.pageCount) return@withLock null
+
+            var page: PdfRenderer.Page? = null
+            try {
+                page = renderer.openPage(pageIndex)
+                val srcW = page.width.coerceAtLeast(1)
+                val srcH = page.height.coerceAtLeast(1)
+                val targetW = minOf((srcW * 2).coerceAtLeast(720), maxWidthPx)
+                val targetH = ((srcH.toFloat() / srcW.toFloat()) * targetW.toFloat()).toInt().coerceAtLeast(1)
+
+                val bitmap = try {
+                    Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                } catch (oom: OutOfMemoryError) {
+                    Log.w("LazyPdfPageRenderer", "OOM on page $pageIndex, clearing cache and retrying at reduced size")
+                    synchronized(pageCache) { pageCache.evictAll() }
+                    System.gc()
+                    val fallbackW = (targetW / 2).coerceAtLeast(480)
+                    val fallbackH = ((srcH.toFloat() / srcW.toFloat()) * fallbackW.toFloat()).toInt().coerceAtLeast(1)
+                    Bitmap.createBitmap(fallbackW, fallbackH, Bitmap.Config.RGB_565)
+                }
+
+                val canvas = Canvas(bitmap)
+                canvas.drawColor(Color.WHITE)
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+                synchronized(pageCache) {
+                    pageCache.put(pageIndex, bitmap)
+                }
+                bitmap
+            } catch (t: Throwable) {
+                Log.e("LazyPdfPageRenderer", "Error rendering page $pageIndex", t)
+                null
+            } finally {
+                runCatching { page?.close() }
+            }
+        }
+    }
+
+    fun close() {
+        isClosed = true
+        synchronized(pageCache) {
+            pageCache.evictAll()
+        }
+        runCatching { pdfRenderer?.close() }
+        runCatching { fileDescriptor?.close() }
+        pdfRenderer = null
+        fileDescriptor = null
+    }
+}
 
 object PdfBitmapConverter {
 
     private const val MAX_RENDER_WIDTH_PX = 1080
     private const val DEFAULT_MAX_PAGES = 25
     private const val PDF_PAGES_DIR = "rendered_pdf_pages"
+    const val PRIVATE_PDFS_DIR = "pdfs"
+
+    /**
+     * Takes persistable URI read permission (when supported by the provider) and copies the
+     * incoming PDF into the app's private `files/pdfs/` directory using an 8KB streaming buffer.
+     * Prevents URI permission loss and OOM on large PDFs.
+     */
+    fun copyUriToPrivatePdfsDir(context: Context, uri: Uri): ImportedPdfFile? {
+        val resolver = context.contentResolver
+
+        // 1. Attempt persistable read permission safely
+        if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
+            runCatching {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }.onFailure {
+                Log.d("PdfBitmapConverter", "URI does not support persistable permission (will use private copy): ${it.message}")
+            }
+        }
+
+        val displayName = resolvePdfDisplayName(resolver, uri)
+        val cleanTitle = displayName.substringBeforeLast('.', displayName).ifBlank { "PDF Belgesi" }
+
+        return try {
+            val pdfsDir = File(context.filesDir, PRIVATE_PDFS_DIR).apply {
+                if (!exists()) mkdirs()
+            }
+
+            // If URI already points to a file inside our private pdfsDir, reuse it directly
+            if (uri.scheme == ContentResolver.SCHEME_FILE || uri.scheme == null) {
+                val existing = File(uri.path ?: uri.toString())
+                if (existing.exists() && existing.length() > 0L) {
+                    val count = readPageCountSafely(existing)
+                    return ImportedPdfFile(
+                        localFile = existing,
+                        localUri = Uri.fromFile(existing),
+                        displayName = existing.name,
+                        title = existing.name.substringBeforeLast('.', existing.name).ifBlank { cleanTitle },
+                        pageCount = count
+                    )
+                }
+            }
+
+            // Compute a stable filename so reopening the same URI reuses the private copy
+            val uriHash = runCatching {
+                val md = MessageDigest.getInstance("SHA-256")
+                md.digest(uri.toString().toByteArray(Charsets.UTF_8))
+                    .take(6)
+                    .joinToString("") { "%02x".format(it) }
+            }.getOrDefault(uri.toString().hashCode().toUInt().toString(16))
+
+            val safeFileName = displayName
+                .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                .take(64)
+                .let { if (it.endsWith(".pdf", ignoreCase = true)) it else "$it.pdf" }
+
+            val targetFile = File(pdfsDir, "pdf_${uriHash}_${safeFileName}")
+
+            resolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(targetFile).use { output ->
+                    val buffer = ByteArray(8 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        output.write(buffer, 0, read)
+                    }
+                    output.flush()
+                }
+            } ?: run {
+                // Fallback if openInputStream is null: try openFileDescriptor
+                resolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+                        FileOutputStream(targetFile).use { output ->
+                            input.copyTo(output, bufferSize = 8 * 1024)
+                        }
+                    }
+                }
+            }
+
+            if (!targetFile.exists() || targetFile.length() == 0L) {
+                Log.e("PdfBitmapConverter", "Copied PDF file is empty for $uri")
+                return null
+            }
+
+            val pageCount = readPageCountSafely(targetFile)
+            ImportedPdfFile(
+                localFile = targetFile,
+                localUri = Uri.fromFile(targetFile),
+                displayName = displayName,
+                title = cleanTitle,
+                pageCount = pageCount
+            )
+        } catch (e: Exception) {
+            Log.e("PdfBitmapConverter", "Failed copying PDF URI to private storage: $uri", e)
+            null
+        }
+    }
+
+    fun readPageCountSafely(pdfFile: File): Int {
+        if (!pdfFile.exists()) return 0
+        return runCatching {
+            ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                PdfRenderer(pfd).use { renderer ->
+                    renderer.pageCount
+                }
+            }
+        }.getOrDefault(0)
+    }
+
+    fun resolvePdfDisplayName(resolver: ContentResolver, uri: Uri): String {
+        if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
+            runCatching {
+                resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx != -1 && cursor.moveToFirst()) {
+                        val name = cursor.getString(idx)
+                        if (!name.isNullOrBlank()) return name
+                    }
+                }
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/') ?: "belge.pdf"
+    }
 
     private fun openSeekableDescriptor(context: Context, pdfUri: Uri): Pair<ParcelFileDescriptor?, File?> {
         try {

@@ -130,8 +130,16 @@ fun MainScreen(
         if (importedNote != null) {
             pendingImportedNote = importedNote
             showSplash = false
-            navController.navigate(Screen.Notes.route) {
-                launchSingleTop = true
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(pendingImportedNote, showSplash) {
+        if (pendingImportedNote != null && !showSplash) {
+            kotlinx.coroutines. yield()
+            runCatching {
+                navController.navigate(Screen.Notes.route) {
+                    launchSingleTop = true
+                }
             }
         }
     }
