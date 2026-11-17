@@ -15,9 +15,15 @@ object ApiKeyRotator {
             .map { it.trim().replace("\"", "").replace("'", "") }
             .filter { it.isNotBlank() && (it.startsWith("AQ.") || it.startsWith("AIza") || it.length >= 20) }
 
-        if (parsed.isNotEmpty()) parsed else {
-            val fallback = BuildConfig.GEMINI_API_KEY.trim().replace("\"", "").replace("'", "")
-            if (fallback.isNotBlank()) listOf(fallback) else emptyList()
+        if (parsed.isNotEmpty()) parsed.distinct() else {
+            listOf(
+                BuildConfig.GEMINI_API_KEY,
+                BuildConfig.GEMINI_API_KEY_1,
+                BuildConfig.GEMINI_API_KEY_2,
+                BuildConfig.GEMINI_API_KEY_3
+            ).map { it.trim().replace("\"", "").replace("'", "") }
+                .filter { it.isNotBlank() && (it.startsWith("AQ.") || it.startsWith("AIza") || it.length >= 20) }
+                .distinct()
         }
     }
 
