@@ -48,6 +48,8 @@ import com.example.sharkmentor.core.ai.YksCurriculumCatalog
 import com.example.sharkmentor.ui.aichat.AiChatHubUiState
 import com.example.sharkmentor.ui.aichat.AiChatMessage
 import com.example.sharkmentor.ui.aichat.AiPersona
+import com.example.sharkmentor.ui.aichat.PersistedChatSession
+import com.example.sharkmentor.ui.aichat.PersistedChatSessionSnapshot
 import com.example.sharkmentor.ui.aichat.SharkAiChatSessionStore
 import com.example.sharkmentor.ui.aichat.isPersonaAvailable
 import com.example.sharkmentor.ui.screens.SelectedAttachmentPreview
@@ -143,6 +145,12 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
     private val initialSessionSnapshot = SharkAiChatSessionStore.restoreSession(application)
 
+    private val _chatSessions = MutableStateFlow(initialSessionSnapshot.sessions)
+    val chatSessions: StateFlow<List<PersistedChatSession>> = _chatSessions.asStateFlow()
+
+    private val _activeChatSessionId = MutableStateFlow(initialSessionSnapshot.activeSessionId)
+    val activeChatSessionId: StateFlow<String> = _activeChatSessionId.asStateFlow()
+
     private val _inputText = MutableStateFlow(initialSessionSnapshot.draftInputText)
     val inputText: StateFlow<String> = _inputText.asStateFlow()
 
@@ -193,13 +201,36 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         consumePendingHandoffIfAny()
     }
 
+    private fun applySessionSnapshot(snapshot: PersistedChatSessionSnapshot) {
+        _chatSessions.value = snapshot.sessions
+        _activeChatSessionId.value = snapshot.activeSessionId
+        _inputText.value = snapshot.draftInputText
+        _modelPower.value = snapshot.modelPower
+        _lockedEngine.value = snapshot.lockedEngine
+        _activeCapability.value = when (snapshot.lockedEngine) {
+            SharkAiEngine.SOLVER_ENGINE -> SharkAiCapability.PROBLEM_SOLVER
+            SharkAiEngine.TWIN_QUESTION_ENGINE -> SharkAiCapability.TWIN_QUESTION
+            SharkAiEngine.PLANNER_OR_ORGANIZER -> SharkAiCapability.ADD_TO_STUDY_PLAN
+            else -> null
+        }
+        _uiState.value = _uiState.value.copy(
+            messages = snapshot.messages,
+            currentPersona = snapshot.currentPersona,
+            isLoading = false,
+            error = null
+        )
+        refreshAutoDetectedEngine()
+    }
+
     private fun persistCurrentChatState() {
         val current = _uiState.value
-        SharkAiChatSessionStore.saveMessagesAndPersona(
+        val snapshot = SharkAiChatSessionStore.saveMessagesAndPersona(
             context = getApplication(),
             messages = current.messages,
             persona = current.currentPersona
         )
+        _chatSessions.value = snapshot.sessions
+        _activeChatSessionId.value = snapshot.activeSessionId
     }
 
     override fun onCleared() {
@@ -217,7 +248,8 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
     fun consumePendingHandoffIfAny() {
         val handoff = SharkAiHandoffManager.consumePending() ?: return
         _lockedEngine.value = handoff.targetEngine
-        SharkAiChatSessionStore.saveDraftState(getApplication(), _inputText.value, _lockedEngine.value)
+        val snapshot = SharkAiChatSessionStore.saveDraftState(getApplication(), _inputText.value, _lockedEngine.value)
+        _chatSessions.value = snapshot.sessions
         sendMessage(
             userInput = handoff.promptText,
             attachmentUri = handoff.imageUri,
@@ -228,7 +260,8 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
     fun onInputTextChanged(newText: String) {
         _inputText.value = newText
-        SharkAiChatSessionStore.saveDraftState(getApplication(), newText, _lockedEngine.value)
+        val snapshot = SharkAiChatSessionStore.saveDraftState(getApplication(), newText, _lockedEngine.value)
+        _chatSessions.value = snapshot.sessions
         refreshAutoDetectedEngine()
     }
 
@@ -254,19 +287,22 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         _attachmentPreview.value = null
         _activeCapability.value = null
         _lockedEngine.value = null
-        SharkAiChatSessionStore.saveDraftState(getApplication(), _inputText.value, null)
+        val snapshot = SharkAiChatSessionStore.saveDraftState(getApplication(), _inputText.value, null)
+        _chatSessions.value = snapshot.sessions
         refreshAutoDetectedEngine()
     }
 
     fun setModelPower(power: AiModelPower) {
         _modelPower.value = power
-        SharkAiChatSessionStore.saveModelPower(getApplication(), power)
+        val snapshot = SharkAiChatSessionStore.saveModelPower(getApplication(), power)
+        _chatSessions.value = snapshot.sessions
     }
 
     fun setActiveCapability(capability: SharkAiCapability?) {
         _activeCapability.value = capability
         _lockedEngine.value = SharkAiEngine.fromCapability(capability)
-        SharkAiChatSessionStore.saveDraftState(getApplication(), _inputText.value, _lockedEngine.value)
+        val snapshot = SharkAiChatSessionStore.saveDraftState(getApplication(), _inputText.value, _lockedEngine.value)
+        _chatSessions.value = snapshot.sessions
     }
 
     fun setLockedEngine(engine: SharkAiEngine?) {
@@ -277,27 +313,45 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
             SharkAiEngine.PLANNER_OR_ORGANIZER -> SharkAiCapability.ADD_TO_STUDY_PLAN
             else -> null
         }
-        SharkAiChatSessionStore.saveDraftState(getApplication(), _inputText.value, engine)
+        val snapshot = SharkAiChatSessionStore.saveDraftState(getApplication(), _inputText.value, engine)
+        _chatSessions.value = snapshot.sessions
     }
 
     /**
-     * Starts a fresh chat session ("Yeni Sohbet") and clears persisted messages.
+     * Starts a fresh chat session ("Yeni Sohbet") and activates it (without duplicating empty sessions).
      */
     fun startNewChat() {
         activeAiJob?.cancel()
-        _inputText.value = ""
         _selectedAttachmentUri.value = null
         _attachmentPreview.value = null
-        _activeCapability.value = null
-        _lockedEngine.value = null
-        SharkAiChatSessionStore.clearSession(getApplication(), keepModelPower = true)
-        _uiState.value = _uiState.value.copy(
-            messages = emptyList(),
-            currentPersona = AiPersona.SHARK_COACH,
-            isLoading = false,
-            error = null
-        )
-        refreshAutoDetectedEngine()
+        val snapshot = SharkAiChatSessionStore.createNewSession(getApplication(), keepModelPower = true)
+        applySessionSnapshot(snapshot)
+    }
+
+    /**
+     * Switches active chat session to [sessionId].
+     */
+    fun selectChatSession(sessionId: String) {
+        if (sessionId == _activeChatSessionId.value && !_uiState.value.isLoading) return
+        activeAiJob?.cancel()
+        _selectedAttachmentUri.value = null
+        _attachmentPreview.value = null
+        val snapshot = SharkAiChatSessionStore.selectSession(getApplication(), sessionId)
+        applySessionSnapshot(snapshot)
+    }
+
+    /**
+     * Deletes a saved chat session by [sessionId]. If it was active, switches to the latest remaining
+     * session or creates a fresh default session automatically.
+     */
+    fun deleteChatSession(sessionId: String) {
+        if (sessionId == _activeChatSessionId.value) {
+            activeAiJob?.cancel()
+            _selectedAttachmentUri.value = null
+            _attachmentPreview.value = null
+        }
+        val snapshot = SharkAiChatSessionStore.deleteSession(getApplication(), sessionId)
+        applySessionSnapshot(snapshot)
     }
 
     /**
