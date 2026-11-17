@@ -304,6 +304,7 @@ class DrawingController(
     var alpha by mutableFloatStateOf(DrawingTool.FOUNTAIN_PEN.defaultAlpha)
     var eraserRadius by mutableFloatStateOf(22f)
     var stylusOnlyMode by mutableStateOf(false)
+        private set
     var smartPalmRejectionEnabled by mutableStateOf(true)
 
     // Per-tool saved settings so switching between Fountain Pen, Highlighter, and Technical Pen preserves user preferences
