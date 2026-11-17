@@ -6,6 +6,10 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+  checks: write
+
 jobs:
   build-debug-apk:
     name: Assemble Debug APK
@@ -23,11 +27,10 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Accept Android SDK Licenses
-        run: yes | sdkmanager --licenses || true
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
       - name: Generate local.properties from GitHub Secrets
         env:
@@ -37,17 +40,35 @@ jobs:
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
         run: |
           cat <<EOF > local.properties
+          sdk.dir=${ANDROID_HOME}
           GEMINI_API_KEY=${GEMINI_API_KEY}
           GEMINI_API_KEYS=${GEMINI_API_KEYS}
           DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
           KIMI_API_KEY=${KIMI_API_KEY}
           EOF
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x ./gradlew
-
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Build Debug APK & Capture Diagnostics
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./gradlew
+          set +e
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+          BUILD_EXIT=$?
+          set -e
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "=== COMPILER ERRORS ==="
+            grep -E "^e: |FAILURE:|What went wrong:|^\* |Exception|Error:" build.log | tail -n 120 > error_summary.txt || true
+            tail -n 100 build.log >> error_summary.txt
+            python3 - << 'PYEOF'
+          import json, subprocess, os
+          body = "### ❌ Build Failure Log\n```\n" + open("error_summary.txt", errors="ignore").read()[-6000:] + "\n```"
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["GITHUB_SHA"]
+          subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}/comments", "-f", f"body={body}"], check=False)
+          PYEOF
+            exit $BUILD_EXIT
+          fi
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
@@ -56,3 +77,13 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish Direct Mobile APK to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk SharkMentor-Mark45-debug.apk
+          gh release delete mark45-apk --yes --cleanup-tag 2>/dev/null || true
+          gh release create mark45-apk SharkMentor-Mark45-debug.apk \
+            --title "Shark Mentor Study Mark 45 (Debug APK)" \
+            --notes "Otomatik bulut derlemesi ile üretilen doğrudan telefona kurulabilir APK paketi."
