@@ -51,10 +51,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharkmentor.core.badges.BadgeTier
+import com.example.sharkmentor.core.badges.SharkBadgeCatalog
+import com.example.sharkmentor.core.badges.SharkBadgeChip
+import com.example.sharkmentor.core.badges.SharkBadgeDef
 import com.example.sharkmentor.core.badges.SharkBadgeShowcaseRow
 import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.core.util.SharkVisualKit
 import com.example.sharkmentor.ui.screens.leaguechat.BadgeShowcaseSelectorSheet
+import com.example.sharkmentor.ui.screens.leaguechat.BadgeTierDetailDialog
 import com.example.sharkmentor.ui.screens.leaguechat.LeagueChatDestination
 import com.example.sharkmentor.ui.screens.leaguechat.LeagueChatScreen
 import com.example.sharkmentor.ui.screens.leaguechat.LeagueMemberProfileSheet
@@ -99,6 +104,7 @@ fun SharkLeagueScreen(
     var showBadgeShowcaseSheet by rememberSaveable { mutableStateOf(false) }
     var showNameEditDialog by rememberSaveable { mutableStateOf(false) }
     var selectedMemberForProfile by remember { mutableStateOf<LeagueEntry?>(null) }
+    var inspectedMyShowcaseBadge by remember { mutableStateOf<SharkBadgeDef?>(null) }
     var activeChatDestination by remember { mutableStateOf<LeagueChatDestination?>(null) }
 
     BackHandler(enabled = activeChatDestination != null) {
@@ -322,6 +328,7 @@ fun SharkLeagueScreen(
                         onOpenGroupChat = ::openActiveGroupChat,
                         onOpenDmInbox = { activeChatDestination = LeagueChatDestination.DmInbox },
                         onOpenBadgeShowcase = { showBadgeShowcaseSheet = true },
+                        onShowcaseBadgeClick = { inspectedMyShowcaseBadge = it },
                         onOpenEditName = { showNameEditDialog = true },
                         onSelectGroupFilter = { viewModel.selectGroupFilter(it) },
                         onToggleInstitutionFilter = { viewModel.toggleInstitutionLeague(it) },
@@ -400,6 +407,19 @@ fun SharkLeagueScreen(
             },
             onBlockUser = { entry, block -> viewModel.blockUser(entry, block) },
             onReportUser = { entry, reason, details -> viewModel.reportUser(entry, reason, details) }
+        )
+    }
+
+    inspectedMyShowcaseBadge?.let { badge ->
+        val rawProgressCount = uiState.myBadgeProgress[badge.id]
+            ?: uiState.myEntry?.badgeProgress?.get(badge.id)
+            ?: 0
+        BadgeTierDetailDialog(
+            badge = badge,
+            rawCount = rawProgressCount,
+            isLegacyUnlocked = uiState.myUnlockedBadges.contains(badge.id) ||
+                uiState.myShowcaseBadges.contains(badge.id),
+            onDismiss = { inspectedMyShowcaseBadge = null }
         )
     }
 }
@@ -573,6 +593,7 @@ private fun LeagueContent(
     onOpenGroupChat: () -> Unit,
     onOpenDmInbox: () -> Unit,
     onOpenBadgeShowcase: () -> Unit,
+    onShowcaseBadgeClick: (SharkBadgeDef) -> Unit,
     onOpenEditName: () -> Unit,
     onSelectGroupFilter: (String?) -> Unit,
     onToggleInstitutionFilter: (Boolean) -> Unit,
@@ -634,6 +655,7 @@ private fun LeagueContent(
                             )
                         },
                         onEditBadgesClick = onOpenBadgeShowcase,
+                        onShowcaseBadgeClick = onShowcaseBadgeClick,
                         onEditNameClick = onOpenEditName
                     )
                 }
@@ -723,6 +745,7 @@ private fun LeagueContent(
                             )
                         },
                         onEditBadgesClick = onOpenBadgeShowcase,
+                        onShowcaseBadgeClick = onShowcaseBadgeClick,
                         onEditNameClick = onOpenEditName
                     )
                 }
@@ -1078,6 +1101,7 @@ private fun SocialCodeActionCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MyTierCard(
     entry: LeagueEntry,
@@ -1086,6 +1110,7 @@ private fun MyTierCard(
     onCopyFriendCode: () -> Unit,
     onShareFriendCode: () -> Unit,
     onEditBadgesClick: () -> Unit,
+    onShowcaseBadgeClick: (SharkBadgeDef) -> Unit = {},
     onEditNameClick: () -> Unit
 ) {
     val tier = entry.tier
@@ -1245,7 +1270,13 @@ private fun MyTierCard(
 
             Spacer(Modifier.height(12.dp))
 
-            // Mentor Puanı & 5 Rozet Vitrini Satırı
+            // Mentor Puanı & Kendi Vitrinim (Maks. 5 Rozet) Satırı
+            val validShowcaseBadges = remember(entry.showcaseBadges) {
+                entry.showcaseBadges
+                    .mapNotNull { SharkBadgeCatalog.findById(it) }
+                    .distinctBy { it.id }
+                    .take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+            }
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
@@ -1273,7 +1304,7 @@ private fun MyTierCard(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "${entry.mentorPoints} Mentor Puanı • $unlockedBadgeCount Rozet",
+                                text = "${entry.mentorPoints} Mentor Puanı • $unlockedBadgeCount/${SharkBadgeCatalog.ALL_BADGES.size} Rozet",
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
@@ -1286,18 +1317,49 @@ private fun MyTierCard(
                             modifier = Modifier.height(28.dp)
                         ) {
                             Text(
-                                text = "Vitrini Düzenle (Maks. 5)",
+                                text = "Vitrini Düzenle (Maks. ${SharkBadgeCatalog.MAX_SHOWCASE_BADGES})",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                             )
                         }
                     }
 
-                    if (entry.showcaseBadges.isNotEmpty()) {
-                        SharkBadgeShowcaseRow(
-                            badgeIds = entry.showcaseBadges,
-                            compact = true,
-                            badgeProgress = entry.badgeProgress
-                        )
+                    if (validShowcaseBadges.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Kendi Vitrinim",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Detay için dokun",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            validShowcaseBadges.forEach { badge ->
+                                val progressInfo = badge.progressFor(
+                                    rawCount = entry.badgeProgress[badge.id] ?: 0,
+                                    isLegacyUnlocked = true
+                                )
+                                SharkBadgeChip(
+                                    badge = badge,
+                                    tier = progressInfo.unlockedTier ?: BadgeTier.BRONZE,
+                                    compact = true,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { onShowcaseBadgeClick(badge) }
+                                )
+                            }
+                        }
                     } else {
                         Text(
                             text = "Soru paylaşarak veya onaylı çözüm üreterek rozet kazanıp 5 rozet vitrinini sergile!",
@@ -1406,6 +1468,14 @@ private fun LeaderboardRow(
     val nowMs = System.currentTimeMillis()
     val canNudge = entry.canBeNudged(nowMs)
 
+    val validMemberShowcase = remember(entry.showcaseBadges) {
+        entry.showcaseBadges
+            .map { it.trim().substringBefore(":") }
+            .filter { SharkBadgeCatalog.findById(it) != null }
+            .distinct()
+            .take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+    }
+
     Surface(
         color = if (entry.isCurrentUser) {
             MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f)
@@ -1425,162 +1495,168 @@ private fun LeaderboardRow(
             .fillMaxWidth()
             .clickable { onMemberClick() }
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 12.dp, vertical = 12.dp)
         ) {
-            // Sıralama Rozeti
-            Surface(
-                shape = CircleShape,
-                color = if (rank <= 3) {
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
-                },
-                modifier = Modifier.size(34.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "#$rank",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
-                        color = if (rank <= 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            SharkAvatar(
-                avatarBase64 = entry.avatarBase64,
-                avatarPresetId = entry.avatarPresetId,
-                displayName = entry.rawName.ifBlank { entry.displayName },
-                size = 38.dp
-            )
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                // Sıralama Rozeti
+                Surface(
+                    shape = CircleShape,
+                    color = if (rank <= 3) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    modifier = Modifier.size(34.dp)
                 ) {
-                    Text(
-                        text = entry.displayName,
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = if (entry.isCurrentUser || rank <= 3) FontWeight.Bold else FontWeight.SemiBold
-                        ),
-                        color = if (entry.isCurrentUser) {
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (entry.isStudyingNow) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "Odakta",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "#$rank",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                            color = if (rank <= 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
-                Spacer(Modifier.height(2.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = "${entry.tier.label} • ${entry.mentorPoints} P",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (entry.streakDays > 0) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.LocalFireDepartment,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Text(
-                                text = "${entry.streakDays}g",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                }
-                if (entry.showcaseBadges.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    SharkBadgeShowcaseRow(
-                        badgeIds = entry.showcaseBadges,
-                        compact = true,
-                        badgeProgress = entry.badgeProgress
-                    )
-                }
-            }
 
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = "${effHours}s ${effMins}dk",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                    color = accentColor
+                SharkAvatar(
+                    avatarBase64 = entry.avatarBase64,
+                    avatarPresetId = entry.avatarPresetId,
+                    displayName = entry.rawName.ifBlank { entry.displayName },
+                    size = 38.dp
                 )
-                if (bonusMins > 0L) {
-                    Text(
-                        text = "Odak ${hours}s ${mins}dk + ${bonusMins}dk",
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
 
-                if (showNudgeButton) {
-                    Spacer(Modifier.height(4.dp))
-                    Surface(
-                        color = if (canNudge) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        },
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(
-                            1.dp,
-                            if (canNudge) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
-                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
-                        ),
-                        modifier = Modifier.clickable { onNudgeClick() }
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.NotificationsActive,
-                                contentDescription = "Çalışmaya Davet Et",
-                                tint = if (canNudge) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Text(
-                                text = if (canNudge) "Davet Et" else entry.remainingNudgeCooldownLabel(nowMs),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = if (canNudge) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        Text(
+                            text = entry.displayName,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontWeight = if (entry.isCurrentUser || rank <= 3) FontWeight.Bold else FontWeight.SemiBold
+                            ),
+                            color = if (entry.isCurrentUser) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (entry.isStudyingNow) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "Odakta",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "${entry.tier.label} • ${entry.mentorPoints} P",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (entry.streakDays > 0) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.LocalFireDepartment,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Text(
+                                    text = "${entry.streakDays}g",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "${effHours}s ${effMins}dk",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+                        color = accentColor
+                    )
+                    if (bonusMins > 0L) {
+                        Text(
+                            text = "Odak ${hours}s ${mins}dk + ${bonusMins}dk",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (showNudgeButton) {
+                        Spacer(Modifier.height(4.dp))
+                        Surface(
+                            color = if (canNudge) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (canNudge) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                            ),
+                            modifier = Modifier.clickable { onNudgeClick() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.NotificationsActive,
+                                    contentDescription = "Çalışmaya Davet Et",
+                                    tint = if (canNudge) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = if (canNudge) "Davet Et" else entry.remainingNudgeCooldownLabel(nowMs),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = if (canNudge) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (validMemberShowcase.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                SharkBadgeShowcaseRow(
+                    badgeIds = validMemberShowcase,
+                    compact = true,
+                    badgeProgress = entry.badgeProgress,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }
