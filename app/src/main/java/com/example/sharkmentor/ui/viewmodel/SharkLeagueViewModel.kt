@@ -47,6 +47,9 @@ private const val CEKICBAS_THRESHOLD    = 20 * 3600L  // 20 saat
 private const val KAPLAN_THRESHOLD      = 30 * 3600L  // 30 saat
 private const val BUYUK_BEYAZ_THRESHOLD = 45 * 3600L  // 45 saat
 
+/** Weekly leaderboard bonus time cap: 9000 seconds = 150 minutes max per week. */
+const val MAX_WEEKLY_BONUS_SECONDS: Long = 9000L
+
 /** 15-minute anti-spam cooldown for sending a study invite to the same friend/group member. */
 const val NUDGE_COOLDOWN_MS: Long = 15L * 60L * 1_000L
 
@@ -119,6 +122,7 @@ data class LeagueEntry(
     val rawName: String = "",
     val friendCode: String = "",
     val weeklyFocusSeconds: Long = 0L,
+    val weeklyBonusSeconds: Long = 0L,
     val dailyAverageMinutes: Int = 0,
     val streakDays: Int = 0,
     val tier: SharkTier = SharkTier.CAMGOZ,
@@ -129,8 +133,15 @@ data class LeagueEntry(
     val avatarBase64: String = "",
     val avatarPresetId: String = "",
     val mentorPoints: Int = 0,
-    val showcaseBadges: List<String> = emptyList()
+    val showcaseBadges: List<String> = emptyList(),
+    val badgeProgress: Map<String, Int> = emptyMap()
 ) {
+    val cappedBonusSeconds: Long
+        get() = minOf(weeklyBonusSeconds.coerceAtLeast(0L), MAX_WEEKLY_BONUS_SECONDS)
+
+    val effectiveLeagueSeconds: Long
+        get() = weeklyFocusSeconds.coerceAtLeast(0L) + cappedBonusSeconds
+
     fun canBeNudged(nowMillis: Long = System.currentTimeMillis()): Boolean {
         if (isCurrentUser || studentId.isBlank()) return false
         return (nowMillis - lastNudgeSentMillis) >= NUDGE_COOLDOWN_MS
@@ -167,7 +178,9 @@ data class SharkLeagueUiState(
     val dmStatusByPeerId: Map<String, String> = emptyMap(),
     val myShowcaseBadges: List<String> = emptyList(),
     val myUnlockedBadges: Set<String> = emptySet(),
-    val myMentorPoints: Int = 0
+    val myBadgeProgress: Map<String, Int> = emptyMap(),
+    val myMentorPoints: Int = 0,
+    val blockedUserIds: Set<String> = emptySet()
 )
 
 // ─── ViewModel ───────────────────────────────────────────────────────────────
@@ -188,7 +201,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             ),
             myShowcaseBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext),
             myUnlockedBadges = SharkBadgeCatalog.getUnlockedBadgeIds(appContext),
-            myMentorPoints = SharkBadgeCatalog.getMentorPoints(appContext)
+            myBadgeProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext),
+            myMentorPoints = SharkBadgeCatalog.getMentorPoints(appContext),
+            blockedUserIds = SharkBadgeCatalog.getBlockedUserIds(appContext)
         )
     )
     val uiState: StateFlow<SharkLeagueUiState> = _uiState.asStateFlow()
@@ -401,6 +416,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     return@addSnapshotListener
                 }
                 val now = System.currentTimeMillis()
+                val blockedIds = SharkBadgeCatalog.getBlockedUserIds(appContext)
                 val latest = snap?.documents
                     ?.mapNotNull { doc ->
                         val createdMs = doc.getLong("createdAtMillis")
@@ -410,7 +426,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             return@mapNotNull null
                         }
                         val fromUid = doc.getString("fromUid") ?: doc.getString("senderId").orEmpty()
-                        if (fromUid == uid) return@mapNotNull null
+                        if (fromUid == uid || blockedIds.contains(fromUid)) return@mapNotNull null
                         val fromName = SyncWorker.sanitizeTurkishText(
                             doc.getString("fromName") ?: doc.getString("senderName") ?: "Arkadaşın"
                         ).ifBlank { "Arkadaşın" }
@@ -530,20 +546,26 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     computeLocalWeeklyStats()
                 }
 
+                val currentWeekKey = SharkBadgeCatalog.currentIsoWeekKey()
                 val database = db
                 if (database == null || uid == "local_student" || uid == "student_default") {
                     val offlineName = resolveStudentDisplayName(uid, null, null)
                     val localBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
                     val localUnlocked = SharkBadgeCatalog.getUnlockedBadgeIds(appContext)
+                    val localProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
                     val localPoints = SharkBadgeCatalog.getMentorPoints(appContext)
+                    val localBonusSecs = SharkBadgeCatalog.getWeeklyBonusSeconds(appContext, currentWeekKey)
+                    val localBlocked = SharkBadgeCatalog.getBlockedUserIds(appContext)
                     val fallbackMe = buildMyLeagueEntry(
                         uid = uid,
                         name = offlineName,
                         friendCode = myFriendCode,
                         weeklySeconds = localWeeklySeconds,
+                        weeklyBonusSeconds = localBonusSecs,
                         streakDays = localStreakDays,
                         mentorPoints = localPoints,
-                        showcaseBadges = localBadges
+                        showcaseBadges = localBadges,
+                        badgeProgress = localProgress
                     )
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
@@ -554,7 +576,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         needsNameSetup = !isMeaningfulName(offlineName),
                         myShowcaseBadges = localBadges,
                         myUnlockedBadges = localUnlocked,
-                        myMentorPoints = localPoints
+                        myBadgeProgress = localProgress,
+                        myMentorPoints = localPoints,
+                        blockedUserIds = localBlocked
                     )
                     return@launch
                 }
@@ -588,6 +612,22 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val remoteStreak = studentDoc?.getLong("streakDays")?.toInt() ?: 0
                 val streakDays = maxOf(localStreakDays, remoteStreak)
 
+                // Weekly bonus seconds (capped at MAX_WEEKLY_BONUS_SECONDS = 9000s during scoring)
+                val remoteWeekBonus = SharkBadgeCatalog.parseWeeklyBonusForWeek(
+                    studentDoc?.get("weeklyBonusByWeek"),
+                    currentWeekKey
+                ).let { byWeek ->
+                    if (byWeek > 0L) byWeek
+                    else if (studentDoc?.getString("weeklyBonusWeekKey") == currentWeekKey) {
+                        (studentDoc.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
+                    } else 0L
+                }
+                val mergedWeeklyBonusSecs = SharkBadgeCatalog.saveWeeklyBonusSeconds(
+                    appContext,
+                    maxOf(remoteWeekBonus, SharkBadgeCatalog.getWeeklyBonusSeconds(appContext, currentWeekKey)),
+                    currentWeekKey
+                )
+
                 val hasCloudAvatarFields = studentDoc != null &&
                     (studentDoc.contains("avatarBase64") || studentDoc.contains("avatarPresetId"))
                 val myAvatarBase64 = if (hasCloudAvatarFields) {
@@ -606,7 +646,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     AvatarHelper.saveLocalAvatar(appContext, myAvatarBase64, myAvatarPresetId)
                 }
 
-                // Sync groups & friends first so badge auto-unlocks know group creator status
+                // Sync groups, friends, and blocked users
                 val remoteGroups = (studentDoc?.get("joinedGroupCodes") as? List<*>)
                     ?.mapNotNull { it?.toString()?.trim()?.uppercase() }
                     ?.filter { it.isNotBlank() }
@@ -632,10 +672,19 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     userPrefs.addedFriendIds = allFriendIds
                 }
 
+                val remoteBlocked = (studentDoc?.get("blockedUserIds") as? List<*>)
+                    ?.mapNotNull { it?.toString()?.trim() }
+                    ?.filter { it.isNotBlank() }
+                    .orEmpty()
+                val blockedSet = SharkBadgeCatalog.mergeBlockedUserIds(appContext, remoteBlocked)
+
                 // Badges & Mentor Points sync
                 val remotePoints = studentDoc?.getLong("mentorPoints")?.toInt() ?: 0
                 val mergedPoints = maxOf(remotePoints, SharkBadgeCatalog.getMentorPoints(appContext))
                 SharkBadgeCatalog.saveMentorPoints(appContext, mergedPoints)
+
+                val remoteProgress = SharkBadgeCatalog.parseRemoteProgressMap(studentDoc?.get("badgeProgress"))
+                val mergedProgress = SharkBadgeCatalog.mergeBadgeProgress(appContext, remoteProgress)
 
                 val remoteUnlocked = (studentDoc?.get("unlockedBadges") as? List<*>)
                     ?.mapNotNull { it?.toString()?.trim() }
@@ -653,17 +702,15 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 }
 
                 val approvedSolutionsCloud = studentDoc?.getLong("approvedSolutionsCount")?.toInt() ?: 0
-                val provisionalGroupCreator = allGroupCodes.isNotEmpty() &&
-                    _uiState.value.joinedGroups.any { it.creatorId == uid }
                 SharkBadgeCatalog.evaluateAutomaticUnlocks(
                     context = appContext,
-                    mentorPoints = mergedPoints,
                     approvedSolutions = approvedSolutionsCloud,
-                    isGroupCreator = provisionalGroupCreator
+                    badgeProgress = mergedProgress
                 )
 
                 val myShowcase = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
                 val myUnlocked = SharkBadgeCatalog.getUnlockedBadgeIds(appContext)
+                val finalProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
 
                 // 4. Register friendCode & upsert into GLOBAL_INDIVIDUAL (and institution league if any)
                 registerFriendCodeAndProfile(
@@ -671,13 +718,16 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     name = myName,
                     friendCode = effectiveFriendCode,
                     weeklyFocusSeconds = weeklySeconds,
+                    weeklyBonusSeconds = mergedWeeklyBonusSecs,
+                    weekKey = currentWeekKey,
                     streakDays = streakDays,
                     branchCode = branchCode,
                     avatarBase64 = myAvatarBase64,
                     avatarPresetId = myAvatarPresetId,
                     mentorPoints = mergedPoints,
                     showcaseBadges = myShowcase,
-                    unlockedBadges = myUnlocked
+                    unlockedBadges = myUnlocked,
+                    badgeProgress = finalProgress
                 )
 
                 // Sync real name into joined study_groups memberNames map if meaningful
@@ -695,11 +745,13 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     name = myName,
                     friendCode = effectiveFriendCode,
                     weeklySeconds = weeklySeconds,
+                    weeklyBonusSeconds = mergedWeeklyBonusSecs,
                     streakDays = streakDays,
                     avatarBase64 = myAvatarBase64,
                     avatarPresetId = myAvatarPresetId,
                     mentorPoints = mergedPoints,
-                    showcaseBadges = myShowcase
+                    showcaseBadges = myShowcase,
+                    badgeProgress = finalProgress
                 )
 
                 // 5. Fetch Global Individual League (or Institution League if user toggled it)
@@ -709,28 +761,23 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val globalEntries = fetchLeaderboardBucket(
                     bucketId = targetBucket,
                     currentUid = uid,
-                    myEntry = myEntry
-                )
+                    myEntry = myEntry,
+                    weekKey = currentWeekKey
+                ).filter { it.isCurrentUser || !blockedSet.contains(it.studentId) }
 
                 // 6. Fetch User's Joined Study Groups & Friends comparison list
-                val (groupSummaries, socialEntries) = fetchGroupsAndFriendsEntries(
+                val (groupSummaries, rawSocialEntries) = fetchGroupsAndFriendsEntries(
                     uid = uid,
                     myEntry = myEntry,
                     groupCodes = allGroupCodes,
                     friendIds = allFriendIds,
-                    selectedGroupCode = _uiState.value.selectedGroupCode
+                    selectedGroupCode = _uiState.value.selectedGroupCode,
+                    weekKey = currentWeekKey
                 )
-
-                // Re-evaluate Grup Kaptanı after group summaries load
-                val finalUnlocked = if (groupSummaries.any { it.creatorId == uid }) {
-                    SharkBadgeCatalog.unlockBadge(appContext, SharkBadgeCatalog.BADGE_GRUP_KAPTANI)
-                } else {
-                    myUnlocked
-                }
-                val finalShowcase = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
+                val socialEntries = rawSocialEntries.filter { it.isCurrentUser || !blockedSet.contains(it.studentId) }
 
                 eligibleSocialMemberIds = (allFriendIds + socialEntries.map { it.studentId })
-                    .filter { it.isNotBlank() && it != uid }
+                    .filter { it.isNotBlank() && it != uid && !blockedSet.contains(it) }
                     .toSet()
 
                 val activeGroupSummary = groupSummaries.firstOrNull {
@@ -739,7 +786,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    myEntry = myEntry.copy(showcaseBadges = finalShowcase),
+                    myEntry = myEntry,
                     myFriendCode = effectiveFriendCode,
                     leaderboard = globalEntries,
                     friendsAndGroupMembers = socialEntries,
@@ -747,9 +794,11 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     institutionCode = branchCode,
                     groupName = activeGroupSummary?.name,
                     needsNameSetup = !isMeaningfulName(myName),
-                    myShowcaseBadges = finalShowcase,
-                    myUnlockedBadges = finalUnlocked,
+                    myShowcaseBadges = myShowcase,
+                    myUnlockedBadges = myUnlocked,
+                    myBadgeProgress = finalProgress,
                     myMentorPoints = mergedPoints,
+                    blockedUserIds = blockedSet,
                     error = null
                 )
             } catch (e: Exception) {
@@ -760,14 +809,17 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: "local_student"
                 val myFriendCode = userPrefs.getOrCreateFriendCode(uid)
                 val fallbackName = resolveStudentDisplayName(uid, null, null)
+                val fallbackBonus = SharkBadgeCatalog.getWeeklyBonusSeconds(appContext)
                 val fallbackMe = buildMyLeagueEntry(
                     uid = uid,
                     name = fallbackName,
                     friendCode = myFriendCode,
                     weeklySeconds = localWeeklySeconds,
+                    weeklyBonusSeconds = fallbackBonus,
                     streakDays = localStreakDays,
                     mentorPoints = SharkBadgeCatalog.getMentorPoints(appContext),
-                    showcaseBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
+                    showcaseBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext),
+                    badgeProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
                 )
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
@@ -803,9 +855,6 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val updatedCodes = userPrefs.joinedGroupCodes + inviteCode
                 userPrefs.joinedGroupCodes = updatedCodes
 
-                val unlockedNow = SharkBadgeCatalog.unlockBadge(appContext, SharkBadgeCatalog.BADGE_GRUP_KAPTANI)
-                val showcaseNow = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
-
                 if (database != null && !uid.isNullOrBlank() && uid != "student_default") {
                     val myName = _uiState.value.myEntry?.rawName
                         ?.takeIf { isMeaningfulName(it) }
@@ -831,14 +880,6 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             SetOptions.merge()
                         )
                         .await()
-
-                    SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(
-                        context = appContext,
-                        uid = uid,
-                        showcaseIds = showcaseNow,
-                        unlockedIds = unlockedNow,
-                        mentorPoints = SharkBadgeCatalog.getMentorPoints(appContext)
-                    )
                 }
 
                 val newGroupSummary = StudyGroupSummary(
@@ -853,8 +894,6 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     selectedGroupCode = inviteCode,
                     joinedGroups = (_uiState.value.joinedGroups + newGroupSummary).distinctBy { it.inviteCode },
                     groupName = cleanName,
-                    myShowcaseBadges = showcaseNow,
-                    myUnlockedBadges = unlockedNow,
                     statusMessage = "\"$cleanName\" grubu oluşturuldu! Davet Kodu: $inviteCode"
                 )
                 loadLeague(preserveTab = true)
@@ -1038,6 +1077,12 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
     fun nudgeLeagueMember(target: LeagueEntry) {
         if (target.isCurrentUser || target.studentId.isBlank()) return
+        if (SharkBadgeCatalog.getBlockedUserIds(appContext).contains(target.studentId)) {
+            _uiState.value = _uiState.value.copy(
+                statusMessage = "Engellediğin bir kullanıcıya çalışma daveti gönderemezsin."
+            )
+            return
+        }
 
         val isSocialMember = eligibleSocialMemberIds.contains(target.studentId) ||
             userPrefs.addedFriendIds.contains(target.studentId) ||
@@ -1146,7 +1191,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // ─── Showcase Badges & Request-Approved DM ───────────────────────────────
+    // ─── Showcase Badges, Moderation & Request-Approved DM ─────────────────
 
     fun updateMyShowcaseBadges(selectedBadgeIds: List<String>) {
         val saved = SharkBadgeCatalog.saveShowcaseBadgeIds(appContext, selectedBadgeIds)
@@ -1160,7 +1205,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             friendsAndGroupMembers = current.friendsAndGroupMembers.map {
                 if (it.isCurrentUser) it.copy(showcaseBadges = saved) else it
             },
-            statusMessage = "3 rozet vitrinin güncellendi!"
+            statusMessage = "5 rozet vitrinin güncellendi!"
         )
 
         val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: return
@@ -1170,13 +1215,76 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 uid = uid,
                 showcaseIds = saved,
                 unlockedIds = SharkBadgeCatalog.getUnlockedBadgeIds(appContext),
-                mentorPoints = SharkBadgeCatalog.getMentorPoints(appContext)
+                mentorPoints = SharkBadgeCatalog.getMentorPoints(appContext),
+                badgeProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
+            )
+        }
+    }
+
+    fun blockUser(target: LeagueEntry, block: Boolean) {
+        if (target.isCurrentUser || target.studentId.isBlank()) return
+        viewModelScope.launch {
+            val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: "local_student"
+            val updatedBlocked = SharkBadgeCatalog.setUserBlocked(
+                context = appContext,
+                myUid = uid,
+                targetUid = target.studentId,
+                blocked = block
+            )
+            val current = _uiState.value
+            val targetName = target.rawName.ifBlank { target.displayName }
+            if (block) {
+                _uiState.value = current.copy(
+                    blockedUserIds = updatedBlocked,
+                    leaderboard = current.leaderboard.filter { it.isCurrentUser || !updatedBlocked.contains(it.studentId) },
+                    friendsAndGroupMembers = current.friendsAndGroupMembers.filter { it.isCurrentUser || !updatedBlocked.contains(it.studentId) },
+                    incomingStudyInvite = current.incomingStudyInvite?.takeUnless { it.fromUid == target.studentId },
+                    statusMessage = "🚫 $targetName engellendi. Mesajları ve davetleri gizlendi."
+                )
+            } else {
+                _uiState.value = current.copy(
+                    blockedUserIds = updatedBlocked,
+                    statusMessage = "$targetName engeli kaldırıldı."
+                )
+                loadLeague(preserveTab = true)
+            }
+        }
+    }
+
+    fun reportUser(target: LeagueEntry, reason: String, details: String) {
+        if (target.isCurrentUser || target.studentId.isBlank()) return
+        viewModelScope.launch {
+            val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: "local_student"
+            val myName = _uiState.value.myEntry?.rawName?.ifBlank { "Öğrenci" } ?: "Öğrenci"
+            val targetName = target.rawName.ifBlank { target.displayName }
+            val ok = SharkBadgeCatalog.submitUserReport(
+                context = appContext,
+                reporterUid = uid,
+                reporterName = myName,
+                targetUid = target.studentId,
+                targetName = targetName,
+                reason = reason,
+                details = details,
+                source = "shark_league_profile"
+            )
+            _uiState.value = _uiState.value.copy(
+                statusMessage = if (ok) {
+                    "🚩 $targetName hakkında şikayet incelenmek üzere iletildi."
+                } else {
+                    "Şikayet yerel olarak kaydedilemedi, internet bağlantını kontrol et."
+                }
             )
         }
     }
 
     fun sendDmRequest(target: LeagueEntry, note: String) {
         if (target.isCurrentUser || target.studentId.isBlank()) return
+        if (SharkBadgeCatalog.getBlockedUserIds(appContext).contains(target.studentId)) {
+            _uiState.value = _uiState.value.copy(
+                statusMessage = "Engellediğin bir öğrenciye mesaj isteği gönderemezsin."
+            )
+            return
+        }
         viewModelScope.launch {
             val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid
             val database = db
@@ -1284,29 +1392,35 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         name: String,
         friendCode: String,
         weeklySeconds: Long,
+        weeklyBonusSeconds: Long = 0L,
         streakDays: Int,
         avatarBase64: String = AvatarHelper.getSavedAvatarBase64(appContext),
         avatarPresetId: String = AvatarHelper.getSavedAvatarPresetId(appContext),
         mentorPoints: Int = SharkBadgeCatalog.getMentorPoints(appContext),
-        showcaseBadges: List<String> = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
+        showcaseBadges: List<String> = SharkBadgeCatalog.getShowcaseBadgeIds(appContext),
+        badgeProgress: Map<String, Int> = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
     ): LeagueEntry {
         val cleanName = SyncWorker.sanitizeTurkishText(name.ifBlank { "Öğrenci" })
         val dailyAvgMin = ((weeklySeconds / 60L) / 7L).toInt()
         val effectivePresetId = if (avatarBase64.isNotBlank()) "" else avatarPresetId
+        val safeBonus = weeklyBonusSeconds.coerceAtLeast(0L)
+        val effectiveSecs = weeklySeconds.coerceAtLeast(0L) + minOf(safeBonus, MAX_WEEKLY_BONUS_SECONDS)
         return LeagueEntry(
             studentId = uid,
             displayName = "Sen ($cleanName)",
             rawName = cleanName,
             friendCode = friendCode,
             weeklyFocusSeconds = weeklySeconds,
+            weeklyBonusSeconds = safeBonus,
             dailyAverageMinutes = dailyAvgMin,
             streakDays = streakDays,
-            tier = weeklySeconds.toTier(),
+            tier = effectiveSecs.toTier(),
             isCurrentUser = true,
             avatarBase64 = avatarBase64,
             avatarPresetId = effectivePresetId,
             mentorPoints = mentorPoints,
-            showcaseBadges = showcaseBadges
+            showcaseBadges = showcaseBadges,
+            badgeProgress = badgeProgress
         )
     }
 
@@ -1387,30 +1501,41 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         name: String,
         friendCode: String,
         weeklyFocusSeconds: Long,
+        weeklyBonusSeconds: Long = 0L,
+        weekKey: String = SharkBadgeCatalog.currentIsoWeekKey(),
         streakDays: Int,
         branchCode: String,
         avatarBase64: String = "",
         avatarPresetId: String = "",
         mentorPoints: Int = 0,
         showcaseBadges: List<String> = emptyList(),
-        unlockedBadges: Set<String> = emptySet()
+        unlockedBadges: Set<String> = emptySet(),
+        badgeProgress: Map<String, Int> = emptyMap()
     ) {
         try {
             val database = db ?: return
             val dailyAverageMinutes = ((weeklyFocusSeconds / 60L) / 7L).toInt()
             val effectivePresetId = if (avatarBase64.isNotBlank()) "" else avatarPresetId
+            val safeBonus = weeklyBonusSeconds.coerceAtLeast(0L)
+            val cappedBonus = minOf(safeBonus, MAX_WEEKLY_BONUS_SECONDS)
+            val effectiveSeconds = weeklyFocusSeconds.coerceAtLeast(0L) + cappedBonus
             val leaguePayload = hashMapOf<String, Any>(
                 "studentId" to uid,
                 "displayName" to name,
                 "friendCode" to friendCode,
                 "weeklyFocusSeconds" to weeklyFocusSeconds,
+                "weeklyBonusSeconds" to cappedBonus,
+                "weeklyBonusWeekKey" to weekKey,
+                "weeklyBonusByWeek" to mapOf(weekKey to safeBonus),
+                "effectiveLeagueSeconds" to effectiveSeconds,
                 "dailyAverageMinutes" to dailyAverageMinutes,
                 "streakDays" to streakDays,
-                "tier" to weeklyFocusSeconds.toTier().name,
+                "tier" to effectiveSeconds.toTier().name,
                 "avatarBase64" to avatarBase64,
                 "avatarPresetId" to effectivePresetId,
                 "mentorPoints" to mentorPoints,
                 "showcaseBadges" to showcaseBadges,
+                "badgeProgress" to badgeProgress,
                 "lastSessionAt" to FieldValue.serverTimestamp()
             )
 
@@ -1448,10 +1573,15 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 "id" to uid,
                 "friendCode" to friendCode,
                 "weeklyFocusSeconds" to weeklyFocusSeconds,
+                "weeklyBonusSeconds" to cappedBonus,
+                "weeklyBonusWeekKey" to weekKey,
+                "weeklyBonusByWeek" to mapOf(weekKey to safeBonus),
+                "effectiveLeagueSeconds" to effectiveSeconds,
                 "streakDays" to streakDays,
                 "mentorPoints" to mentorPoints,
                 "showcaseBadges" to showcaseBadges,
                 "unlockedBadges" to unlockedBadges.toList(),
+                "badgeProgress" to badgeProgress,
                 "lastActiveAt" to FieldValue.serverTimestamp()
             )
             if (isMeaningfulName(name)) {
@@ -1469,7 +1599,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
     private suspend fun fetchLeaderboardBucket(
         bucketId: String,
         currentUid: String,
-        myEntry: LeagueEntry
+        myEntry: LeagueEntry,
+        weekKey: String
     ): List<LeagueEntry> {
         return try {
             val database = db ?: return listOf(myEntry)
@@ -1477,7 +1608,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 .document(bucketId)
                 .collection("weeklyLeague")
                 .orderBy("weeklyFocusSeconds", Query.Direction.DESCENDING)
-                .limit(50)
+                .limit(100)
                 .get()
                 .await()
 
@@ -1531,6 +1662,26 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             )
                         }
 
+                        val bonusSecs = if (isMe) {
+                            myEntry.weeklyBonusSeconds
+                        } else {
+                            val fromStudentMap = SharkBadgeCatalog.parseWeeklyBonusForWeek(
+                                studentSnap?.get("weeklyBonusByWeek"),
+                                weekKey
+                            )
+                            val fromDocMap = SharkBadgeCatalog.parseWeeklyBonusForWeek(
+                                doc.get("weeklyBonusByWeek"),
+                                weekKey
+                            )
+                            val fromStudentFlat = if (studentSnap?.getString("weeklyBonusWeekKey") == weekKey) {
+                                (studentSnap.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
+                            } else 0L
+                            val fromDocFlat = if (doc.getString("weeklyBonusWeekKey") == weekKey) {
+                                (doc.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
+                            } else 0L
+                            maxOf(fromStudentMap, fromDocMap, fromStudentFlat, fromDocFlat)
+                        }
+
                         val badges = if (isMe) {
                             myEntry.showcaseBadges
                         } else {
@@ -1550,15 +1701,25 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             }
                         }
 
+                        val peerBadgeProgress = if (isMe) {
+                            myEntry.badgeProgress
+                        } else {
+                            SharkBadgeCatalog.parseRemoteProgressMap(studentSnap?.get("badgeProgress"))
+                                .ifEmpty { SharkBadgeCatalog.parseRemoteProgressMap(doc.get("badgeProgress")) }
+                        }
+
+                        val effectiveSecs = secs.coerceAtLeast(0L) + minOf(bonusSecs.coerceAtLeast(0L), MAX_WEEKLY_BONUS_SECONDS)
+
                         LeagueEntry(
                             studentId = id,
                             displayName = formatLeaderboardCallSign(rawName, idx + 1, isMe, showFullForFriends = true),
                             rawName = rawName,
                             friendCode = fCode,
                             weeklyFocusSeconds = secs,
+                            weeklyBonusSeconds = bonusSecs,
                             dailyAverageMinutes = ((secs / 60L) / 7L).toInt(),
                             streakDays = streak,
-                            tier = secs.toTier(),
+                            tier = effectiveSecs.toTier(),
                             isCurrentUser = isMe,
                             isStudyingNow = if (isMe) myEntry.isStudyingNow else (studentSnap?.getBoolean("isStudying") ?: false),
                             activeSubject = if (isMe) myEntry.activeSubject else studentSnap?.getString("activeSubject"),
@@ -1566,7 +1727,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             avatarBase64 = studentAvatarPair.first,
                             avatarPresetId = studentAvatarPair.second,
                             mentorPoints = points,
-                            showcaseBadges = badges
+                            showcaseBadges = badges,
+                            badgeProgress = peerBadgeProgress
                         )
                     }
                 }.awaitAll()
@@ -1578,7 +1740,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 (mapped + myEntry)
             }
 
-            withMe.sortedByDescending { it.weeklyFocusSeconds }
+            withMe.sortedByDescending { it.effectiveLeagueSeconds }
                 .mapIndexed { idx, entry ->
                     entry.copy(
                         displayName = formatLeaderboardCallSign(
@@ -1600,7 +1762,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         myEntry: LeagueEntry,
         groupCodes: Set<String>,
         friendIds: Set<String>,
-        selectedGroupCode: String?
+        selectedGroupCode: String?,
+        weekKey: String
     ): Pair<List<StudyGroupSummary>, List<LeagueEntry>> {
         val database = db ?: return emptyList<StudyGroupSummary>() to listOf(myEntry)
         val groupSummaries = mutableListOf<StudyGroupSummary>()
@@ -1675,6 +1838,28 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     studentSnap.getLong("weeklyFocusSeconds") ?: 0L,
                     globalLeagueSnap?.getLong("weeklyFocusSeconds") ?: 0L
                 )
+                val fromStudentBonusMap = SharkBadgeCatalog.parseWeeklyBonusForWeek(
+                    studentSnap.get("weeklyBonusByWeek"),
+                    weekKey
+                )
+                val fromLeagueBonusMap = SharkBadgeCatalog.parseWeeklyBonusForWeek(
+                    globalLeagueSnap?.get("weeklyBonusByWeek"),
+                    weekKey
+                )
+                val fromStudentBonusFlat = if (studentSnap.getString("weeklyBonusWeekKey") == weekKey) {
+                    (studentSnap.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
+                } else 0L
+                val fromLeagueBonusFlat = if (globalLeagueSnap?.getString("weeklyBonusWeekKey") == weekKey) {
+                    (globalLeagueSnap.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
+                } else 0L
+                val bonusSecs = maxOf(
+                    fromStudentBonusMap,
+                    fromLeagueBonusMap,
+                    fromStudentBonusFlat,
+                    fromLeagueBonusFlat
+                )
+                val effectiveSecs = weeklySecs.coerceAtLeast(0L) + minOf(bonusSecs.coerceAtLeast(0L), MAX_WEEKLY_BONUS_SECONDS)
+
                 val streak = maxOf(
                     studentSnap.getLong("streakDays")?.toInt() ?: 0,
                     globalLeagueSnap?.getLong("streakDays")?.toInt() ?: 0
@@ -1710,6 +1895,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
                         .orEmpty()
                 }
+                val peerBadgeProgress = SharkBadgeCatalog.parseRemoteProgressMap(studentSnap.get("badgeProgress"))
+                    .ifEmpty { SharkBadgeCatalog.parseRemoteProgressMap(globalLeagueSnap?.get("badgeProgress")) }
 
                 entries.add(
                     LeagueEntry(
@@ -1718,9 +1905,10 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         rawName = rawName,
                         friendCode = fCode,
                         weeklyFocusSeconds = weeklySecs,
+                        weeklyBonusSeconds = bonusSecs,
                         dailyAverageMinutes = ((weeklySecs / 60L) / 7L).toInt(),
                         streakDays = streak,
-                        tier = weeklySecs.toTier(),
+                        tier = effectiveSecs.toTier(),
                         isCurrentUser = false,
                         isStudyingNow = isStudying,
                         activeSubject = activeSubj,
@@ -1728,7 +1916,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         avatarBase64 = avatarBase64,
                         avatarPresetId = avatarPresetId,
                         mentorPoints = points,
-                        showcaseBadges = showcaseBadges
+                        showcaseBadges = showcaseBadges,
+                        badgeProgress = peerBadgeProgress
                     )
                 )
             } catch (e: Exception) {
@@ -1738,7 +1927,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
         val sortedEntries = entries
             .distinctBy { it.studentId }
-            .sortedByDescending { it.weeklyFocusSeconds }
+            .sortedByDescending { it.effectiveLeagueSeconds }
             .mapIndexed { idx, item ->
                 item.copy(
                     displayName = formatLeaderboardCallSign(

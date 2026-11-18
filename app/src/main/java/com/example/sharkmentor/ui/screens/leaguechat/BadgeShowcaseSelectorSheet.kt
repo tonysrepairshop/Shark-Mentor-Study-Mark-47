@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,6 +30,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -48,19 +51,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.sharkmentor.core.badges.BadgeProgressInfo
+import com.example.sharkmentor.core.badges.BadgeTier
 import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.badges.SharkBadgeChip
 import com.example.sharkmentor.core.badges.SharkBadgeDef
 
 /**
- * Modal bottom sheet allowing the user to pick up to 3 earned badges
+ * Modal bottom sheet allowing the user to track all 12 tiered badges
+ * (BRONZE -> SILVER -> GOLD -> MEGALODON) and pick up to 5 earned badges
  * for their Profile and Shark League showcase.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun BadgeShowcaseSelectorSheet(
     unlockedBadgeIds: Set<String>,
     initialSelectedIds: List<String>,
+    badgeProgress: Map<String, Int> = emptyMap(),
     mentorPoints: Int = 0,
     onDismiss: () -> Unit,
     onSaveShowcase: (List<String>) -> Unit
@@ -68,11 +75,20 @@ fun BadgeShowcaseSelectorSheet(
     val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val selectedIds = remember(initialSelectedIds, unlockedBadgeIds) {
+    val effectiveUnlockedIds = remember(unlockedBadgeIds, badgeProgress) {
+        val fromCounts = badgeProgress.filter { (id, count) ->
+            val def = SharkBadgeCatalog.findById(id)
+            def != null && count >= (def.thresholds.firstOrNull() ?: 1)
+        }.keys
+        unlockedBadgeIds + fromCounts
+    }
+
+    val selectedIds = remember(initialSelectedIds, effectiveUnlockedIds) {
         mutableStateListOf<String>().apply {
             addAll(
                 initialSelectedIds
-                    .filter { unlockedBadgeIds.contains(it) && SharkBadgeCatalog.findById(it) != null }
+                    .map { it.trim().substringBefore(":") }
+                    .filter { effectiveUnlockedIds.contains(it) && SharkBadgeCatalog.findById(it) != null }
                     .distinct()
                     .take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
             )
@@ -99,12 +115,12 @@ fun BadgeShowcaseSelectorSheet(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "3 Rozet Vitrini",
+                        text = "Vitrini Düzenle (Maks. 5)",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Profilinde ve Shark Ligi'nde görünecek en fazla 3 rozet seç • $mentorPoints Puan",
+                        text = "12 kademeli rozetten en fazla 5 vitrin rozeti seç • $mentorPoints Mentor Puanı",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -129,36 +145,38 @@ fun BadgeShowcaseSelectorSheet(
                 }
             }
 
-            // Live 3-slot showcase preview
+            // Live 5-slot showcase preview (wraps neatly via FlowRow)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
             ) {
-                Row(
+                FlowRow(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     for (slotIdx in 0 until SharkBadgeCatalog.MAX_SHOWCASE_BADGES) {
                         val badgeId = selectedIds.getOrNull(slotIdx)
                         val badgeDef = SharkBadgeCatalog.findById(badgeId)
                         if (badgeDef != null) {
+                            val tierInfo = badgeDef.progressFor(
+                                rawCount = badgeProgress[badgeDef.id] ?: 0,
+                                isLegacyUnlocked = effectiveUnlockedIds.contains(badgeDef.id)
+                            )
                             SharkBadgeChip(
                                 badge = badgeDef,
+                                tier = tierInfo.unlockedTier ?: BadgeTier.BRONZE,
                                 compact = true,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable { selectedIds.remove(badgeDef.id) }
+                                modifier = Modifier.clickable { selectedIds.remove(badgeDef.id) }
                             )
                         } else {
                             Surface(
-                                modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                             ) {
                                 Text(
@@ -167,7 +185,7 @@ fun BadgeShowcaseSelectorSheet(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
                                 )
                             }
                         }
@@ -180,14 +198,19 @@ fun BadgeShowcaseSelectorSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 360.dp),
+                    .heightIn(max = 380.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(SharkBadgeCatalog.ALL_BADGES, key = { it.id }) { badge ->
-                    val isUnlocked = unlockedBadgeIds.contains(badge.id)
+                    val isUnlocked = effectiveUnlockedIds.contains(badge.id)
                     val isSelected = selectedIds.contains(badge.id)
+                    val progress = badge.progressFor(
+                        rawCount = badgeProgress[badge.id] ?: 0,
+                        isLegacyUnlocked = isUnlocked
+                    )
                     BadgeCatalogSelectionRow(
                         badge = badge,
+                        progress = progress,
                         isUnlocked = isUnlocked,
                         isSelected = isSelected,
                         onClick = {
@@ -202,7 +225,7 @@ fun BadgeShowcaseSelectorSheet(
                             } else if (selectedIds.size >= SharkBadgeCatalog.MAX_SHOWCASE_BADGES) {
                                 Toast.makeText(
                                     context,
-                                    "Vitrine en fazla 3 rozet seçebilirsin.",
+                                    "Vitrine en fazla ${SharkBadgeCatalog.MAX_SHOWCASE_BADGES} rozet seçebilirsin.",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             } else {
@@ -238,7 +261,7 @@ fun BadgeShowcaseSelectorSheet(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("Vitrini Kaydet", fontWeight = FontWeight.Bold)
+                    Text("Vitrini Kaydet (${selectedIds.size}/5)", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -248,17 +271,20 @@ fun BadgeShowcaseSelectorSheet(
 @Composable
 private fun BadgeCatalogSelectionRow(
     badge: SharkBadgeDef,
+    progress: BadgeProgressInfo,
     isUnlocked: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
+    val activeTier = progress.unlockedTier
+    val tierPrimary = activeTier?.let { Color(it.primaryColorHex) } ?: Color(badge.primaryColorHex)
     val startColor = Color(badge.primaryColorHex)
     val endColor = Color(badge.secondaryColorHex)
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .alpha(if (isUnlocked) 1f else 0.62f)
+            .alpha(if (isUnlocked) 1f else 0.7f)
             .clickable { onClick() },
         shape = RoundedCornerShape(14.dp),
         color = if (isSelected) {
@@ -268,7 +294,7 @@ private fun BadgeCatalogSelectionRow(
         },
         border = BorderStroke(
             width = if (isSelected) 1.5.dp else 1.dp,
-            color = if (isSelected) startColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+            color = if (isSelected) tierPrimary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
         )
     ) {
         Row(
@@ -280,7 +306,7 @@ private fun BadgeCatalogSelectionRow(
         ) {
             Box(
                 modifier = Modifier
-                    .size(42.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
                     .background(Brush.linearGradient(listOf(startColor, endColor))),
                 contentAlignment = Alignment.Center
@@ -293,7 +319,7 @@ private fun BadgeCatalogSelectionRow(
                 )
             }
 
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -301,20 +327,23 @@ private fun BadgeCatalogSelectionRow(
                     Text(
                         text = "${badge.emoji} ${badge.title}",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = if (isUnlocked) {
-                            Color(0xFF10B981).copy(alpha = 0.16f)
+                        color = if (activeTier != null) {
+                            tierPrimary.copy(alpha = 0.18f)
                         } else {
                             MaterialTheme.colorScheme.surfaceVariant
                         }
                     ) {
                         Text(
-                            text = if (isUnlocked) "Kazanıldı" else "Kilitli",
+                            text = if (activeTier != null) "${activeTier.emoji} ${activeTier.shortLabel}" else "Kilitli",
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
-                            color = if (isUnlocked) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (activeTier != null) tierPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
@@ -326,17 +355,49 @@ private fun BadgeCatalogSelectionRow(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = "Koşul: ${badge.conditionLabel}",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    color = startColor
+
+                // Tier Progress Bar: BRONZE -> SILVER -> GOLD -> MEGALODON
+                Spacer(Modifier.height(2.dp))
+                LinearProgressIndicator(
+                    progress = { progress.progressFraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = if (activeTier != null) tierPrimary else startColor,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (progress.nextTier != null) {
+                            "${progress.count}/${progress.nextTarget} • Hedef: ${progress.nextTier.emoji} ${progress.nextTier.shortLabel}"
+                        } else {
+                            "${progress.count}/${progress.nextTarget} • 🦈 Megalodon Maksimum!"
+                        },
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                        color = if (activeTier != null) tierPrimary else startColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = badge.conditionLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             if (isUnlocked) {
                 Surface(
                     shape = CircleShape,
-                    color = if (isSelected) startColor else MaterialTheme.colorScheme.surfaceVariant,
+                    color = if (isSelected) tierPrimary else MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier.size(26.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {

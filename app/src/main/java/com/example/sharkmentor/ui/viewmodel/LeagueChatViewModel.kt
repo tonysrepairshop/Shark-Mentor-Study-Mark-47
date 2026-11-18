@@ -4,7 +4,14 @@ import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color as AndroidColor
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.net.Uri
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.util.Base64
 import android.util.Log
 import android.util.LruCache
@@ -16,6 +23,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.util.AvatarHelper
 import com.example.sharkmentor.core.util.GoogleServicesHelper
+import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.ErrorQuestionEntity
 import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.example.sharkmentor.service.sync.SyncWorker
@@ -27,6 +35,7 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -121,6 +130,7 @@ data class LeagueChatMessageUi(
     val senderAvatarBase64: String = "",
     val senderAvatarPresetId: String = "",
     val senderShowcaseBadges: List<String> = emptyList(),
+    val senderBadgeProgress: Map<String, Int> = emptyMap(),
     val type: String, // "TEXT", "QUESTION", "SOLUTION"
     val text: String,
     val createdAtMillis: Long,
@@ -156,7 +166,11 @@ data class LeagueChatUiState(
     val activeFilter: ChatFilterTab = ChatFilterTab.ALL,
     val allMessages: List<LeagueChatMessageUi> = emptyList(),
     val dmThreads: List<DmThreadUi> = emptyList(),
+    val dmStatusByPeerId: Map<String, String> = emptyMap(),
     val activeDmThread: DmThreadUi? = null,
+    val savedQuestionIds: Set<String> = emptySet(),
+    val blockedUserIds: Set<String> = emptySet(),
+    val selectedMemberProfile: LeagueEntry? = null,
     val isLoading: Boolean = true,
     val isSending: Boolean = false,
     val errorMessage: String? = null,
@@ -235,7 +249,7 @@ object ChatImageCache {
             }.getOrDefault("")
         }
 
-    private fun readBytes(context: Context, pathOrUri: String): ByteArray? {
+    fun readBytes(context: Context, pathOrUri: String): ByteArray? {
         val f = File(pathOrUri)
         if (f.exists()) {
             return f.inputStream().use { it.readBytes() }
@@ -255,11 +269,18 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
     private val db get() = GoogleServicesHelper.getFirebaseFirestore(appContext)
     private val auth get() = GoogleServicesHelper.getFirebaseAuth(appContext)
 
-    private val _uiState = MutableStateFlow(LeagueChatUiState())
+    private val _uiState = MutableStateFlow(
+        LeagueChatUiState(
+            savedQuestionIds = loadPersistedSavedQuestionIds(),
+            blockedUserIds = SharkBadgeCatalog.getBlockedUserIds(appContext)
+        )
+    )
     val uiState: StateFlow<LeagueChatUiState> = _uiState.asStateFlow()
 
     private var messagesListener: ListenerRegistration? = null
     private var dmThreadsListener: ListenerRegistration? = null
+    private var rawMessages: List<LeagueChatMessageUi> = emptyList()
+    private var rawDmThreads: List<DmThreadUi> = emptyList()
 
     fun selectFilter(tab: ChatFilterTab) {
         _uiState.value = _uiState.value.copy(activeFilter = tab)
@@ -267,6 +288,50 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearStatusMessage() {
         _uiState.value = _uiState.value.copy(statusMessage = null)
+    }
+
+    private fun refreshBlockedUsers(uid: String) {
+        val localBlocked = SharkBadgeCatalog.getBlockedUserIds(appContext)
+        if (_uiState.value.blockedUserIds != localBlocked) {
+            _uiState.value = _uiState.value.copy(blockedUserIds = localBlocked)
+            applyBlockedFilters()
+        }
+        val database = db ?: return
+        if (uid.isBlank() || uid == "local_student" || uid == "student_default") return
+        viewModelScope.launch {
+            runCatching {
+                val doc = database.collection("students").document(uid).get().await()
+                val remoteBlocked = (doc.get("blockedUserIds") as? List<*>)
+                    ?.mapNotNull { it?.toString()?.trim() }
+                    ?.filter { it.isNotBlank() }
+                    .orEmpty()
+                val merged = SharkBadgeCatalog.mergeBlockedUserIds(appContext, remoteBlocked)
+                if (merged != _uiState.value.blockedUserIds) {
+                    _uiState.value = _uiState.value.copy(blockedUserIds = merged)
+                    applyBlockedFilters()
+                }
+            }
+        }
+    }
+
+    private fun applyBlockedFilters() {
+        val current = _uiState.value
+        val blocked = current.blockedUserIds
+        val filteredMessages = rawMessages.filter { it.isMine || !blocked.contains(it.senderId) }
+        val filteredThreads = rawDmThreads.filter { !blocked.contains(it.peerUid) }
+        val statusMap = rawDmThreads.associate { it.peerUid to it.status }
+        val activeId = current.activeDmThread?.threadId
+        val updatedActive = if (activeId != null) {
+            rawDmThreads.firstOrNull { it.threadId == activeId } ?: current.activeDmThread
+        } else {
+            current.activeDmThread
+        }
+        _uiState.value = current.copy(
+            allMessages = filteredMessages,
+            dmThreads = filteredThreads,
+            dmStatusByPeerId = statusMap,
+            activeDmThread = updatedActive
+        )
     }
 
     fun openGroupChat(groupCode: String, groupName: String, myDisplayNameHint: String = "") {
@@ -281,6 +346,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
         val uid = resolveCurrentUid()
         val myName = resolveDisplayName(myDisplayNameHint)
+        rawMessages = emptyList()
         _uiState.value = _uiState.value.copy(
             mode = LeagueChatMode.GROUP_CHAT,
             currentUid = uid,
@@ -289,10 +355,13 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             activeGroupName = groupName.ifBlank { "Grup $cleanCode" },
             activeFilter = ChatFilterTab.ALL,
             activeDmThread = null,
+            allMessages = emptyList(),
+            blockedUserIds = SharkBadgeCatalog.getBlockedUserIds(appContext),
             isLoading = true,
             errorMessage = null
         )
 
+        refreshBlockedUsers(uid)
         observeDmThreads(uid)
         val database = db
         if (database == null || uid == "local_student" || uid == "student_default") {
@@ -314,21 +383,25 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         val myName = resolveDisplayName(myDisplayNameHint)
         messagesListener?.remove()
         messagesListener = null
+        rawMessages = emptyList()
         _uiState.value = _uiState.value.copy(
             mode = LeagueChatMode.DM_INBOX,
             currentUid = uid,
             currentName = myName,
             activeDmThread = null,
             allMessages = emptyList(),
+            blockedUserIds = SharkBadgeCatalog.getBlockedUserIds(appContext),
             isLoading = false,
             errorMessage = null
         )
+        refreshBlockedUsers(uid)
         observeDmThreads(uid)
     }
 
     fun openDmThread(thread: DmThreadUi, myDisplayNameHint: String = "") {
         val uid = resolveCurrentUid()
         val myName = resolveDisplayName(myDisplayNameHint)
+        rawMessages = emptyList()
         _uiState.value = _uiState.value.copy(
             mode = LeagueChatMode.DM_THREAD,
             currentUid = uid,
@@ -336,9 +409,11 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             activeFilter = ChatFilterTab.ALL,
             activeDmThread = thread,
             allMessages = emptyList(),
+            blockedUserIds = SharkBadgeCatalog.getBlockedUserIds(appContext),
             isLoading = true,
             errorMessage = null
         )
+        refreshBlockedUsers(uid)
         observeDmThreads(uid)
 
         val database = db ?: run {
@@ -587,10 +662,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                         )
                 }
 
-                SharkBadgeCatalog.unlockBadge(appContext, SharkBadgeCatalog.BADGE_ILK_IPUCU)
-                if (SharkBadgeCatalog.isNightShiftHour(now)) {
-                    SharkBadgeCatalog.unlockBadge(appContext, SharkBadgeCatalog.BADGE_GECE_NOBETCISI)
-                }
+                SharkBadgeCatalog.recordQuestionSharedLocally(appContext, now)
                 SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(appContext, uid)
 
                 _uiState.value = _uiState.value.copy(
@@ -639,6 +711,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     put("type", "SOLUTION")
                     put("text", cleanText.ifBlank { "Çözüm görseli eklendi." })
                     put("replyToQuestionId", question.messageId)
+                    put("questionCreatedAtMillis", question.createdAtMillis)
                     put("solutionText", cleanText)
                     put("solutionImageBase64", imageBase64)
                     put("approvalStatus", "PENDING")
@@ -667,12 +740,6 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                         )
                 }
 
-                SharkBadgeCatalog.unlockBadge(appContext, SharkBadgeCatalog.BADGE_ILK_IPUCU)
-                if (SharkBadgeCatalog.isNightShiftHour(now)) {
-                    SharkBadgeCatalog.unlockBadge(appContext, SharkBadgeCatalog.BADGE_GECE_NOBETCISI)
-                }
-                SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(appContext, uid)
-
                 _uiState.value = _uiState.value.copy(
                     isSending = false,
                     statusMessage = "⏳ Çözüm gönderildi! +${tier.points} Puan soru sahibinin onayını bekliyor."
@@ -688,7 +755,6 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun approveSolution(question: QuestionCardUi, solution: SolutionReplyUi) {
-        val state = _uiState.value
         val database = db ?: return
         val uid = resolveCurrentUid()
         if (question.senderId != uid) return
@@ -697,6 +763,10 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             runCatching {
                 val now = System.currentTimeMillis()
+                val solveElapsedMs = (solution.createdAtMillis - question.createdAtMillis).coerceAtLeast(0L)
+                val bonusSecs = solution.escrowBonusMinutes.coerceAtLeast(0) * 60L
+                val weekKey = SharkBadgeCatalog.currentIsoWeekKey(now)
+
                 targetCollection.document(solution.messageId)
                     .set(
                         mapOf(
@@ -719,52 +789,76 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     )
                     .await()
 
-                // Credit solver mentor points + badges cleanly (safe fallback if rules block peer write)
+                // Credit solver mentor points, capped weekly bonus seconds & 12 tiered badges
                 val solverId = solution.senderId
                 if (solverId.isNotBlank()) {
                     if (solverId == uid) {
                         SharkBadgeCatalog.addMentorPoints(appContext, solution.escrowPoints)
+                        if (bonusSecs > 0L) {
+                            SharkBadgeCatalog.addWeeklyBonusSeconds(appContext, bonusSecs, weekKey)
+                        }
                         SharkBadgeCatalog.recordApprovedSolutionLocally(
                             context = appContext,
                             subject = question.subject,
-                            isGoldTier = solution.escrowPoints >= QuestionRewardTier.GOLD.points,
+                            solveElapsedMs = solveElapsedMs,
                             createdAtMillis = solution.createdAtMillis
                         )
                         SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(appContext, uid)
                     } else {
-                        val earnedBadges = mutableListOf(SharkBadgeCatalog.BADGE_ILK_IPUCU)
-                        if (solution.escrowPoints >= QuestionRewardTier.GOLD.points) {
-                            earnedBadges.add(SharkBadgeCatalog.BADGE_HIZIR_ACIL)
+                        val earnedFirstTierBadges = mutableListOf(SharkBadgeCatalog.BADGE_ILK_COZUM)
+                        val progressIncrements = hashMapOf<String, Any>(
+                            SharkBadgeCatalog.BADGE_ILK_COZUM to FieldValue.increment(1L),
+                            SharkBadgeCatalog.BADGE_SORU_AVCISI to FieldValue.increment(1L)
+                        )
+                        if (solveElapsedMs in 0L..(15L * 60L * 1_000L)) {
+                            earnedFirstTierBadges.add(SharkBadgeCatalog.BADGE_HIZLI_KOPEKBALIGI)
+                            progressIncrements[SharkBadgeCatalog.BADGE_HIZLI_KOPEKBALIGI] = FieldValue.increment(1L)
                         }
-                        if (SharkBadgeCatalog.isNightShiftHour(solution.createdAtMillis)) {
-                            earnedBadges.add(SharkBadgeCatalog.BADGE_GECE_NOBETCISI)
+                        if (solveElapsedMs in (60L * 60L * 1_000L)..(105L * 60L * 1_000L)) {
+                            earnedFirstTierBadges.add(SharkBadgeCatalog.BADGE_CAN_SIMIDI)
+                            progressIncrements[SharkBadgeCatalog.BADGE_CAN_SIMIDI] = FieldValue.increment(1L)
                         }
+                        SharkBadgeCatalog.subjectBadgeIdFor(question.subject)?.let { subjBadgeId ->
+                            earnedFirstTierBadges.add(subjBadgeId)
+                            progressIncrements[subjBadgeId] = FieldValue.increment(1L)
+                        }
+
                         runCatching {
-                            database.collection("students").document(solverId)
-                                .set(
-                                    mapOf(
-                                        "mentorPoints" to FieldValue.increment(solution.escrowPoints.toLong()),
-                                        "approvedSolutionsCount" to FieldValue.increment(1L),
-                                        "unlockedBadges" to FieldValue.arrayUnion(*earnedBadges.toTypedArray())
-                                    ),
-                                    SetOptions.merge()
+                            val studentRewardPayload = hashMapOf<String, Any>(
+                                "mentorPoints" to FieldValue.increment(solution.escrowPoints.toLong()),
+                                "approvedSolutionsCount" to FieldValue.increment(1L),
+                                "unlockedBadges" to FieldValue.arrayUnion(*earnedFirstTierBadges.toTypedArray()),
+                                "badgeProgress" to progressIncrements
+                            )
+                            if (bonusSecs > 0L) {
+                                studentRewardPayload["weeklyBonusByWeek"] = mapOf(
+                                    weekKey to FieldValue.increment(bonusSecs)
                                 )
+                            }
+                            database.collection("students").document(solverId)
+                                .set(studentRewardPayload, SetOptions.merge())
                                 .await()
                         }
                         runCatching {
+                            val leagueRewardPayload = hashMapOf<String, Any>(
+                                "mentorPoints" to FieldValue.increment(solution.escrowPoints.toLong()),
+                                "badgeProgress" to progressIncrements
+                            )
+                            if (bonusSecs > 0L) {
+                                leagueRewardPayload["weeklyBonusByWeek"] = mapOf(
+                                    weekKey to FieldValue.increment(bonusSecs)
+                                )
+                            }
                             database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
                                 .collection("weeklyLeague").document(solverId)
-                                .set(
-                                    mapOf("mentorPoints" to FieldValue.increment(solution.escrowPoints.toLong())),
-                                    SetOptions.merge()
-                                )
+                                .set(leagueRewardPayload, SetOptions.merge())
                                 .await()
                         }
                     }
                 }
 
                 _uiState.value = _uiState.value.copy(
-                    statusMessage = "✅ Çözüm onaylandı! ${solution.senderName} +${solution.escrowPoints} Puan kazandı."
+                    statusMessage = "✅ Çözüm onaylandı! ${solution.senderName} +${solution.escrowPoints} Puan & +${solution.escrowBonusMinutes} dk kazandı."
                 )
             }.onFailure {
                 _uiState.value = _uiState.value.copy(
@@ -818,6 +912,377 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun saveQuestionToMyErrorBank(question: QuestionCardUi) {
+        if (_uiState.value.savedQuestionIds.contains(question.messageId)) {
+            _uiState.value = _uiState.value.copy(
+                statusMessage = "Bu soru zaten Hata Bankana kaydedildi."
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            val savedOk = withContext(Dispatchers.IO) {
+                runCatching {
+                    val now = System.currentTimeMillis()
+                    val dir = File(appContext.filesDir, "error_bank_saved").apply { mkdirs() }
+                    val safeMsgId = question.messageId.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "q" }
+                    val questionFile = File(dir, "q_${safeMsgId}_${now}.jpg")
+
+                    val wroteQuestionImg = writeBase64OrUriToJpegFile(
+                        base64 = question.imageBase64,
+                        fallbackUri = question.localImageUri,
+                        destFile = questionFile
+                    )
+                    if (!wroteQuestionImg) {
+                        renderQuestionTextFallbackFile(questionFile, question)
+                    }
+
+                    val approvedSol = rawMessages
+                        .mapNotNull { it.solutionReply }
+                        .firstOrNull { reply ->
+                            reply.replyToQuestionId == question.messageId &&
+                                (reply.approvalStatus == "APPROVED" || reply.messageId == question.approvedSolutionId) &&
+                                reply.solutionImageBase64.isNotBlank()
+                        }
+                    var solutionPath: String? = null
+                    if (approvedSol != null) {
+                        val solFile = File(dir, "s_${safeMsgId}_${now}.jpg")
+                        if (writeBase64OrUriToJpegFile(approvedSol.solutionImageBase64, "", solFile)) {
+                            solutionPath = solFile.absolutePath
+                        }
+                    }
+
+                    val entity = ErrorQuestionEntity(
+                        subject = question.subject.ifBlank { "Ders" },
+                        questionImageUri = questionFile.absolutePath,
+                        solutionImageUri = solutionPath,
+                        topic = question.topic.ifBlank { "Genel" },
+                        aiTopic = question.topic.takeIf { it.isNotBlank() && !it.equals("Genel", ignoreCase = true) },
+                        dueDateMillis = now,
+                        createdAtMillis = now,
+                        institutionId = userPrefs.institutionId,
+                        isSynced = false
+                    )
+                    SharkMentorDatabase.getDatabase(appContext).errorQuestionDao().insertQuestion(entity)
+                    true
+                }.getOrElse { e ->
+                    Log.w("LeagueChatVM", "saveQuestionToMyErrorBank error: ${e.message}")
+                    false
+                }
+            }
+
+            if (savedOk) {
+                val updatedSaved = persistSavedQuestionId(question.messageId)
+                _uiState.value = _uiState.value.copy(
+                    savedQuestionIds = updatedSaved,
+                    statusMessage = "📥 Soru Hata Bankana kaydedildi!"
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    statusMessage = "Soru Hata Bankasına kaydedilemedi."
+                )
+            }
+        }
+    }
+
+    fun openMemberProfile(
+        studentId: String,
+        fallbackName: String,
+        fallbackAvatarBase64: String = "",
+        fallbackAvatarPresetId: String = "",
+        fallbackBadges: List<String> = emptyList()
+    ) {
+        val cleanId = studentId.trim()
+        if (cleanId.isBlank()) return
+        val uid = resolveCurrentUid()
+        val isMe = (cleanId == uid)
+        val cleanName = SyncWorker.sanitizeTurkishText(fallbackName.ifBlank { "Öğrenci" })
+        val optimistic = LeagueEntry(
+            studentId = cleanId,
+            displayName = if (isMe) "Sen ($cleanName)" else cleanName,
+            rawName = cleanName,
+            isCurrentUser = isMe,
+            avatarBase64 = fallbackAvatarBase64,
+            avatarPresetId = fallbackAvatarPresetId,
+            showcaseBadges = fallbackBadges.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES),
+            badgeProgress = if (isMe) SharkBadgeCatalog.getBadgeProgressCounts(appContext) else emptyMap()
+        )
+        _uiState.value = _uiState.value.copy(selectedMemberProfile = optimistic)
+
+        val database = db ?: return
+        if (cleanId == "local_student" || cleanId == "student_default") return
+        viewModelScope.launch {
+            runCatching {
+                val weekKey = SharkBadgeCatalog.currentIsoWeekKey()
+                val studentSnap = database.collection("students").document(cleanId).get().await()
+                val leagueSnap = runCatching {
+                    database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
+                        .collection("weeklyLeague").document(cleanId).get().await()
+                }.getOrNull()
+
+                val resolvedName = SyncWorker.sanitizeTurkishText(
+                    studentSnap.getString("name")?.takeIf { it.isNotBlank() }
+                        ?: studentSnap.getString("displayName")?.takeIf { it.isNotBlank() }
+                        ?: leagueSnap?.getString("displayName")?.takeIf { it.isNotBlank() }
+                        ?: cleanName
+                )
+                val weeklySecs = maxOf(
+                    studentSnap.getLong("weeklyFocusSeconds") ?: 0L,
+                    leagueSnap?.getLong("weeklyFocusSeconds") ?: 0L
+                )
+                val bonusSecs = maxOf(
+                    SharkBadgeCatalog.parseWeeklyBonusForWeek(studentSnap.get("weeklyBonusByWeek"), weekKey),
+                    SharkBadgeCatalog.parseWeeklyBonusForWeek(leagueSnap?.get("weeklyBonusByWeek"), weekKey),
+                    if (studentSnap.getString("weeklyBonusWeekKey") == weekKey) (studentSnap.getLong("weeklyBonusSeconds") ?: 0L) else 0L,
+                    if (leagueSnap?.getString("weeklyBonusWeekKey") == weekKey) (leagueSnap.getLong("weeklyBonusSeconds") ?: 0L) else 0L
+                ).coerceAtLeast(0L)
+                val effectiveSecs = weeklySecs.coerceAtLeast(0L) + minOf(bonusSecs, MAX_WEEKLY_BONUS_SECONDS)
+                val streak = maxOf(
+                    studentSnap.getLong("streakDays")?.toInt() ?: 0,
+                    leagueSnap?.getLong("streakDays")?.toInt() ?: 0
+                )
+                val points = maxOf(
+                    studentSnap.getLong("mentorPoints")?.toInt() ?: 0,
+                    leagueSnap?.getLong("mentorPoints")?.toInt() ?: 0
+                )
+                val avatarB64 = studentSnap.getString("avatarBase64")?.takeIf { it.isNotBlank() }
+                    ?: leagueSnap?.getString("avatarBase64")?.takeIf { it.isNotBlank() }
+                    ?: fallbackAvatarBase64
+                val avatarPreset = if (avatarB64.isNotBlank()) "" else {
+                    studentSnap.getString("avatarPresetId")?.takeIf { it.isNotBlank() }
+                        ?: leagueSnap?.getString("avatarPresetId")?.takeIf { it.isNotBlank() }
+                        ?: fallbackAvatarPresetId
+                }
+                val remoteBadges = (studentSnap.get("showcaseBadges") as? List<*>)
+                    ?.mapNotNull { it?.toString()?.trim() }
+                    ?.filter { it.isNotBlank() }
+                    ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                    .orEmpty()
+                    .ifEmpty {
+                        (leagueSnap?.get("showcaseBadges") as? List<*>)
+                            ?.mapNotNull { it?.toString()?.trim() }
+                            ?.filter { it.isNotBlank() }
+                            ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                            .orEmpty()
+                    }
+                    .ifEmpty { fallbackBadges.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES) }
+                val badgeProgress = SharkBadgeCatalog.parseRemoteProgressMap(studentSnap.get("badgeProgress"))
+                    .ifEmpty { SharkBadgeCatalog.parseRemoteProgressMap(leagueSnap?.get("badgeProgress")) }
+                    .ifEmpty { if (isMe) SharkBadgeCatalog.getBadgeProgressCounts(appContext) else emptyMap() }
+
+                val enriched = LeagueEntry(
+                    studentId = cleanId,
+                    displayName = if (isMe) "Sen ($resolvedName)" else resolvedName,
+                    rawName = resolvedName,
+                    friendCode = studentSnap.getString("friendCode") ?: leagueSnap?.getString("friendCode").orEmpty(),
+                    weeklyFocusSeconds = weeklySecs,
+                    weeklyBonusSeconds = bonusSecs,
+                    dailyAverageMinutes = ((weeklySecs / 60L) / 7L).toInt(),
+                    streakDays = streak,
+                    tier = effectiveSecs.toTier(),
+                    isCurrentUser = isMe,
+                    isStudyingNow = studentSnap.getBoolean("isStudying") ?: false,
+                    activeSubject = studentSnap.getString("activeSubject"),
+                    avatarBase64 = avatarB64,
+                    avatarPresetId = avatarPreset,
+                    mentorPoints = points,
+                    showcaseBadges = remoteBadges,
+                    badgeProgress = badgeProgress
+                )
+                if (_uiState.value.selectedMemberProfile?.studentId == cleanId) {
+                    _uiState.value = _uiState.value.copy(selectedMemberProfile = enriched)
+                }
+            }
+        }
+    }
+
+    fun dismissMemberProfile() {
+        _uiState.value = _uiState.value.copy(selectedMemberProfile = null)
+    }
+
+    fun blockUser(target: LeagueEntry, block: Boolean) {
+        if (target.isCurrentUser || target.studentId.isBlank()) return
+        val uid = resolveCurrentUid()
+        viewModelScope.launch {
+            val updated = SharkBadgeCatalog.setUserBlocked(
+                context = appContext,
+                myUid = uid,
+                targetUid = target.studentId,
+                blocked = block
+            )
+            val targetName = target.rawName.ifBlank { target.displayName }
+            _uiState.value = _uiState.value.copy(
+                blockedUserIds = updated,
+                statusMessage = if (block) {
+                    "🚫 $targetName engellendi. Mesajları ve soruları gizlendi."
+                } else {
+                    "$targetName engeli kaldırıldı."
+                }
+            )
+            applyBlockedFilters()
+        }
+    }
+
+    fun reportUser(target: LeagueEntry, reason: String, details: String) {
+        if (target.isCurrentUser || target.studentId.isBlank()) return
+        val uid = resolveCurrentUid()
+        val myName = _uiState.value.currentName.ifBlank { resolveDisplayName("") }
+        val targetName = target.rawName.ifBlank { target.displayName }
+        viewModelScope.launch {
+            val ok = SharkBadgeCatalog.submitUserReport(
+                context = appContext,
+                reporterUid = uid,
+                reporterName = myName,
+                targetUid = target.studentId,
+                targetName = targetName,
+                reason = reason,
+                details = details,
+                source = "league_chat"
+            )
+            _uiState.value = _uiState.value.copy(
+                statusMessage = if (ok) {
+                    "🚩 $targetName hakkında şikayet incelenmek üzere iletildi."
+                } else {
+                    "Şikayet gönderilemedi, internet bağlantını kontrol et."
+                }
+            )
+        }
+    }
+
+    fun sendDmRequest(target: LeagueEntry, note: String) {
+        if (target.isCurrentUser || target.studentId.isBlank()) return
+        if (_uiState.value.blockedUserIds.contains(target.studentId)) {
+            _uiState.value = _uiState.value.copy(
+                statusMessage = "Engellediğin bir kullanıcıya mesaj isteği gönderemezsin."
+            )
+            return
+        }
+        val uid = resolveCurrentUid()
+        val myName = _uiState.value.currentName.ifBlank { resolveDisplayName("") }
+        val database = db ?: return
+        if (uid == "local_student" || uid == "student_default") return
+
+        viewModelScope.launch {
+            runCatching {
+                val threadId = deterministicThreadId(uid, target.studentId)
+                val peerName = SyncWorker.sanitizeTurkishText(target.rawName.ifBlank { target.displayName })
+                val cleanNote = SyncWorker.sanitizeTurkishText(note.trim()).ifBlank {
+                    "Soru & çalışma hakkında direkt mesaj isteği"
+                }
+                val now = System.currentTimeMillis()
+                val myAvatarBase64 = AvatarHelper.getSavedAvatarBase64(appContext)
+                val myAvatarPreset = AvatarHelper.getSavedAvatarPresetId(appContext)
+                val payload = hashMapOf<String, Any>(
+                    "threadId" to threadId,
+                    "participantIds" to listOf(uid, target.studentId).sorted(),
+                    "participantNames" to mapOf(uid to myName, target.studentId to peerName),
+                    "participantAvatarsBase64" to mapOf(uid to myAvatarBase64, target.studentId to target.avatarBase64),
+                    "participantAvatarPresets" to mapOf(uid to myAvatarPreset, target.studentId to target.avatarPresetId),
+                    "requesterId" to uid,
+                    "requesterName" to myName,
+                    "recipientId" to target.studentId,
+                    "recipientName" to peerName,
+                    "status" to "PENDING",
+                    "requestNote" to cleanNote,
+                    "lastMessageText" to cleanNote,
+                    "updatedAtMillis" to now,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                database.collection("dm_threads").document(threadId)
+                    .set(payload, SetOptions.merge())
+                    .await()
+                _uiState.value = _uiState.value.copy(
+                    dmStatusByPeerId = _uiState.value.dmStatusByPeerId + (target.studentId to "PENDING"),
+                    statusMessage = "📩 $peerName için mesaj isteği gönderildi!"
+                )
+            }.onFailure {
+                _uiState.value = _uiState.value.copy(
+                    statusMessage = "Mesaj isteği gönderilemedi, lütfen tekrar dene."
+                )
+            }
+        }
+    }
+
+    private fun writeBase64OrUriToJpegFile(
+        base64: String,
+        fallbackUri: String,
+        destFile: File
+    ): Boolean {
+        if (base64.isNotBlank()) {
+            val clean = base64.substringAfter("base64,", base64).trim()
+            val decodedBytes = runCatching { Base64.decode(clean, Base64.DEFAULT) }.getOrNull()
+            if (decodedBytes != null && decodedBytes.isNotEmpty()) {
+                val bmp = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                if (bmp != null) {
+                    return runCatching {
+                        FileOutputStream(destFile).use { out ->
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                        }
+                        bmp.recycle()
+                        destFile.exists() && destFile.length() > 0L
+                    }.getOrDefault(false)
+                }
+            }
+        }
+        if (fallbackUri.isNotBlank()) {
+            val rawBytes = runCatching { ChatImageCache.readBytes(appContext, fallbackUri) }.getOrNull()
+            if (rawBytes != null && rawBytes.isNotEmpty()) {
+                val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+                if (bmp != null) {
+                    return runCatching {
+                        FileOutputStream(destFile).use { out ->
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                        }
+                        bmp.recycle()
+                        destFile.exists() && destFile.length() > 0L
+                    }.getOrDefault(false)
+                }
+            }
+        }
+        return false
+    }
+
+    private fun renderQuestionTextFallbackFile(destFile: File, question: QuestionCardUi) {
+        val width = 900
+        val height = 560
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(AndroidColor.rgb(248, 250, 252))
+
+        val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = AndroidColor.rgb(15, 118, 110)
+            textSize = 34f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = AndroidColor.rgb(71, 85, 105)
+            textSize = 26f
+        }
+        val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = AndroidColor.rgb(15, 23, 42)
+            textSize = 30f
+        }
+
+        canvas.drawText("${question.subject} • ${question.topic}", 48f, 76f, headerPaint)
+        canvas.drawText("Paylaşan: ${question.senderName}", 48f, 120f, subPaint)
+
+        val bodyText = question.noteText.ifBlank { "${question.subject} (${question.topic}) sorusu" }
+        val layout = StaticLayout.Builder.obtain(bodyText, 0, bodyText.length, bodyPaint, width - 96)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setLineSpacing(6f, 1.15f)
+            .setMaxLines(10)
+            .build()
+        canvas.save()
+        canvas.translate(48f, 168f)
+        layout.draw(canvas)
+        canvas.restore()
+
+        FileOutputStream(destFile).use { out ->
+            bmp.compress(Bitmap.CompressFormat.JPEG, 90, out)
+        }
+        bmp.recycle()
+    }
+
     private fun subscribeToMessages(collection: CollectionReference, currentUid: String) {
         messagesListener?.remove()
         messagesListener = collection
@@ -832,15 +1297,15 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     )
                     return@addSnapshotListener
                 }
-                val mapped = snap?.documents?.mapNotNull { doc ->
+                rawMessages = snap?.documents?.mapNotNull { doc ->
                     parseMessageDoc(doc, currentUid)
                 }.orEmpty()
 
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    allMessages = mapped,
                     errorMessage = null
                 )
+                applyBlockedFilters()
             }
     }
 
@@ -856,22 +1321,11 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     Log.w("LeagueChatVM", "dm_threads listener warning: ${error.message}")
                     return@addSnapshotListener
                 }
-                val list = snap?.documents
+                rawDmThreads = snap?.documents
                     ?.mapNotNull { doc -> parseDmThreadDoc(doc, uid) }
                     ?.sortedByDescending { it.updatedAtMillis }
                     .orEmpty()
-
-                val activeId = _uiState.value.activeDmThread?.threadId
-                val updatedActive = if (activeId != null) {
-                    list.firstOrNull { it.threadId == activeId } ?: _uiState.value.activeDmThread
-                } else {
-                    _uiState.value.activeDmThread
-                }
-
-                _uiState.value = _uiState.value.copy(
-                    dmThreads = list,
-                    activeDmThread = updatedActive
-                )
+                applyBlockedFilters()
             }
     }
 
@@ -890,6 +1344,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             ?.filter { it.isNotBlank() }
             ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
             ?: emptyList()
+        val badgeProgress = SharkBadgeCatalog.parseRemoteProgressMap(doc.get("senderBadgeProgress"))
 
         val questionCard = if (type == "QUESTION") {
             val subject = SyncWorker.sanitizeTurkishText(doc.getString("questionSubject").orEmpty().ifBlank { "Ders" })
@@ -940,6 +1395,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             senderAvatarBase64 = doc.getString("senderAvatarBase64").orEmpty(),
             senderAvatarPresetId = doc.getString("senderAvatarPresetId").orEmpty(),
             senderShowcaseBadges = badges,
+            senderBadgeProgress = badgeProgress,
             type = type,
             text = text,
             createdAtMillis = createdAtMs,
@@ -1005,6 +1461,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             "senderAvatarBase64" to AvatarHelper.getSavedAvatarBase64(appContext),
             "senderAvatarPresetId" to AvatarHelper.getSavedAvatarPresetId(appContext),
             "senderBadges" to SharkBadgeCatalog.getShowcaseBadgeIds(appContext),
+            "senderBadgeProgress" to SharkBadgeCatalog.getBadgeProgressCounts(appContext),
             "createdAtMillis" to timestampMillis,
             "createdAt" to FieldValue.serverTimestamp()
         )
@@ -1050,6 +1507,20 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun deterministicThreadId(uid1: String, uid2: String): String =
         listOf(uid1.trim(), uid2.trim()).sorted().joinToString("_")
+
+    private fun loadPersistedSavedQuestionIds(): Set<String> =
+        appContext.getSharedPreferences("shark_chat_saved_questions", Context.MODE_PRIVATE)
+            .getStringSet("saved_msg_ids", emptySet())
+            .orEmpty()
+
+    private fun persistSavedQuestionId(messageId: String): Set<String> {
+        val next = loadPersistedSavedQuestionIds() + messageId
+        appContext.getSharedPreferences("shark_chat_saved_questions", Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet("saved_msg_ids", next)
+            .apply()
+        return next
+    }
 
     override fun onCleared() {
         messagesListener?.remove()

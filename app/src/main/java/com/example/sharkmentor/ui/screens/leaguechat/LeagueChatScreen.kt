@@ -41,10 +41,12 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Timer
@@ -136,10 +138,12 @@ fun LeagueChatScreen(
 ) {
     val context = LocalContext.current
     val uiState by chatViewModel.uiState.collectAsStateWithLifecycle()
+    val wallpaperStyle by remember(context) { ChatWallpaperPrefs.observeStyle(context) }.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
     var showQuestionPicker by rememberSaveable { mutableStateOf(false) }
+    var showWallpaperPicker by rememberSaveable { mutableStateOf(false) }
     var solvingQuestion by remember { mutableStateOf<QuestionCardUi?>(null) }
     var zoomedImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     var zoomedLocalPath by remember { mutableStateOf<String?>(null) }
@@ -225,7 +229,10 @@ fun LeagueChatScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        ChatWallpaperCanvas(modifier = Modifier.fillMaxSize())
+        ChatWallpaperCanvas(
+            styleOverride = wallpaperStyle,
+            modifier = Modifier.fillMaxSize()
+        )
 
         Scaffold(
             containerColor = Color.Transparent,
@@ -268,7 +275,17 @@ fun LeagueChatScreen(
                                 val thread = uiState.activeDmThread
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.clickable(enabled = thread != null) {
+                                        if (thread != null) {
+                                            chatViewModel.openMemberProfile(
+                                                studentId = thread.peerUid,
+                                                fallbackName = thread.peerName,
+                                                fallbackAvatarBase64 = thread.peerAvatarBase64,
+                                                fallbackAvatarPresetId = thread.peerAvatarPresetId
+                                            )
+                                        }
+                                    }
                                 ) {
                                     SharkAvatar(
                                         avatarBase64 = thread?.peerAvatarBase64.orEmpty(),
@@ -315,6 +332,13 @@ fun LeagueChatScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { showWallpaperPicker = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Palette,
+                                contentDescription = "Duvar Kağıdı Seç",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                         if (uiState.mode == LeagueChatMode.GROUP_CHAT) {
                             val pendingDmCount = uiState.dmThreads.count { it.isIncomingRequest }
                             IconButton(onClick = { chatViewModel.openDmInbox(myDisplayNameHint) }) {
@@ -497,12 +521,24 @@ fun LeagueChatScreen(
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 itemsIndexed(displayedMessages, key = { _, m -> m.id }) { _, message ->
+                                    val openSenderProfile: () -> Unit = {
+                                        chatViewModel.openMemberProfile(
+                                            studentId = message.senderId,
+                                            fallbackName = message.senderName,
+                                            fallbackAvatarBase64 = message.senderAvatarBase64,
+                                            fallbackAvatarPresetId = message.senderAvatarPresetId,
+                                            fallbackBadges = message.senderShowcaseBadges
+                                        )
+                                    }
                                     when {
                                         message.questionCard != null -> {
                                             QuestionMessageCard(
                                                 message = message,
                                                 question = message.questionCard,
                                                 nowMillis = nowMillis,
+                                                isSavedToErrorBank = uiState.savedQuestionIds.contains(message.questionCard.messageId),
+                                                onSaveToErrorBank = { chatViewModel.saveQuestionToMyErrorBank(it) },
+                                                onSenderClick = openSenderProfile,
                                                 onImageClick = { bmp, localUri ->
                                                     zoomedImageBitmap = bmp
                                                     zoomedLocalPath = localUri
@@ -523,6 +559,7 @@ fun LeagueChatScreen(
                                                 solution = message.solutionReply,
                                                 parentQuestion = parentQ,
                                                 isQuestionOwner = (parentQ?.senderId == uiState.currentUid),
+                                                onSenderClick = openSenderProfile,
                                                 onApprove = {
                                                     if (parentQ != null) {
                                                         chatViewModel.approveSolution(parentQ, message.solutionReply)
@@ -540,7 +577,10 @@ fun LeagueChatScreen(
                                             )
                                         }
                                         else -> {
-                                            ChatTextBubble(message = message)
+                                            ChatTextBubble(
+                                                message = message,
+                                                onSenderClick = openSenderProfile
+                                            )
                                         }
                                     }
                                 }
@@ -634,6 +674,41 @@ fun LeagueChatScreen(
             }
         }
     }
+
+    if (showWallpaperPicker) {
+        ChatWallpaperPickerSheet(
+            currentStyle = wallpaperStyle,
+            onSelectStyle = { style ->
+                ChatWallpaperPrefs.setStyle(context, style)
+            },
+            onDismiss = { showWallpaperPicker = false }
+        )
+    }
+
+    uiState.selectedMemberProfile?.let { member ->
+        LeagueMemberProfileSheet(
+            entry = member,
+            existingDmStatus = uiState.dmStatusByPeerId[member.studentId],
+            isBlocked = uiState.blockedUserIds.contains(member.studentId),
+            onDismiss = { chatViewModel.dismissMemberProfile() },
+            onSendDmRequest = { entry, note -> chatViewModel.sendDmRequest(entry, note) },
+            onOpenAcceptedDm = { entry ->
+                chatViewModel.dismissMemberProfile()
+                val peerRealName = entry.rawName.ifBlank {
+                    entry.displayName.removePrefix("Sen (").removeSuffix(")")
+                }
+                chatViewModel.openOrStartDmWithPeer(
+                    peerUid = entry.studentId,
+                    peerName = peerRealName,
+                    peerAvatarBase64 = entry.avatarBase64,
+                    peerAvatarPresetId = entry.avatarPresetId,
+                    myDisplayNameHint = myDisplayNameHint
+                )
+            },
+            onBlockUser = { entry, block -> chatViewModel.blockUser(entry, block) },
+            onReportUser = { entry, reason, details -> chatViewModel.reportUser(entry, reason, details) }
+        )
+    }
 }
 
 @Composable
@@ -702,6 +777,9 @@ private fun QuestionMessageCard(
     message: LeagueChatMessageUi,
     question: QuestionCardUi,
     nowMillis: Long,
+    isSavedToErrorBank: Boolean,
+    onSaveToErrorBank: (QuestionCardUi) -> Unit,
+    onSenderClick: () -> Unit,
     onImageClick: (ImageBitmap?, String?) -> Unit,
     onSolveClick: (QuestionCardUi) -> Unit
 ) {
@@ -745,7 +823,9 @@ private fun QuestionMessageCard(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onSenderClick() }
                 ) {
                     SharkAvatar(
                         avatarBase64 = message.senderAvatarBase64,
@@ -762,7 +842,11 @@ private fun QuestionMessageCard(
                             overflow = TextOverflow.Ellipsis
                         )
                         if (message.senderShowcaseBadges.isNotEmpty()) {
-                            SharkBadgeShowcaseRow(badgeIds = message.senderShowcaseBadges, compact = true)
+                            SharkBadgeShowcaseRow(
+                                badgeIds = message.senderShowcaseBadges,
+                                compact = true,
+                                badgeProgress = message.senderBadgeProgress
+                            )
                         }
                     }
                 }
@@ -945,6 +1029,35 @@ private fun QuestionMessageCard(
                     )
                 }
             }
+
+            OutlinedButton(
+                onClick = { onSaveToErrorBank(question) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (isSavedToErrorBank) {
+                        Color(0xFF10B981).copy(alpha = 0.55f)
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant
+                    }
+                )
+            ) {
+                Icon(
+                    imageVector = if (isSavedToErrorBank) Icons.Default.Check else Icons.Default.CloudDownload,
+                    contentDescription = null,
+                    tint = if (isSavedToErrorBank) Color(0xFF059669) else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (isSavedToErrorBank) "✅ Hata Bankana Kaydedildi" else "📥 Hata Bankama Kaydet",
+                    color = if (isSavedToErrorBank) Color(0xFF059669) else MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                )
+            }
         }
     }
 }
@@ -955,6 +1068,7 @@ private fun SolutionReplyCard(
     solution: SolutionReplyUi,
     parentQuestion: QuestionCardUi?,
     isQuestionOwner: Boolean,
+    onSenderClick: () -> Unit,
     onApprove: () -> Unit,
     onReject: () -> Unit,
     onImageClick: (ImageBitmap) -> Unit
@@ -994,7 +1108,10 @@ private fun SolutionReplyCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .clickable { onSenderClick() }
                 ) {
                     SharkAvatar(
                         avatarBase64 = message.senderAvatarBase64,
@@ -1005,10 +1122,13 @@ private fun SolutionReplyCard(
                     Text(
                         text = "${message.senderName} • Çözüm Önerisi",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 if (parentQuestion != null) {
+                    Spacer(Modifier.width(6.dp))
                     Text(
                         text = parentQuestion.subject,
                         style = MaterialTheme.typography.labelSmall,
@@ -1100,7 +1220,10 @@ private fun SolutionReplyCard(
 }
 
 @Composable
-private fun ChatTextBubble(message: LeagueChatMessageUi) {
+private fun ChatTextBubble(
+    message: LeagueChatMessageUi,
+    onSenderClick: () -> Unit
+) {
     val timeLabel = remember(message.createdAtMillis) {
         SimpleDateFormat("HH:mm", Locale("tr")).format(Date(message.createdAtMillis))
     }
@@ -1115,7 +1238,8 @@ private fun ChatTextBubble(message: LeagueChatMessageUi) {
                 avatarBase64 = message.senderAvatarBase64,
                 avatarPresetId = message.senderAvatarPresetId,
                 displayName = message.senderName,
-                size = 30.dp
+                size = 30.dp,
+                modifier = Modifier.clickable { onSenderClick() }
             )
             Spacer(Modifier.width(8.dp))
         }
@@ -1147,13 +1271,22 @@ private fun ChatTextBubble(message: LeagueChatMessageUi) {
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 if (!message.isMine) {
-                    Text(
-                        text = message.senderName,
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    if (message.senderShowcaseBadges.isNotEmpty()) {
-                        SharkBadgeShowcaseRow(badgeIds = message.senderShowcaseBadges, compact = true)
+                    Column(
+                        modifier = Modifier.clickable { onSenderClick() },
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Text(
+                            text = message.senderName,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        if (message.senderShowcaseBadges.isNotEmpty()) {
+                            SharkBadgeShowcaseRow(
+                                badgeIds = message.senderShowcaseBadges,
+                                compact = true,
+                                badgeProgress = message.senderBadgeProgress
+                            )
+                        }
                     }
                 }
                 Text(

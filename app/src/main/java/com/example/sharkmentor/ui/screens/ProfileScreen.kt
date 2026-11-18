@@ -141,6 +141,7 @@ fun ProfileScreen(
 
     var unlockedBadgeIds by remember { mutableStateOf(SharkBadgeCatalog.getUnlockedBadgeIds(context)) }
     var showcaseBadgeIds by remember { mutableStateOf(SharkBadgeCatalog.getShowcaseBadgeIds(context)) }
+    var badgeProgress by remember { mutableStateOf(SharkBadgeCatalog.getBadgeProgressCounts(context)) }
     var mentorPoints by remember { mutableStateOf(SharkBadgeCatalog.getMentorPoints(context)) }
 
     val activeMeetings by viewModel.studentMeetings.collectAsStateWithLifecycle()
@@ -171,6 +172,7 @@ fun ProfileScreen(
     LaunchedEffect(uid) {
         unlockedBadgeIds = SharkBadgeCatalog.getUnlockedBadgeIds(context)
         showcaseBadgeIds = SharkBadgeCatalog.getShowcaseBadgeIds(context)
+        badgeProgress = SharkBadgeCatalog.getBadgeProgressCounts(context)
         mentorPoints = SharkBadgeCatalog.getMentorPoints(context)
 
         if (user != null && !isGuest) {
@@ -191,6 +193,9 @@ fun ProfileScreen(
                     val mergedPoints = maxOf(remotePoints, SharkBadgeCatalog.getMentorPoints(context))
                     mentorPoints = SharkBadgeCatalog.saveMentorPoints(context, mergedPoints)
 
+                    val remoteProgress = SharkBadgeCatalog.parseRemoteProgressMap(snapshot.get("badgeProgress"))
+                    badgeProgress = SharkBadgeCatalog.mergeBadgeProgress(context, remoteProgress)
+
                     val remoteUnlocked = (snapshot.get("unlockedBadges") as? List<*>)
                         ?.mapNotNull { it?.toString()?.trim() }
                         ?.filter { it.isNotBlank() }
@@ -206,6 +211,13 @@ fun ProfileScreen(
                         showcaseBadgeIds = SharkBadgeCatalog.saveShowcaseBadgeIds(context, remoteShowcase)
                     } else {
                         showcaseBadgeIds = SharkBadgeCatalog.getShowcaseBadgeIds(context)
+                    }
+
+                    val weekKey = SharkBadgeCatalog.currentIsoWeekKey()
+                    val remoteBonus = SharkBadgeCatalog.parseWeeklyBonusForWeek(snapshot.get("weeklyBonusByWeek"), weekKey)
+                    val localBonus = SharkBadgeCatalog.getWeeklyBonusSeconds(context, weekKey)
+                    if (remoteBonus > localBonus) {
+                        SharkBadgeCatalog.saveWeeklyBonusSeconds(context, remoteBonus, weekKey)
                     }
 
                     val hasAvatarFields = snapshot.contains("avatarBase64") || snapshot.contains("avatarPresetId")
@@ -440,7 +452,7 @@ fun ProfileScreen(
             }
             } // end User Info Card item
 
-            // ── Mentor Puanı & 3 Rozet Vitrini Card ──────────────────────────
+            // ── Mentor Puanı & 5 Rozet Vitrini Card ──────────────────────────
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -460,6 +472,7 @@ fun ProfileScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(
+                                modifier = Modifier.weight(1f),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -471,7 +484,7 @@ fun ProfileScreen(
                                 )
                                 Column {
                                     Text(
-                                        text = "3 Rozet Vitrini & Mentorluk",
+                                        text = "5 Rozet Vitrini & Mentorluk",
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -483,18 +496,23 @@ fun ProfileScreen(
                                 }
                             }
                             TextButton(onClick = { showBadgeShowcaseSheet = true }) {
-                                Text("Rozet Seç", fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "Vitrini Düzenle (Maks. 5)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
                             }
                         }
 
                         if (showcaseBadgeIds.isNotEmpty()) {
                             SharkBadgeShowcaseRow(
                                 badgeIds = showcaseBadgeIds,
-                                compact = false
+                                compact = false,
+                                badgeProgress = badgeProgress
                             )
                         } else {
                             Text(
-                                text = "Grup ve soru sohbetlerinde arkadaşlarının sorularını çözerek rozet kazanıp en fazla 3 rozetini burada sergileyebilirsin.",
+                                text = "Grup ve soru sohbetlerinde soru paylaşarak veya çözerek 12 kademeli rozetten kazanıp en fazla 5 rozetini burada sergileyebilirsin.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -778,6 +796,7 @@ fun ProfileScreen(
         BadgeShowcaseSelectorSheet(
             unlockedBadgeIds = unlockedBadgeIds,
             initialSelectedIds = showcaseBadgeIds,
+            badgeProgress = badgeProgress,
             mentorPoints = mentorPoints,
             onDismiss = { showBadgeShowcaseSheet = false },
             onSaveShowcase = { selected ->
@@ -789,10 +808,11 @@ fun ProfileScreen(
                         uid = uid,
                         showcaseIds = saved,
                         unlockedIds = unlockedBadgeIds,
-                        mentorPoints = mentorPoints
+                        mentorPoints = mentorPoints,
+                        badgeProgress = badgeProgress
                     )
                 }
-                Toast.makeText(context, "3 rozet vitrinin kaydedildi!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "5 rozet vitrinin kaydedildi!", Toast.LENGTH_SHORT).show()
             }
         )
     }

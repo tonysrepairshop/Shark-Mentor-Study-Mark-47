@@ -1,6 +1,7 @@
 package com.example.sharkmentor.ui.screens.leaguechat
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,11 +18,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -32,8 +37,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -53,17 +60,20 @@ import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.ui.viewmodel.LeagueEntry
 
 /**
- * Member profile modal sheet displaying real name, weekly study stats, Mentor Points,
- * 3-badge showcase, and a request-approved DM action (no nudge button for global safety).
+ * Member profile modal sheet displaying real name, weekly study stats & bonus breakdown,
+ * Mentor Points, 5-badge showcase, request-approved DM action, and Block / Report moderation.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LeagueMemberProfileSheet(
     entry: LeagueEntry,
     existingDmStatus: String? = null, // null / "NONE" / "PENDING" / "ACCEPTED" / "REJECTED"
+    isBlocked: Boolean = false,
     onDismiss: () -> Unit,
     onSendDmRequest: (entry: LeagueEntry, note: String) -> Unit,
-    onOpenAcceptedDm: (entry: LeagueEntry) -> Unit = {}
+    onOpenAcceptedDm: (entry: LeagueEntry) -> Unit = {},
+    onBlockUser: (entry: LeagueEntry, block: Boolean) -> Unit = { _, _ -> },
+    onReportUser: (entry: LeagueEntry, reason: String, details: String) -> Unit = { _, _, _ -> }
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val realName = remember(entry.rawName, entry.displayName) {
@@ -72,7 +82,13 @@ fun LeagueMemberProfileSheet(
     }
     val hours = entry.weeklyFocusSeconds / 3600L
     val mins = (entry.weeklyFocusSeconds % 3600L) / 60L
+    val cappedBonusMins = entry.cappedBonusSeconds / 60L
+    val effHours = entry.effectiveLeagueSeconds / 3600L
+    val effMins = (entry.effectiveLeagueSeconds % 3600L) / 60L
+
     var noteInput by rememberSaveable(entry.studentId) { mutableStateOf("") }
+    var showBlockConfirmDialog by rememberSaveable(entry.studentId) { mutableStateOf(false) }
+    var showReportDialog by rememberSaveable(entry.studentId) { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -154,7 +170,7 @@ fun LeagueMemberProfileSheet(
                 }
             }
 
-            // Metrics row: Haftalık Çalışma, Mentor Puanı, Seri
+            // Metrics row: Haftalık Odak, Mentor Puanı, Seri
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -178,7 +194,23 @@ fun LeagueMemberProfileSheet(
                 )
             }
 
-            // 3 Rozet Vitrini
+            if (cappedBonusMins > 0L) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                ) {
+                    Text(
+                        text = "🏆 Lig Sıralama Süresi: ${effHours}s ${effMins}dk (${hours}s ${mins}dk odak + $cappedBonusMins dk bonus / haftalık maks. 150 dk)",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
+            // 5 Rozet Vitrini
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -190,7 +222,7 @@ fun LeagueMemberProfileSheet(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "3 ROZET VİTRİNİ",
+                        text = "5 ROZET VİTRİNİ",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp
@@ -205,7 +237,11 @@ fun LeagueMemberProfileSheet(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        SharkBadgeShowcaseRow(badgeIds = validBadges, compact = false)
+                        SharkBadgeShowcaseRow(
+                            badgeIds = validBadges,
+                            compact = false,
+                            badgeProgress = entry.badgeProgress
+                        )
                     }
                 }
             }
@@ -213,95 +249,183 @@ fun LeagueMemberProfileSheet(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
             if (!entry.isCurrentUser && entry.studentId.isNotBlank()) {
-                when (existingDmStatus) {
-                    "ACCEPTED" -> {
-                        Button(
-                            onClick = {
-                                onDismiss()
-                                onOpenAcceptedDm(entry)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                            shape = RoundedCornerShape(14.dp)
+                if (isBlocked) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Forum,
+                                imageVector = Icons.Default.Block,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                tint = MaterialTheme.colorScheme.onErrorContainer
                             )
-                            Spacer(Modifier.width(8.dp))
-                            Text("💬 Onaylı Direkt Sohbeti Aç", fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    "PENDING" -> {
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Email,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
-                                Text(
-                                    text = "Mesaj isteği beklemede. Karşı taraf onayladığında sohbet açılır.",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
-                            }
-                        }
-                    }
-
-                    else -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text(
-                                text = "İstek Onaylı Direkt Mesaj (DM)",
-                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurface
+                                text = "Bu öğrenciyi engelledin. Mesajları, soru paylaşımları ve davetleri gizleniyor.",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onErrorContainer
                             )
-                            OutlinedTextField(
-                                value = noteInput,
-                                onValueChange = { noteInput = it.take(140) },
-                                label = { Text("Kısa not (isteğe bağlı)") },
-                                placeholder = { Text("Örn: Merhaba, bir soru hakkında danışabilir miyim?") },
-                                singleLine = true,
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                        }
+                    }
+                } else {
+                    when (existingDmStatus) {
+                        "ACCEPTED" -> {
                             Button(
                                 onClick = {
-                                    val cleanNote = noteInput.trim().ifBlank {
-                                        "Soru & çalışma hakkında direkt mesaj isteği"
-                                    }
-                                    onSendDmRequest(entry, cleanNote)
                                     onDismiss()
+                                    onOpenAcceptedDm(entry)
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(48.dp),
-                                shape = RoundedCornerShape(14.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                    contentColor = MaterialTheme.colorScheme.onPrimary
-                                )
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    imageVector = Icons.Default.Forum,
                                     contentDescription = null,
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(Modifier.width(8.dp))
-                                Text("📩 Soru / Mesaj İsteği Gönder", fontWeight = FontWeight.Bold)
+                                Text("💬 Onaylı Direkt Sohbeti Aç", fontWeight = FontWeight.Bold)
                             }
                         }
+
+                        "PENDING" -> {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Email,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                    Text(
+                                        text = "Mesaj isteği beklemede. Karşı taraf onayladığında sohbet açılır.",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                            }
+                        }
+
+                        else -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    text = "İstek Onaylı Direkt Mesaj (DM)",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                OutlinedTextField(
+                                    value = noteInput,
+                                    onValueChange = { noteInput = it.take(140) },
+                                    label = { Text("Kısa not (isteğe bağlı)") },
+                                    placeholder = { Text("Örn: Merhaba, bir soru hakkında danışabilir miyim?") },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Button(
+                                    onClick = {
+                                        val cleanNote = noteInput.trim().ifBlank {
+                                            "Soru & çalışma hakkında direkt mesaj isteği"
+                                        }
+                                        onSendDmRequest(entry, cleanNote)
+                                        onDismiss()
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp),
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.Send,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("📩 Soru / Mesaj İsteği Gönder", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+
+                // Moderation actions: Block & Report
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            if (isBlocked) {
+                                onBlockUser(entry, false)
+                                onDismiss()
+                            } else {
+                                showBlockConfirmDialog = true
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(
+                            1.dp,
+                            if (isBlocked) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                            else MaterialTheme.colorScheme.error.copy(alpha = 0.55f)
+                        )
+                    ) {
+                        Icon(
+                            imageVector = if (isBlocked) Icons.Default.CheckCircle else Icons.Default.Block,
+                            contentDescription = null,
+                            tint = if (isBlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = if (isBlocked) "✅ Engeli Kaldır" else "🚫 Engelle",
+                            color = if (isBlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { showReportDialog = true },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Flag,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "🚩 Şikayet Et",
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             } else {
@@ -315,6 +439,138 @@ fun LeagueMemberProfileSheet(
             }
         }
     }
+
+    if (showBlockConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showBlockConfirmDialog = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = {
+                Text(
+                    text = "🚫 $realName Engellensin mi?",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Text(
+                    text = "Engellediğinde bu kullanıcının mesajları, paylaştığı sorular ve çalışma davetleri senin için gizlenir. İstediğin zaman engeli kaldırabilirsin.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBlockConfirmDialog = false
+                        onBlockUser(entry, true)
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Engelle", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBlockConfirmDialog = false }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    if (showReportDialog) {
+        ReportMemberDialog(
+            targetName = realName,
+            onDismiss = { showReportDialog = false },
+            onSubmit = { reason, details ->
+                showReportDialog = false
+                onReportUser(entry, reason, details)
+                onDismiss()
+            }
+        )
+    }
+}
+
+@Composable
+private fun ReportMemberDialog(
+    targetName: String,
+    onDismiss: () -> Unit,
+    onSubmit: (reason: String, details: String) -> Unit
+) {
+    val reasons = remember {
+        listOf(
+            "Hakaret veya saygısız üslup",
+            "Spam veya reklam içeriği",
+            "Ders dışı uygunsuz paylaşım",
+            "Sahte puan / çözüm suistimali"
+        )
+    }
+    var selectedReason by remember { mutableStateOf(reasons.first()) }
+    var details by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = {
+            Text(
+                text = "🚩 $targetName Hakkında Şikayet",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Lütfen şikayet nedenini seç:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                reasons.forEach { reason ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedReason = reason }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = (selectedReason == reason),
+                            onClick = { selectedReason = reason }
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = reason,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = details,
+                    onValueChange = { details = it.take(240) },
+                    label = { Text("Ek açıklama (isteğe bağlı)") },
+                    maxLines = 3,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSubmit(selectedReason, details) }
+            ) {
+                Text("Şikayeti Gönder", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("İptal")
+            }
+        }
+    )
 }
 
 @Composable

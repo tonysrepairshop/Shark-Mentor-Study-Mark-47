@@ -370,6 +370,7 @@ fun SharkLeagueScreen(
         BadgeShowcaseSelectorSheet(
             unlockedBadgeIds = uiState.myUnlockedBadges,
             initialSelectedIds = uiState.myShowcaseBadges,
+            badgeProgress = uiState.myBadgeProgress,
             mentorPoints = uiState.myMentorPoints,
             onDismiss = { showBadgeShowcaseSheet = false },
             onSaveShowcase = { selected ->
@@ -382,6 +383,7 @@ fun SharkLeagueScreen(
         LeagueMemberProfileSheet(
             entry = member,
             existingDmStatus = uiState.dmStatusByPeerId[member.studentId],
+            isBlocked = uiState.blockedUserIds.contains(member.studentId),
             onDismiss = { selectedMemberForProfile = null },
             onSendDmRequest = { entry, note -> viewModel.sendDmRequest(entry, note) },
             onOpenAcceptedDm = { entry ->
@@ -395,7 +397,9 @@ fun SharkLeagueScreen(
                     peerAvatarBase64 = entry.avatarBase64,
                     peerAvatarPresetId = entry.avatarPresetId
                 )
-            }
+            },
+            onBlockUser = { entry, block -> viewModel.blockUser(entry, block) },
+            onReportUser = { entry, reason, details -> viewModel.reportUser(entry, reason, details) }
         )
     }
 }
@@ -1086,7 +1090,9 @@ private fun MyTierCard(
 ) {
     val tier = entry.tier
     val accentColor = tier.themeAwareAccentColor()
-    val currentSecs = entry.weeklyFocusSeconds
+    val focusSecs = entry.weeklyFocusSeconds.coerceAtLeast(0L)
+    val currentSecs = entry.effectiveLeagueSeconds
+    val cappedBonusMins = entry.cappedBonusSeconds / 60L
     val nextThresh = tier.nextThreshold()
     val prevThresh = tier.previousThreshold()
     val progressFrac = if (nextThresh != null && nextThresh > prevThresh) {
@@ -1095,8 +1101,10 @@ private fun MyTierCard(
         1f
     }
 
-    val hours = currentSecs / 3600
-    val mins = (currentSecs % 3600) / 60
+    val hours = focusSecs / 3600
+    val mins = (focusSecs % 3600) / 60
+    val effHours = currentSecs / 3600
+    val effMins = (currentSecs % 3600) / 60
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1215,9 +1223,29 @@ private fun MyTierCard(
                 )
             }
 
+            Spacer(Modifier.height(8.dp))
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = if (cappedBonusMins > 0L) {
+                        "🏆 Lig Sıralama Süresi: ${effHours}s ${effMins}dk (Odak + $cappedBonusMins dk / maks. 150 dk bonus)"
+                    } else {
+                        "🏆 Lig Sıralama Formülü: Haftalık Odak + maks. 150 dk (9000 sn) soru bonusu"
+                    },
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            }
+
             Spacer(Modifier.height(12.dp))
 
-            // Mentor Puanı & 3 Rozet Vitrini Satırı
+            // Mentor Puanı & 5 Rozet Vitrini Satırı
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
@@ -1235,7 +1263,8 @@ private fun MyTierCard(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Star,
@@ -1246,7 +1275,9 @@ private fun MyTierCard(
                             Text(
                                 text = "${entry.mentorPoints} Mentor Puanı • $unlockedBadgeCount Rozet",
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         TextButton(
@@ -1255,7 +1286,7 @@ private fun MyTierCard(
                             modifier = Modifier.height(28.dp)
                         ) {
                             Text(
-                                text = "Vitrin Seç",
+                                text = "Vitrini Düzenle (Maks. 5)",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                             )
                         }
@@ -1264,11 +1295,12 @@ private fun MyTierCard(
                     if (entry.showcaseBadges.isNotEmpty()) {
                         SharkBadgeShowcaseRow(
                             badgeIds = entry.showcaseBadges,
-                            compact = true
+                            compact = true,
+                            badgeProgress = entry.badgeProgress
                         )
                     } else {
                         Text(
-                            text = "Soru çözerek veya grup kurarak rozet kazanıp 3 rozet vitrinini sergile!",
+                            text = "Soru paylaşarak veya onaylı çözüm üreterek rozet kazanıp 5 rozet vitrinini sergile!",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1368,6 +1400,9 @@ private fun LeaderboardRow(
     val accentColor = entry.tier.themeAwareAccentColor()
     val hours = entry.weeklyFocusSeconds / 3600
     val mins = (entry.weeklyFocusSeconds % 3600) / 60
+    val effHours = entry.effectiveLeagueSeconds / 3600
+    val effMins = (entry.effectiveLeagueSeconds % 3600) / 60
+    val bonusMins = entry.cappedBonusSeconds / 60L
     val nowMs = System.currentTimeMillis()
     val canNudge = entry.canBeNudged(nowMs)
 
@@ -1491,17 +1526,25 @@ private fun LeaderboardRow(
                     Spacer(Modifier.height(4.dp))
                     SharkBadgeShowcaseRow(
                         badgeIds = entry.showcaseBadges,
-                        compact = true
+                        compact = true,
+                        badgeProgress = entry.badgeProgress
                     )
                 }
             }
 
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = "${hours}s ${mins}dk",
+                    text = "${effHours}s ${effMins}dk",
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
                     color = accentColor
                 )
+                if (bonusMins > 0L) {
+                    Text(
+                        text = "Odak ${hours}s ${mins}dk + ${bonusMins}dk",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
                 if (showNudgeButton) {
                     Spacer(Modifier.height(4.dp))
