@@ -893,8 +893,8 @@ $MANDATORY_PERSONA_RULES
             AiProviderChoice.CLAUDE -> MultiProviderAiClient.getClaudeApiKey(context).isNotBlank()
             AiProviderChoice.OPENAI -> MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank()
             AiProviderChoice.GROK -> MultiProviderAiClient.getGrokApiKey(context).isNotBlank()
-            AiProviderChoice.DEEPSEEK -> DeepSeekClient.getDeepSeekApiKey(context).isNotBlank()
-            AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(context).isNotBlank()
+            AiProviderChoice.DEEPSEEK -> prefs?.getUserDeepSeekKey()?.isNotBlank() == true
+            AiProviderChoice.KIMI -> prefs?.getUserKimiKey()?.isNotBlank() == true
             AiProviderChoice.GEMINI -> (prefs?.getParsedUserGeminiKeys()?.isNotEmpty() == true)
             AiProviderChoice.AUTO -> true
         }

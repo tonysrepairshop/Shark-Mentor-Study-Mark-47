@@ -53,7 +53,7 @@ data class GeminiSdkResult(
  */
 object GeminiAiFactory {
     const val SOLE_GEMINI_MODEL = "gemini-3.6-flash"
-    const val CONTROLLED_404_FALLBACK_MODEL = SOLE_GEMINI_MODEL
+    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-2.5-flash"
     const val VISION_MODEL = SOLE_GEMINI_MODEL
     const val FAST_MODEL_3_6 = SOLE_GEMINI_MODEL
     const val FALLBACK_MODEL_3_6 = SOLE_GEMINI_MODEL

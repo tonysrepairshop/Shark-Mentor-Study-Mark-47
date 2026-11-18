@@ -15,22 +15,9 @@ const NUDGE_PAIR_COOLDOWN_MINUTES = 15;
 // ─── ANTI-SPAM & QUIET HOURS ─────────────────────────────────────────────
 
 /**
- * Checks if the current time in UTC+3 is within quiet hours (23:00 - 08:30).
- * If so, returns true. Otherwise false.
+ * Notifications are active 24/7; users manage Do Not Disturb at the OS level.
  */
 function isQuietHours(): boolean {
-  const now = new Date();
-  // Convert current time to UTC+3
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  const utcPlus3 = new Date(utc + (3600000 * 3));
-  
-  const hour = utcPlus3.getHours();
-  const minute = utcPlus3.getMinutes();
-  
-  // 23:00 to 23:59 or 00:00 to 08:30
-  if (hour >= 23 || hour < 8) return true;
-  if (hour === 8 && minute < 30) return true;
-  
   return false;
 }
 
@@ -75,10 +62,7 @@ async function resolveStudentFcmTokens(studentId: string): Promise<string[]> {
 }
 
 /**
- * Centralized dispatcher that enforces anti-spam and quiet hours.
- * Note: If quiet hours are active, this implementation currently DROPS the 
- * notification to enforce the strict requirement. A robust system could push 
- * to a queue collection to be processed at 09:00.
+ * Centralized dispatcher that enforces anti-spam cooldowns (24/7 active).
  */
 async function dispatchPushNotification(
   studentId: string, 
@@ -148,7 +132,7 @@ export const check48HourInactivity = functions.pubsub
     const batchPromises = inactiveStudents.docs.map(doc => 
       dispatchPushNotification(
         doc.id,
-        "🦈 Masan Seni Bekliyor",
+        "Masan Seni Bekliyor",
         "Hedefinden uzaklaşma. Masaya geç, kronometreni başlat ve ritmini koru.",
         "48H_INACTIVITY"
       )
@@ -203,7 +187,7 @@ export const onStudySessionCreated = functions.firestore
     if (consecutiveDays >= 3) {
       await dispatchPushNotification(
         studentId,
-        "🔥 Odak Canavarı Devrede!",
+        "Odak Serisi Devam Ediyor",
         "3 gün üst üste 4 saatin üzerinde odaklandın. Ritmi yakaladın, aynen devam et.",
         "STREAK_3DAY"
       );
@@ -235,18 +219,18 @@ export const onExamUpdated = functions.firestore
     if (isNew || coachNotesChanged) {
       await dispatchPushNotification(
         studentId,
-        "📊 Yeni Deneme Sonucu",
+        "Yeni Deneme Sonucu",
         "Koçun son TYT/AYT denemeni sisteme işledi. Analizleri incele.",
         "EXAM_UPLOADED"
       );
     }
   });
 
-// ─── SHARK LEAGUE NUDGE ("DÜRTME" / ÇALIŞMAYA DAVET ET) PUSH NOTIFICATION RULE ─
+// ─── SHARK LEAGUE NUDGE ("DÜRTME") PUSH NOTIFICATION RULE ────────────────────
 
 /**
  * Triggered when a student nudges a friend or study group member via `nudges/{nudgeId}`.
- * Dispatches IMMEDIATELY as a high-priority FCM notification (bypassing global rate limit and quiet hours)
+ * Dispatches IMMEDIATELY as a high-priority FCM notification (24/7)
  * with only a 15-minute per-pair (`fromUid -> toUid`) anti-spam cooldown.
  */
 export const onNudgeCreated = functions.firestore
@@ -291,8 +275,9 @@ export const onNudgeCreated = functions.firestore
       }
     }
 
-    const title = `🦈 ${fromName} seni çalışmaya çağırıyor!`;
-    const body = "Masaya geç ve odak seansını başlat! Arkadaşın çalışma grubunda seni bekliyor.";
+    const title = `${fromName} seni çalışmaya dürttü`;
+    const body = ((data.message as string | undefined)?.trim()) ||
+      "Masaya geç ve odak seansını başlat. Arkadaşın çalışma grubunda seni bekliyor.";
 
     const fcmTokens = await resolveStudentFcmTokens(toUid);
     let delivered = false;
@@ -303,7 +288,7 @@ export const onNudgeCreated = functions.firestore
           tokens: fcmTokens,
           notification: { title, body },
           data: {
-            type: "STUDY_INVITE_NUDGE",
+            type: "STUDY_INVITE",
             triggerType: "NUDGE",
             fromUid,
             fromName,
@@ -311,6 +296,8 @@ export const onNudgeCreated = functions.firestore
             senderName: fromName,
             toUid,
             groupId,
+            body,
+            message: body,
             nudgeId: context.params.nudgeId
           },
           android: {

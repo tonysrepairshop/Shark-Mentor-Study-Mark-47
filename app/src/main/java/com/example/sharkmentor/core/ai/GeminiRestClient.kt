@@ -513,17 +513,9 @@ object GeminiRestClient {
         cleanModel: String,
         base: GeminiGenerationConfig?
     ): GeminiGenerationConfig? {
-        if (base?.thinkingConfig != null) return base
-        val lower = cleanModel.lowercase()
-        val autoThinking = when {
-            lower.contains("2.5-pro") -> GeminiThinkingConfig(thinkingBudget = 128)
-            lower.contains("2.5-flash") -> GeminiThinkingConfig(thinkingBudget = 0)
-            lower.startsWith("gemini-3") || lower.startsWith("gemini-4") ||
-                lower.contains("3.6") || lower.contains("3.8") ->
-                GeminiThinkingConfig(thinkingLevel = "LOW")
-            else -> null
-        } ?: return base
-        return (base ?: GeminiGenerationConfig()).copy(thinkingConfig = autoThinking)
+        // Do not auto-inject thinkingConfig: Vertex AI Express v1 rejects thinkingLevel/thinkingBudget
+        // on publisher models with generic HTTP 400 "Request contains an invalid argument."
+        return base
     }
 
     internal fun isUnsupportedThinkingConfigError(httpCode: Int, rawBody: String): Boolean {
@@ -534,7 +526,9 @@ object GeminiRestClient {
             lower.contains("thinkingbudget") ||
             lower.contains("thinking_config") ||
             lower.contains("thinking_level") ||
-            lower.contains("thinking_budget")
+            lower.contains("thinking_budget") ||
+            lower.contains("invalid argument") ||
+            lower.contains("invalid_argument")
     }
 
     /**
@@ -848,7 +842,8 @@ object GeminiRestClient {
 
         val cleanModel = sanitizeModelName(modelName).ifBlank { MODEL_ID }
         val effectiveConfig = resolveLowLatencyConfig(cleanModel, generationConfig)
-        val hasAutoThinking = generationConfig?.thinkingConfig == null && effectiveConfig?.thinkingConfig != null
+        val hasThinking = effectiveConfig?.thinkingConfig != null
+        val isVertexKey = isVertexExpressKey(cleanKey)
         val primaryRequestJson = buildRequestBody(
             contents = contents,
             systemInstruction = systemInstruction,
@@ -859,7 +854,7 @@ object GeminiRestClient {
             buildRequestBody(
                 contents = contents,
                 systemInstruction = systemInstruction,
-                generationConfig = generationConfig,
+                generationConfig = effectiveConfig?.copy(thinkingConfig = null),
                 tools = tools
             )
         }
@@ -886,7 +881,7 @@ object GeminiRestClient {
                     okHttpClient.newCall(request).execute().use { response ->
                         val rawBody = response.body?.string().orEmpty()
                         if (!response.isSuccessful) {
-                            if (cfgAttempt == 0 && hasAutoThinking && isUnsupportedThinkingConfigError(response.code, rawBody)) {
+                            if (cfgAttempt == 0 && hasThinking && isUnsupportedThinkingConfigError(response.code, rawBody)) {
                                 safeLogW("Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
                                 stripThinkingAndRetry = true
                                 return@use
@@ -898,13 +893,15 @@ object GeminiRestClient {
                                 modelName = cleanModel,
                                 usedFallback = isFallbackAttempt
                             )
-                            lastError = apiEx
+                            if (!isFallbackAttempt || lastError == null || !isVertexKey) {
+                                lastError = apiEx
+                            }
                             val canFallback = idx < endpoints.lastIndex && response.code in ENDPOINT_FALLBACK_HTTP_CODES
                             if (canFallback) {
                                 safeLogW("Vertex Express HTTP ${response.code} on $cleanModel; falling back to AI Studio immediately.")
                                 return@use
                             }
-                            throw apiEx
+                            throw lastError ?: apiEx
                         }
 
                         return@withContext parseGenerateContentJson(
@@ -917,15 +914,17 @@ object GeminiRestClient {
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (apiEx: GeminiApiException) {
-                    if (cfgAttempt == 0 && hasAutoThinking && isUnsupportedThinkingConfigError(apiEx.httpCode, apiEx.rawBody)) {
+                    if (cfgAttempt == 0 && hasThinking && isUnsupportedThinkingConfigError(apiEx.httpCode, apiEx.rawBody)) {
                         safeLogW("Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
                         stripThinkingAndRetry = true
                         continue
                     }
-                    lastError = apiEx
+                    if (!isFallbackAttempt || lastError == null || !isVertexKey) {
+                        lastError = apiEx
+                    }
                     val canFallback = idx < endpoints.lastIndex && apiEx.httpCode in ENDPOINT_FALLBACK_HTTP_CODES
                     if (!canFallback) {
-                        throw apiEx
+                        throw lastError ?: apiEx
                     }
                     break
                 }
@@ -964,7 +963,8 @@ object GeminiRestClient {
 
         val cleanModel = sanitizeModelName(modelName).ifBlank { MODEL_ID }
         val effectiveConfig = resolveLowLatencyConfig(cleanModel, generationConfig)
-        val hasAutoThinking = generationConfig?.thinkingConfig == null && effectiveConfig?.thinkingConfig != null
+        val hasThinking = effectiveConfig?.thinkingConfig != null
+        val isVertexKey = isVertexExpressKey(cleanKey)
         val primaryRequestJson = buildRequestBody(
             contents = contents,
             systemInstruction = systemInstruction,
@@ -975,7 +975,7 @@ object GeminiRestClient {
             buildRequestBody(
                 contents = contents,
                 systemInstruction = systemInstruction,
-                generationConfig = generationConfig,
+                generationConfig = effectiveConfig?.copy(thinkingConfig = null),
                 tools = tools
             )
         }
@@ -1004,7 +1004,7 @@ object GeminiRestClient {
                     okHttpClient.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) {
                             val rawBody = response.body?.string().orEmpty()
-                            if (cfgAttempt == 0 && hasAutoThinking && isUnsupportedThinkingConfigError(response.code, rawBody)) {
+                            if (cfgAttempt == 0 && hasThinking && isUnsupportedThinkingConfigError(response.code, rawBody)) {
                                 safeLogW("SSE Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
                                 stripThinkingAndRetry = true
                                 return@use
@@ -1016,13 +1016,15 @@ object GeminiRestClient {
                                 modelName = cleanModel,
                                 usedFallback = isFallbackAttempt
                             )
-                            lastError = apiEx
+                            if (!isFallbackAttempt || lastError == null || !isVertexKey) {
+                                lastError = apiEx
+                            }
                             val canFallback = idx < endpoints.lastIndex && response.code in ENDPOINT_FALLBACK_HTTP_CODES
                             if (canFallback) {
                                 safeLogW("SSE Vertex Express HTTP ${response.code} on $cleanModel; falling back to AI Studio immediately.")
                                 return@use
                             }
-                            throw apiEx
+                            throw lastError ?: apiEx
                         }
 
                         val body = response.body ?: throw GeminiApiException(
@@ -1059,19 +1061,21 @@ object GeminiRestClient {
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (apiEx: GeminiApiException) {
-                    if (cfgAttempt == 0 && hasAutoThinking && emittedCharsCount == 0 &&
+                    if (cfgAttempt == 0 && hasThinking && emittedCharsCount == 0 &&
                         isUnsupportedThinkingConfigError(apiEx.httpCode, apiEx.rawBody)
                     ) {
                         safeLogW("SSE Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
                         stripThinkingAndRetry = true
                         continue
                     }
-                    lastError = apiEx
+                    if (!isFallbackAttempt || lastError == null || !isVertexKey) {
+                        lastError = apiEx
+                    }
                     val canFallback = idx < endpoints.lastIndex &&
                         emittedCharsCount == 0 &&
                         apiEx.httpCode in ENDPOINT_FALLBACK_HTTP_CODES
                     if (!canFallback) {
-                        throw apiEx
+                        throw lastError ?: apiEx
                     }
                     break
                 }
