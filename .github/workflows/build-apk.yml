@@ -186,15 +186,8 @@ jobs:
             ALIGNS=$(readelf -lW "$sofile" 2>/dev/null | awk '$1 == "LOAD" {print $NF}' | sort -u | tr '\n' ' ')
             REL_SO=${sofile#/tmp/so_check/}
             if echo "$ALIGNS" | grep -qE "0x1000([^0-9a-fA-F]|$)|0x800([^0-9a-fA-F]|$)|0x400([^0-9a-fA-F]|$)"; then
-              case "$REL_SO" in
-                lib/arm64-v8a/*|lib/x86_64/*)
-                  SO_REPORT="${SO_REPORT}FAIL_4KB_64BIT: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
-                  UNALIGNED_4KB=1
-                  ;;
-                *)
-                  SO_REPORT="${SO_REPORT}INFO_32BIT: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
-                  ;;
-              esac
+              SO_REPORT="${SO_REPORT}FAIL_4KB: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
+              UNALIGNED_4KB=1
             else
               SO_REPORT="${SO_REPORT}OK: ${REL_SO} -> LOAD align: ${ALIGNS}\n"
             fi

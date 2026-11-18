@@ -32,7 +32,7 @@ val kimiApiKey: String = cleanPropValue(localProperties.getProperty("KIMI_API_KE
 
 android {
     namespace = "com.example.sharkmentor"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.example.sharkmentor"
@@ -45,7 +45,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            abiFilters += listOf("arm64-v8a")
         }
 
         // Inject Gemini API keys into generated BuildConfig (deduplicated, with 3 built-in fallback keys)
@@ -139,13 +139,7 @@ android {
                 "META-INF/NOTICE.txt",
                 "META-INF/notice.txt",
                 "META-INF/ASL2.0",
-                "META-INF/*.kotlin_module",
-                "META-INF/*.version",
-                "META-INF/androidx/**",
-                "META-INF/proguard/*",
-                "META-INF/com/**",
-                "META-INF/native-image/**",
-                "META-INF/INDEX.LIST"
+                "META-INF/*.kotlin_module"
             )
         }
     }
