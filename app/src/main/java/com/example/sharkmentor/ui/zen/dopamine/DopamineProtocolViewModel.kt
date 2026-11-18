@@ -42,20 +42,20 @@ class DopamineProtocolViewModel : ViewModel() {
     val isAiThinking: StateFlow<Boolean> = _isAiThinking.asStateFlow()
 
     private val reflectionSystemPrompt = """
-        Sen SharkMentor Dopamin Orucu'nun AkÅŸam Refleksiyon KoÃ§usun.
-        KiÅŸilik ve Ton:
-        - Empatik, yargÄ±lamayan, sakin ve analitik.
-        - Nasihat veya beylik sÃ¶zler verme; kullanÄ±cÄ±ya gÃ¼n iÃ§inde iradesini zorlayan tetikleyicileri
-          (sosyal medya, erteleme, zihinsel sis) nazikÃ§e fark ettir.
-        - KullanÄ±cÄ±nÄ±n sÃ¶ylediklerini Ã¶zetle ve yarÄ±n iÃ§in tek bir odaklanma hedefi belirlemesini iste.
-        - Gizlilik Garantisi: Bu konuÅŸma tamamen ÅŸifreli ve gizlidir.
+        Sen SharkMentor Dopamin Orucu'nun Akşam Refleksiyon Koçusun.
+        Kişilik ve Ton:
+        - Empatik, yargılamayan, sakin ve analitik.
+        - Nasihat veya beylik sözler verme; kullanıcıya gün içinde iradesini zorlayan tetikleyicileri
+          (sosyal medya, erteleme, zihinsel sis) nazikçe fark ettir.
+        - Kullanıcının söylediklerini özetle ve yarın için tek bir odaklanma hedefi belirlemesini iste.
+        - Gizlilik Garantisi: Bu konuşma tamamen şifreli ve gizlidir.
     """.trimIndent()
 
     init {
         listenToProtocolState()
     }
 
-    // â”€â”€ Private helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Private helpers ─────────────────────────────────────────────────────────
 
     /** SHA-256 hex digest of [pin]. Plain PIN never reaches Firestore. */
     private fun hashPin(pin: String): String {
@@ -67,7 +67,7 @@ class DopamineProtocolViewModel : ViewModel() {
         firestore?.collection("students")?.document(uid)
             ?.collection("meta")?.document("dopamineProtocol")
 
-    // â”€â”€ Firestore listener â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Firestore listener ──────────────────────────────────────────────────────
 
     private fun listenToProtocolState() {
         val currentUser = runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
@@ -112,7 +112,7 @@ class DopamineProtocolViewModel : ViewModel() {
         }
     }
 
-    // â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Public API ──────────────────────────────────────────────────────────────
 
     /**
      * Activates the 30-day protocol with a SHA-256 hashed PIN.
@@ -151,14 +151,14 @@ class DopamineProtocolViewModel : ViewModel() {
      */
     fun requestUnlockWithPin(pin: String, onResult: (Boolean, String) -> Unit) {
         if (hashPin(pin) != _protocolState.value.hashedPin) {
-            onResult(false, "GeÃ§ersiz PIN kodu.")
+            onResult(false, "Geçersiz PIN kodu.")
             return
         }
         val uid = GoogleServicesHelper.getCurrentUser(auth)?.uid ?: return
         val docRef = protocolDocRef(uid) ?: return
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             docRef.update("unlockRequestedAt", System.currentTimeMillis()).await()
-            onResult(true, "Kilit aÃ§ma talebi alÄ±ndÄ±. 24 saatlik soÄŸuma sÃ¼resi baÅŸladÄ±.")
+            onResult(true, "Kilit açma talebi alındı. 24 saatlik soğuma süresi başladı.")
         }
     }
 
@@ -197,10 +197,10 @@ class DopamineProtocolViewModel : ViewModel() {
         }
     }
 
-    // â”€â”€ Evening reflection companion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Evening reflection companion ────────────────────────────────────────────
 
     /**
-     * Appends [userText] as a user message, then queries Gemini and appends the reply.
+     * Appends [userText] as a user message, then queries AI and appends the reply.
      * The full conversation history is sent as context for each turn.
      */
     fun sendReflectionMessage(userText: String) {
@@ -212,7 +212,7 @@ class DopamineProtocolViewModel : ViewModel() {
             _isAiThinking.value = true
             try {
                 val history = _reflectionMessages.value.joinToString("\n") { msg ->
-                    "${if (msg.sender == "user") "Ã–ÄŸrenci" else "KoÃ§"}: ${msg.text}"
+                    "${if (msg.sender == "user") "Öğrenci" else "Koç"}: ${msg.text}"
                 }
                 val appContext = runCatching { FirebaseApp.getInstance().applicationContext }.getOrNull()
                 val reply = GeminiAiFactory.generateContentWithFailover(
@@ -231,7 +231,7 @@ class DopamineProtocolViewModel : ViewModel() {
                 _reflectionMessages.value = _reflectionMessages.value +
                         ReflectionMessage(
                             sender = "ai",
-                            text = "BaÄŸlantÄ±da kÃ¼Ã§Ã¼k bir aksaklÄ±k oldu, ama buradayÄ±m. Devam edebilirsin."
+                            text = "Bağlantıda küçük bir aksaklık oldu, ama buradayım. Devam edebilirsin."
                         )
             } finally {
                 _isAiThinking.value = false

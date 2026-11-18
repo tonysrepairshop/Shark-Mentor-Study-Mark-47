@@ -86,7 +86,7 @@ class AiSolverRepository @Inject constructor(
             throw ce
         } catch (e: Exception) {
             Result.failure(
-                Exception("Çözüm üretilemedi. Sistem bağlantısını kontrol edin patron. Hata: ${e.localizedMessage}", e)
+                Exception("Çözüm üretilemedi. Lütfen ağ ve API bağlantısını kontrol edin. Hata: ${e.localizedMessage}", e)
             )
         } finally {
             if (ownsLoadedBitmap && actualImage != null && !actualImage.isRecycled) {

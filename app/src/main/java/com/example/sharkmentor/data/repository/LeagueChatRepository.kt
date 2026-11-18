@@ -503,7 +503,7 @@ class LeagueChatRepository @Inject constructor(
 
             val msgRef = roomMessagesRef(db, channelId).document()
             val displaySummary = buildString {
-                append("❓ [${attachment.subject} • ${attachment.topic}] soru paylaşıldı")
+                append("[${attachment.subject} • ${attachment.topic}] Soru paylaşıldı")
                 if (noteText.isNotBlank()) {
                     append(": ").append(noteText.trim())
                 }
@@ -670,7 +670,7 @@ class LeagueChatRepository @Inject constructor(
 
             val solutionMsgRef = roomMsgsCol.document(solutionId)
             val summaryText = buildString {
-                append("✏️ $resolvedSolverName çözüm gönderdi (${rewardTier.windowLabel})")
+                append("$resolvedSolverName çözüm gönderdi (${rewardTier.windowLabel})")
                 if (explanationText.isNotBlank()) {
                     append(": ").append(explanationText.trim())
                 }
@@ -736,7 +736,7 @@ class LeagueChatRepository @Inject constructor(
         }
     }
 
-    // ── 5. Verify Question Solution (Approve ✓ / Reject ✗) ───────────────────
+    // ── 5. Verify Question Solution (Approve / Reject) ───────────────────────
 
     suspend fun verifyQuestionSolution(
         channelId: String,
@@ -930,7 +930,7 @@ class LeagueChatRepository @Inject constructor(
 
                     finalizedSub
                 } else {
-                    // Rejected (✗): remove escrow points, increment rejectedSolverCounts[solverUid], reopen question
+                    // Rejected: remove escrow points, increment rejectedSolverCounts[solverUid], reopen question
                     val finalizedSub = currentSub.copy(
                         verifyStatus = SolutionVerifyStatus.REJECTED,
                         verifiedAtMillis = now,
@@ -1008,7 +1008,7 @@ class LeagueChatRepository @Inject constructor(
             val roomRef = roomDocRef(db, threadId)
             val existingSnap = roomRef.get().await()
             val now = System.currentTimeMillis()
-            val preview = initialMessage.trim().ifBlank { "👋 Merhaba! Çalışma mesajı isteği gönderdi." }
+            val preview = initialMessage.trim().ifBlank { "Çalışma mesajı isteği gönderildi." }
 
             val existingStatus = (existingSnap.getString("dmStatus") ?: existingSnap.getString("status"))
                 ?.let { runCatching { DmRequestStatus.valueOf(it) }.getOrNull() }

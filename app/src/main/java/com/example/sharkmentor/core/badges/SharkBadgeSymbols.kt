@@ -30,19 +30,19 @@ enum class BadgeCategory(
     val emoji: String,
     val accentColorHex: Long
 ) {
-    MENTORSHIP("Mentorluk & Odak", "Mentorluk", "🦈", 0xFF0284C7),
-    MATH_GEO("Matematik & Geometri", "Mat / Geo", "📐", 0xFF4F46E5),
-    PHYSICS("Fizik", "Fizik", "⚡", 0xFF0369A1),
-    CHEMISTRY("Kimya", "Kimya", "🧪", 0xFF7C3AED),
-    BIOLOGY("Biyoloji", "Biyoloji", "🧬", 0xFF15803D),
-    TURKISH_LIT("Türkçe & Edebiyat", "Türkçe / Edb", "📖", 0xFFBE185D),
-    SOCIAL_LANG("Sosyal & Yabancı Dil", "Sosyal / Dil", "🌍", 0xFF0F766E)
+    MENTORSHIP("Mentorluk & Odak", "Mentorluk", "", 0xFF0284C7),
+    MATH_GEO("Matematik & Geometri", "Mat / Geo", "", 0xFF4F46E5),
+    PHYSICS("Fizik", "Fizik", "", 0xFF0369A1),
+    CHEMISTRY("Kimya", "Kimya", "", 0xFF7C3AED),
+    BIOLOGY("Biyoloji", "Biyoloji", "", 0xFF15803D),
+    TURKISH_LIT("Türkçe & Edebiyat", "Türkçe / Edb", "", 0xFFBE185D),
+    SOCIAL_LANG("Sosyal & Yabancı Dil", "Sosyal / Dil", "", 0xFF0F766E)
 }
 
 /**
  * Renders a badge icon inside a vibrant gradient circle.
  * When [SharkBadgeDef.symbolText] is non-blank (e.g. "f'(x)", "∫", "lim", "△", "sin θ",
- * "p⃗", "Ω", "λ", "pH", "C₆H₆", "ATP", "🧬", "¶", "⚔", "🧭", "Φ"), renders a crisp
+ * "p⃗", "Ω", "λ", "pH", "C₆H₆", "ATP", "DNA", "¶", "1453", "36°N", "Φ"), renders a crisp
  * typographic/mathematical symbol; otherwise falls back to [SharkBadgeDef.icon].
  */
 @Composable

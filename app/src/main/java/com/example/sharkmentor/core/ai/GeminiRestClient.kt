@@ -10,6 +10,8 @@ import com.google.gson.JsonParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -88,6 +90,11 @@ class GeminiApiException(
             (message?.contains("high demand", ignoreCase = true) == true)
 }
 
+data class GeminiThinkingConfig(
+    val thinkingLevel: String? = null,
+    val thinkingBudget: Int? = null
+)
+
 /**
  * Generation configuration sent to Gemini REST endpoints.
  * Intentionally excludes `frequencyPenalty` and `presencePenalty` so Gemini 3.x /
@@ -98,7 +105,8 @@ data class GeminiGenerationConfig(
     val maxOutputTokens: Int? = null,
     val topP: Float? = null,
     val topK: Int? = null,
-    val responseMimeType: String? = null
+    val responseMimeType: String? = null,
+    val thinkingConfig: GeminiThinkingConfig? = null
 )
 
 data class GeminiSchemaProperty(
@@ -221,6 +229,11 @@ object GeminiRestClient {
 
     private val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+            .dispatcher(Dispatcher().apply {
+                maxRequests = 24
+                maxRequestsPerHost = 12
+            })
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
@@ -476,12 +489,52 @@ object GeminiRestClient {
             generationConfig.responseMimeType?.takeIf { it.isNotBlank() }?.let {
                 cfgObj.addProperty("responseMimeType", it)
             }
+            generationConfig.thinkingConfig?.let { tc ->
+                val tcObj = JsonObject()
+                tc.thinkingLevel?.takeIf { it.isNotBlank() }?.let {
+                    tcObj.addProperty("thinkingLevel", it)
+                }
+                tc.thinkingBudget?.let {
+                    tcObj.addProperty("thinkingBudget", it)
+                }
+                if (tcObj.size() > 0) {
+                    cfgObj.add("thinkingConfig", tcObj)
+                }
+            }
             if (cfgObj.size() > 0) {
                 root.add("generationConfig", cfgObj)
             }
         }
 
         return gson.toJson(root)
+    }
+
+    internal fun resolveLowLatencyConfig(
+        cleanModel: String,
+        base: GeminiGenerationConfig?
+    ): GeminiGenerationConfig? {
+        if (base?.thinkingConfig != null) return base
+        val lower = cleanModel.lowercase()
+        val autoThinking = when {
+            lower.contains("2.5-pro") -> GeminiThinkingConfig(thinkingBudget = 128)
+            lower.contains("2.5-flash") -> GeminiThinkingConfig(thinkingBudget = 0)
+            lower.startsWith("gemini-3") || lower.startsWith("gemini-4") ||
+                lower.contains("3.6") || lower.contains("3.8") ->
+                GeminiThinkingConfig(thinkingLevel = "LOW")
+            else -> null
+        } ?: return base
+        return (base ?: GeminiGenerationConfig()).copy(thinkingConfig = autoThinking)
+    }
+
+    internal fun isUnsupportedThinkingConfigError(httpCode: Int, rawBody: String): Boolean {
+        if (httpCode != 400) return false
+        val lower = rawBody.lowercase()
+        return lower.contains("thinkingconfig") ||
+            lower.contains("thinkinglevel") ||
+            lower.contains("thinkingbudget") ||
+            lower.contains("thinking_config") ||
+            lower.contains("thinking_level") ||
+            lower.contains("thinking_budget")
     }
 
     /**
@@ -793,13 +846,23 @@ object GeminiRestClient {
             )
         }
 
-        val cleanModel = sanitizeModelName(modelName)
-        val requestJson = buildRequestBody(
+        val cleanModel = sanitizeModelName(modelName).ifBlank { MODEL_ID }
+        val effectiveConfig = resolveLowLatencyConfig(cleanModel, generationConfig)
+        val hasAutoThinking = generationConfig?.thinkingConfig == null && effectiveConfig?.thinkingConfig != null
+        val primaryRequestJson = buildRequestBody(
             contents = contents,
             systemInstruction = systemInstruction,
-            generationConfig = generationConfig,
+            generationConfig = effectiveConfig,
             tools = tools
         )
+        val fallbackRequestJson by lazy {
+            buildRequestBody(
+                contents = contents,
+                systemInstruction = systemInstruction,
+                generationConfig = generationConfig,
+                tools = tools
+            )
+        }
 
         val endpoints = resolveEndpointsForKey(cleanKey)
         var lastError: GeminiApiException? = null
@@ -807,48 +870,64 @@ object GeminiRestClient {
         for ((idx, endpoint) in endpoints.withIndex()) {
             val isFallbackAttempt = idx > 0
             val url = appendApiKeyQueryParam(buildGenerateUrl(endpoint, cleanModel, streaming = false), cleanKey)
+            var stripThinkingAndRetry = false
 
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("x-goog-api-key", cleanKey)
-                .addHeader("Content-Type", "application/json")
-                .post(requestJson.toRequestBody(jsonMediaType))
-                .build()
+            for (cfgAttempt in 0..1) {
+                if (cfgAttempt == 1 && !stripThinkingAndRetry) break
+                val bodyJson = if (cfgAttempt == 0) primaryRequestJson else fallbackRequestJson
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader("x-goog-api-key", cleanKey)
+                    .addHeader("Content-Type", "application/json")
+                    .post(bodyJson.toRequestBody(jsonMediaType))
+                    .build()
 
-            try {
-                okHttpClient.newCall(request).execute().use { response ->
-                    val rawBody = response.body?.string().orEmpty()
-                    if (!response.isSuccessful) {
-                        val apiEx = buildHttpApiException(
-                            httpCode = response.code,
-                            rawBody = rawBody,
-                            endpoint = endpoint,
-                            modelName = cleanModel,
-                            usedFallback = isFallbackAttempt
-                        )
-                        lastError = apiEx
-                        val canFallback = idx < endpoints.lastIndex && response.code in ENDPOINT_FALLBACK_HTTP_CODES
-                        if (canFallback) {
-                            safeLogW("Vertex Express HTTP ${response.code} on $cleanModel; falling back to AI Studio immediately.")
-                            return@use
+                try {
+                    okHttpClient.newCall(request).execute().use { response ->
+                        val rawBody = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) {
+                            if (cfgAttempt == 0 && hasAutoThinking && isUnsupportedThinkingConfigError(response.code, rawBody)) {
+                                safeLogW("Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
+                                stripThinkingAndRetry = true
+                                return@use
+                            }
+                            val apiEx = buildHttpApiException(
+                                httpCode = response.code,
+                                rawBody = rawBody,
+                                endpoint = endpoint,
+                                modelName = cleanModel,
+                                usedFallback = isFallbackAttempt
+                            )
+                            lastError = apiEx
+                            val canFallback = idx < endpoints.lastIndex && response.code in ENDPOINT_FALLBACK_HTTP_CODES
+                            if (canFallback) {
+                                safeLogW("Vertex Express HTTP ${response.code} on $cleanModel; falling back to AI Studio immediately.")
+                                return@use
+                            }
+                            throw apiEx
                         }
+
+                        return@withContext parseGenerateContentJson(
+                            jsonString = rawBody,
+                            modelName = cleanModel,
+                            endpoint = endpoint,
+                            usedEndpointFallback = isFallbackAttempt
+                        )
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (apiEx: GeminiApiException) {
+                    if (cfgAttempt == 0 && hasAutoThinking && isUnsupportedThinkingConfigError(apiEx.httpCode, apiEx.rawBody)) {
+                        safeLogW("Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
+                        stripThinkingAndRetry = true
+                        continue
+                    }
+                    lastError = apiEx
+                    val canFallback = idx < endpoints.lastIndex && apiEx.httpCode in ENDPOINT_FALLBACK_HTTP_CODES
+                    if (!canFallback) {
                         throw apiEx
                     }
-
-                    return@withContext parseGenerateContentJson(
-                        jsonString = rawBody,
-                        modelName = cleanModel,
-                        endpoint = endpoint,
-                        usedEndpointFallback = isFallbackAttempt
-                    )
-                }
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (apiEx: GeminiApiException) {
-                lastError = apiEx
-                val canFallback = idx < endpoints.lastIndex && apiEx.httpCode in ENDPOINT_FALLBACK_HTTP_CODES
-                if (!canFallback) {
-                    throw apiEx
+                    break
                 }
             }
         }
@@ -884,12 +963,22 @@ object GeminiRestClient {
         }
 
         val cleanModel = sanitizeModelName(modelName).ifBlank { MODEL_ID }
-        val requestJson = buildRequestBody(
+        val effectiveConfig = resolveLowLatencyConfig(cleanModel, generationConfig)
+        val hasAutoThinking = generationConfig?.thinkingConfig == null && effectiveConfig?.thinkingConfig != null
+        val primaryRequestJson = buildRequestBody(
             contents = contents,
             systemInstruction = systemInstruction,
-            generationConfig = generationConfig,
+            generationConfig = effectiveConfig,
             tools = tools
         )
+        val fallbackRequestJson by lazy {
+            buildRequestBody(
+                contents = contents,
+                systemInstruction = systemInstruction,
+                generationConfig = generationConfig,
+                tools = tools
+            )
+        }
 
         val endpoints = resolveEndpointsForKey(cleanKey)
         var lastError: GeminiApiException? = null
@@ -897,76 +986,94 @@ object GeminiRestClient {
         for ((idx, endpoint) in endpoints.withIndex()) {
             val isFallbackAttempt = idx > 0
             val url = appendApiKeyQueryParam(buildGenerateUrl(endpoint, cleanModel, streaming = true), cleanKey)
+            var stripThinkingAndRetry = false
 
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("x-goog-api-key", cleanKey)
-                .addHeader("Content-Type", "application/json")
-                .addHeader("Accept", "text/event-stream")
-                .post(requestJson.toRequestBody(jsonMediaType))
-                .build()
+            for (cfgAttempt in 0..1) {
+                if (cfgAttempt == 1 && !stripThinkingAndRetry) break
+                val bodyJson = if (cfgAttempt == 0) primaryRequestJson else fallbackRequestJson
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader("x-goog-api-key", cleanKey)
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Accept", "text/event-stream")
+                    .post(bodyJson.toRequestBody(jsonMediaType))
+                    .build()
 
-            var emittedCharsCount = 0
-            try {
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        val rawBody = response.body?.string().orEmpty()
-                        val apiEx = buildHttpApiException(
+                var emittedCharsCount = 0
+                try {
+                    okHttpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            val rawBody = response.body?.string().orEmpty()
+                            if (cfgAttempt == 0 && hasAutoThinking && isUnsupportedThinkingConfigError(response.code, rawBody)) {
+                                safeLogW("SSE Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
+                                stripThinkingAndRetry = true
+                                return@use
+                            }
+                            val apiEx = buildHttpApiException(
+                                httpCode = response.code,
+                                rawBody = rawBody,
+                                endpoint = endpoint,
+                                modelName = cleanModel,
+                                usedFallback = isFallbackAttempt
+                            )
+                            lastError = apiEx
+                            val canFallback = idx < endpoints.lastIndex && response.code in ENDPOINT_FALLBACK_HTTP_CODES
+                            if (canFallback) {
+                                safeLogW("SSE Vertex Express HTTP ${response.code} on $cleanModel; falling back to AI Studio immediately.")
+                                return@use
+                            }
+                            throw apiEx
+                        }
+
+                        val body = response.body ?: throw GeminiApiException(
+                            message = "Boş akış yanıtı alındı ($cleanModel).",
                             httpCode = response.code,
-                            rawBody = rawBody,
                             endpoint = endpoint,
                             modelName = cleanModel,
-                            usedFallback = isFallbackAttempt
+                            usedEndpointFallback = isFallbackAttempt
                         )
-                        lastError = apiEx
-                        val canFallback = idx < endpoints.lastIndex && response.code in ENDPOINT_FALLBACK_HTTP_CODES
-                        if (canFallback) {
-                            safeLogW("SSE Vertex Express HTTP ${response.code} on $cleanModel; falling back to AI Studio immediately.")
-                            return@use
-                        }
-                        throw apiEx
-                    }
 
-                    val body = response.body ?: throw GeminiApiException(
-                        message = "Boş akış yanıtı alındı ($cleanModel).",
-                        httpCode = response.code,
-                        endpoint = endpoint,
-                        modelName = cleanModel,
-                        usedEndpointFallback = isFallbackAttempt
-                    )
+                        val accumulator = SseStreamAccumulator(
+                            modelName = cleanModel,
+                            endpoint = endpoint,
+                            usedEndpointFallback = isFallbackAttempt,
+                            onPartialText = { partial ->
+                                emittedCharsCount = partial.length
+                                onPartialText(partial)
+                            },
+                            onThinkingText = onThinkingText
+                        )
 
-                    val accumulator = SseStreamAccumulator(
-                        modelName = cleanModel,
-                        endpoint = endpoint,
-                        usedEndpointFallback = isFallbackAttempt,
-                        onPartialText = { partial ->
-                            emittedCharsCount = partial.length
-                            onPartialText(partial)
-                        },
-                        onThinkingText = onThinkingText
-                    )
-
-                    body.byteStream().use { inputStream ->
-                        BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
-                            var line: String? = reader.readLine()
-                            while (line != null) {
-                                if (!accumulator.processLine(line)) break
-                                line = reader.readLine()
+                        body.byteStream().use { inputStream ->
+                            BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
+                                var line: String? = reader.readLine()
+                                while (line != null) {
+                                    if (!accumulator.processLine(line)) break
+                                    line = reader.readLine()
+                                }
                             }
                         }
-                    }
 
-                    return@withContext accumulator.finish()
-                }
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (apiEx: GeminiApiException) {
-                lastError = apiEx
-                val canFallback = idx < endpoints.lastIndex &&
-                    emittedCharsCount == 0 &&
-                    apiEx.httpCode in ENDPOINT_FALLBACK_HTTP_CODES
-                if (!canFallback) {
-                    throw apiEx
+                        return@withContext accumulator.finish()
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (apiEx: GeminiApiException) {
+                    if (cfgAttempt == 0 && hasAutoThinking && emittedCharsCount == 0 &&
+                        isUnsupportedThinkingConfigError(apiEx.httpCode, apiEx.rawBody)
+                    ) {
+                        safeLogW("SSE Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
+                        stripThinkingAndRetry = true
+                        continue
+                    }
+                    lastError = apiEx
+                    val canFallback = idx < endpoints.lastIndex &&
+                        emittedCharsCount == 0 &&
+                        apiEx.httpCode in ENDPOINT_FALLBACK_HTTP_CODES
+                    if (!canFallback) {
+                        throw apiEx
+                    }
+                    break
                 }
             }
         }

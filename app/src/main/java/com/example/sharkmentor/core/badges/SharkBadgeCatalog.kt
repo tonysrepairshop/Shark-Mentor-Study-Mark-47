@@ -46,14 +46,14 @@ enum class BadgeTier(
     val level: Int,
     val label: String,
     val shortLabel: String,
-    val emoji: String,
+    val emoji: String = "",
     val primaryColorHex: Long,
     val secondaryColorHex: Long
 ) {
-    BRONZE(1, "Bronz", "Bronz", "🥉", 0xFFB45309, 0xFFF59E0B),
-    SILVER(2, "Gümüş", "Gümüş", "🥈", 0xFF64748B, 0xFFCBD5E1),
-    GOLD(3, "Altın", "Altın", "🥇", 0xFFD97706, 0xFFFDE047),
-    MEGALODON(4, "Megalodon", "Megalodon", "🦈", 0xFF0284C7, 0xFF38BDF8)
+    BRONZE(1, "Bronz", "Bronz", "", 0xFFB45309, 0xFFF59E0B),
+    SILVER(2, "Gümüş", "Gümüş", "", 0xFF64748B, 0xFFCBD5E1),
+    GOLD(3, "Altın", "Altın", "", 0xFFD97706, 0xFFFDE047),
+    MEGALODON(4, "Megalodon", "Megalodon", "", 0xFF0284C7, 0xFF38BDF8)
 }
 
 @Immutable
@@ -241,7 +241,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_ILK_SORU,
             title = "İlk Soru",
-            emoji = "📸",
+            emoji = "",
             description = "Hata Bankası'ndan sohbete soru paylaşarak dayanışmayı başlatan öncü.",
             conditionLabel = "Sohbette 5 soru paylaş (5 / 25 / 75 / 200)",
             thresholds = MENTOR_CORE_THRESHOLDS,
@@ -254,7 +254,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_ILK_COZUM,
             title = "İlk Çözüm",
-            emoji = "✅",
+            emoji = "",
             description = "Arkadaşının sorusuna onaylı çözüm üreterek Mentor katkısını veren yıldız.",
             conditionLabel = "5 onaylı çözüm üret (5 / 25 / 75 / 200)",
             thresholds = MENTOR_CORE_THRESHOLDS,
@@ -267,7 +267,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_HIZLI_KOPEKBALIGI,
             title = "Hızlı Köpekbalığı",
-            emoji = "⚡",
+            emoji = "",
             description = "Soru paylaşıldıktan sonraki ilk 0–15 dakika içinde onaylı çözüm gönderen hız uzmanı.",
             conditionLabel = "0–15 dk altın pencerede 5 onaylı çözüm (5 / 25 / 75 / 200)",
             thresholds = MENTOR_CORE_THRESHOLDS,
@@ -275,12 +275,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFFFBBF24,
             icon = Icons.Default.Bolt,
             category = BadgeCategory.MENTORSHIP,
-            symbolText = "⚡"
+            symbolText = ""
         ),
         SharkBadgeDef(
             id = BADGE_CAN_SIMIDI,
             title = "Can Simidi",
-            emoji = "🛟",
+            emoji = "",
             description = "60–105 dk aralığında süre bitmeden imdada yetişip soruyu kurtaran güvenilir mentor.",
             conditionLabel = "60–105 dk arası 5 onaylı çözüm (5 / 25 / 75 / 200)",
             thresholds = MENTOR_CORE_THRESHOLDS,
@@ -288,12 +288,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF2DD4BF,
             icon = Icons.Default.Speed,
             category = BadgeCategory.MENTORSHIP,
-            symbolText = "🛟"
+            symbolText = ""
         ),
         SharkBadgeDef(
             id = BADGE_SORU_CANAVARI,
             title = "Soru Canavarı",
-            emoji = "🔥",
+            emoji = "",
             description = "Çalışma gruplarında yüksek tempoda soru paylaşımı ve tartışma başlatan dinamo.",
             conditionLabel = "Toplam 10 soru paylaşımı yap (10 / 40 / 120 / 300)",
             thresholds = MENTOR_MASTER_THRESHOLDS,
@@ -301,12 +301,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFFF87171,
             icon = Icons.Default.LocalFireDepartment,
             category = BadgeCategory.MENTORSHIP,
-            symbolText = "🔥"
+            symbolText = ""
         ),
         SharkBadgeDef(
             id = BADGE_SORU_AVCISI,
             title = "Soru Avcısı",
-            emoji = "🎯",
+            emoji = "",
             description = "Zorlu soru akışında düzinelerce onaylı çözümle topluluğun bel kemiği olan usta.",
             conditionLabel = "Toplam 10 onaylı çözüm üret (10 / 40 / 120 / 300)",
             thresholds = MENTOR_MASTER_THRESHOLDS,
@@ -314,12 +314,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFFFDE047,
             icon = Icons.Default.TrackChanges,
             category = BadgeCategory.MENTORSHIP,
-            symbolText = "🎯"
+            symbolText = ""
         ),
         SharkBadgeDef(
             id = BADGE_HATA_BANKASI_USTASI,
             title = "Hata Bankası Ustası",
-            emoji = "🧠",
+            emoji = "",
             description = "FSRS aralıklı tekrar algoritmasıyla yanlışlarını kalıcı öğrenmeye dönüştüren stratejist.",
             conditionLabel = "Hata Bankası'nda 10 soru doğru çöz (10 / 40 / 120 / 300)",
             thresholds = MENTOR_MASTER_THRESHOLDS,
@@ -332,7 +332,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_SERI_MENTOR,
             title = "Seri Mentor",
-            emoji = "♾️",
+            emoji = "",
             description = "Farklı ders ve konularda kesintisiz doğru çözümlerle akranlarına rehberlik eden mentor.",
             conditionLabel = "Farklı konularda 5 onaylı çözüm üret (5 / 25 / 75 / 200)",
             thresholds = MENTOR_CORE_THRESHOLDS,
@@ -345,7 +345,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_ODAK_SAMPIYONU,
             title = "Odak Şampiyonu",
-            emoji = "⏱️",
+            emoji = "",
             description = "Derin odaklanma ve soru çözümü disiplinini birleştirerek ligde zirveye oynayan şampiyon.",
             conditionLabel = "Odak ve soru tekrarında 10 hedef tamamla (10 / 40 / 120 / 300)",
             thresholds = MENTOR_MASTER_THRESHOLDS,
@@ -353,12 +353,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF34D399,
             icon = Icons.Default.Speed,
             category = BadgeCategory.MENTORSHIP,
-            symbolText = "⏱"
+            symbolText = ""
         ),
         SharkBadgeDef(
             id = BADGE_MEGALODON_ONDERI,
             title = "Megalodon Önderi",
-            emoji = "🦈",
+            emoji = "",
             description = "Hem soru paylaşımı hem çözüm onaylarıyla Shark Lig'in zirvesine hükmeden efsane.",
             conditionLabel = "Toplulukta 10 mentor etkileşimi tamamla (10 / 40 / 120 / 300)",
             thresholds = MENTOR_MASTER_THRESHOLDS,
@@ -366,7 +366,7 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF38BDF8,
             icon = Icons.Default.AutoGraph,
             category = BadgeCategory.MENTORSHIP,
-            symbolText = "🦈"
+            symbolText = ""
         ),
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -375,7 +375,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MATEMATIK_CANAVARI,
             title = "Matematik Canavarı",
-            emoji = "📐",
+            emoji = "",
             description = "Matematik ve Geometri sorularında adım adım kusursuz çözümler üreten analitik zihin.",
             conditionLabel = "Matematik & Geometri'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -388,7 +388,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_TUREV,
             title = "Türev Ustası",
-            emoji = "📈",
+            emoji = "",
             description = "Teğet eğimi, ekstremum noktaları ve maksimum-minimum problemlerini ustalıkla çözen analist.",
             conditionLabel = "Türev'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -401,7 +401,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_INTEGRAL,
             title = "İntegral Ustası",
-            emoji = "∫",
+            emoji = "",
             description = "Belirsiz/belirli integral, değişken değiştirme ve eğri altı alan sorularının hakimi.",
             conditionLabel = "İntegral'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -414,7 +414,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_LIMIT,
             title = "Limit & Süreklilik",
-            emoji = "♾️",
+            emoji = "",
             description = "Sağdan-soldan yaklaşım, belirsizlikler ve parçalı fonksiyon sürekliliğinde keskin göz.",
             conditionLabel = "Limit ve Süreklilik'ten 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -427,7 +427,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_TRIGONOMETRI,
             title = "Trigonometri",
-            emoji = "📐",
+            emoji = "",
             description = "Birim çember, toplam-fark, yarım açı ve trigonometrik denklemleri ezbere değil mantıkla çözen.",
             conditionLabel = "Trigonometri'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -440,7 +440,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_FONKSIYONLAR,
             title = "Fonksiyonlar",
-            emoji = "ƒ",
+            emoji = "",
             description = "Bileşke, ters fonksiyon, grafik dönüşümleri ve tanım-görüntü kümesi sorularının uzmanı.",
             conditionLabel = "Fonksiyonlar'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -453,7 +453,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_POLINOM_IKINCI_DERECE,
             title = "Polinom & Parabol",
-            emoji = "➰",
+            emoji = "",
             description = "Polinom bölmesi, çarpanlara ayırma, 2. derece denklemler, eşitsizlikler ve parabol tepe noktası.",
             conditionLabel = "Polinom, Parabol ve 2. Derece'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -466,7 +466,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_LOGARITMA_DIZILER,
             title = "Logaritma & Diziler",
-            emoji = "📊",
+            emoji = "",
             description = "Üstel-logaritmik denklemler ile aritmetik ve geometrik dizilerde kuralları anında kuran.",
             conditionLabel = "Logaritma ve Diziler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -479,7 +479,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_OLASILIK_PKB,
             title = "PKB & Olasılık",
-            emoji = "🎲",
+            emoji = "",
             description = "Permütasyon, kombinasyon, binom açılımı ve koşullu olasılık senaryolarını hatasız sayan.",
             conditionLabel = "PKB ve Olasılık'tan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -492,7 +492,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_PROBLEMLER,
             title = "Problemler Fatihi",
-            emoji = "🧩",
+            emoji = "",
             description = "Sayı-kesir, hız-hareket, yüzde-kar-zarar ve işçi-havuz problemlerinde denklem kurma ustası.",
             conditionLabel = "Problemler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -505,7 +505,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_MAT_SAYILAR_CEBIR,
             title = "Sayılar & Cebir",
-            emoji = "🔢",
+            emoji = "",
             description = "Temel kavramlar, bölünebilme, EBOB-EKOK, üslü-köklü sayılar, mutlak değer ve kümeler.",
             conditionLabel = "Sayılar, Kümeler ve Cebir'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -518,7 +518,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_GEO_UCGENLER,
             title = "Üçgenler Uzmanı",
-            emoji = "🔺",
+            emoji = "",
             description = "Dik üçgen, benzerlik, açıortay-kenarortay ve üçgende alan sorularında yardımcı doğruyu gören.",
             conditionLabel = "Üçgenler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -531,7 +531,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_GEO_COKGEN_DORTGEN,
             title = "Çokgen & Dörtgenler",
-            emoji = "🔷",
+            emoji = "",
             description = "Çokgenler, yamuk, paralelkenar, eşkenar dörtgen, dikdörtgen ve kare özelliklerinin hakimi.",
             conditionLabel = "Çokgenler ve Dörtgenler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -544,7 +544,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_GEO_CEMBER_DAIRE,
             title = "Çember & Daire",
-            emoji = "⭕",
+            emoji = "",
             description = "Çemberde açı, kiriş-teğet uzunluk bağıntıları ve dairede dilim alanı sorularının ustası.",
             conditionLabel = "Çember ve Daire'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -557,7 +557,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_GEO_ANALITIK,
             title = "Analitik Geometri",
-            emoji = "📍",
+            emoji = "",
             description = "Nokta ve doğru analitiği, eğim, dönüşüm geometrisi ve çemberin analitik incelenmesi.",
             conditionLabel = "Analitik Geometri'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -570,7 +570,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_GEO_KATI_CISIMLER,
             title = "Katı Cisimler",
-            emoji = "🧊",
+            emoji = "",
             description = "Prizma, piramit, silindir, koni ve kürede yüzey alanı ile hacim hesaplarının mimarı.",
             conditionLabel = "Katı Cisimler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -587,7 +587,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZIK_KASIFI,
             title = "Fizik Kâşifi",
-            emoji = "⚛️",
+            emoji = "",
             description = "Kuvvet, hareket, elektrik ve modern fizik sorularını doğa yasalarıyla çözen kâşif.",
             conditionLabel = "Fizik'ten 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -600,7 +600,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_KUVVET_HAREKET,
             title = "Kuvvet & Hareket",
-            emoji = "🚀",
+            emoji = "",
             description = "Vektörler, bağıl hareket, Newton'un hareket yasaları ve bir/iki boyutta sabit ivmeli hareket.",
             conditionLabel = "Kuvvet ve Hareket'ten 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -613,7 +613,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_IS_ENERJI_MOMENTUM,
             title = "Enerji & Momentum",
-            emoji = "💥",
+            emoji = "",
             description = "İş-güç-enerji korunumu, itme, çizgisel momentum ve esnek/esnek olmayan çarpışmalar.",
             conditionLabel = "Enerji ve Momentum'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -626,7 +626,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_ELEKTRIK_MANYETIZMA,
             title = "Elektrik & Manyetizma",
-            emoji = "⚡",
+            emoji = "",
             description = "Elektrostatik, elektrik alan/potansiyel, sığaçlar, devreler, manyetik alan, indüksiyon ve alternatif akım.",
             conditionLabel = "Elektrik ve Manyetizma'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -639,7 +639,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_DALGALAR_OPTIK,
             title = "Dalgalar & Optik",
-            emoji = "🌈",
+            emoji = "",
             description = "Yay-su-ses dalgaları, kırınım-girişim, Doppler olayı, aydınlanma, ayna, mercek ve kırılma.",
             conditionLabel = "Dalgalar ve Optik'ten 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -652,7 +652,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_CEMBERSEL_HARMONIK,
             title = "Çembersel & Harmonik",
-            emoji = "🌀",
+            emoji = "",
             description = "Düzgün çembersel hareket, açısal momentum, kütle çekim, Kepler ve basit harmonik hareket.",
             conditionLabel = "Çembersel ve Harmonik Hareket'ten 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -665,8 +665,8 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_MODERN_FIZIK,
             title = "Modern Fizik & Kuantum",
-            emoji = "🌌",
-            description = "Özelrelativite, kara cisim ışıması, fotoelektrik olay, Compton saçılması ve de Broglie dalga boyu.",
+            emoji = "",
+            description = "Özel görelilik, kara cisim ışıması, fotoelektrik olay, Compton saçılması ve de Broglie dalga boyu.",
             conditionLabel = "Modern Fizik'ten 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
             primaryColorHex = 0xFF3730A3,
@@ -678,7 +678,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_MADDE_ISI_BASINC,
             title = "Madde, Isı & Basınç",
-            emoji = "🌡️",
+            emoji = "",
             description = "Madde ve özellikleri, ısı-sıcaklık-genleşme, katı-sıvı-gaz basıncı ve Arşimet kaldırma kuvveti.",
             conditionLabel = "Madde, Isı ve Basınç'tan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -691,7 +691,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_TORK_DENGE,
             title = "Tork & Denge",
-            emoji = "⚖️",
+            emoji = "",
             description = "Kesişen kuvvetlerin dengesi, tork, ağırlık/kütle merkezi ve basit makinelerde kuvvet kazancı.",
             conditionLabel = "Tork, Denge ve Basit Makineler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -704,7 +704,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_FIZ_ATOM_RADYOAKTIVITE,
             title = "Atom & Radyoaktivite",
-            emoji = "☢️",
+            emoji = "",
             description = "Bohr atom modeli, enerji seviyeleri, standart model, radyoaktif bozunma ve nükleer fizik.",
             conditionLabel = "Atom Fiziği ve Radyoaktivite'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -721,7 +721,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_KIMYA_SIMYACISI,
             title = "Kimya Simyacısı",
-            emoji = "⚗️",
+            emoji = "",
             description = "Tepkime, mol, denge ve organik kimya sorularında denklemleri kusursuz kuran simyacı.",
             conditionLabel = "Kimya'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -729,12 +729,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFFA78BFA,
             icon = Icons.Default.Science,
             category = BadgeCategory.CHEMISTRY,
-            symbolText = "⚗"
+            symbolText = ""
         ),
         SharkBadgeDef(
             id = BADGE_KIM_ATOM_PERIYODIK,
             title = "Atom & Periyodik Sistem",
-            emoji = "⚛️",
+            emoji = "",
             description = "Modern atom teorisi, kuantum sayıları, elektron dizilimi ve periyodik özellik değişimleri.",
             conditionLabel = "Atom ve Periyodik Sistem'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -747,7 +747,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_KIM_MOL_HESAPLAMA,
             title = "Mol & Kimyasal Hesap",
-            emoji = "🧪",
+            emoji = "",
             description = "Kimyanın temel kanunları, Avogadro sayısı, mol kavramı ve tepkime verim/artan madde hesapları.",
             conditionLabel = "Mol ve Kimyasal Hesaplamalar'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -760,7 +760,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_KIM_GAZLAR_COZELTILER,
             title = "Gazlar & Çözeltiler",
-            emoji = "💨",
+            emoji = "",
             description = "İdeal gaz denklemi, kinetik teori, kısmi basınç, sıvı çözeltiler, molarite ve koligatif özellikler.",
             conditionLabel = "Gazlar ve Sıvı Çözeltiler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -773,7 +773,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_KIM_ENERJI_HIZ,
             title = "Tepkime Enerjisi & Hız",
-            emoji = "🔥",
+            emoji = "",
             description = "Oluşum entalpisi, Hess yasası, bağ enerjileri, çarpışma teorisi ve tepkime hız bağıntısı.",
             conditionLabel = "Tepkimelerde Enerji ve Hız'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -786,7 +786,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_KIM_DENGE_ASIT_BAZ,
             title = "Denge & Asit-Baz",
-            emoji = "🧫",
+            emoji = "",
             description = "Kimyasal denge, Le Chatelier ilkesi, sulu çözelti dengeleri, pH/pOH, titrasyon ve Kçç.",
             conditionLabel = "Kimyasal Denge ve Asit-Baz'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -799,7 +799,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_KIM_ELEKTROKIMYA,
             title = "Elektrokimya & Redoks",
-            emoji = "🔋",
+            emoji = "",
             description = "İndirgenme-yükseltgenme tepkimeleri, aktiflik, galvanik piller, Nernst denklemi ve elektroliz.",
             conditionLabel = "Elektrokimya'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -812,7 +812,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_KIM_ORGANIK,
             title = "Organik Kimya",
-            emoji = "⬡",
+            emoji = "",
             description = "Hibritleşme, hidrokarbonlar, fonksiyonel gruplar, izomerlik ve aromatik bileşikler.",
             conditionLabel = "Organik Kimya'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -825,7 +825,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_KIM_ETKILESIMLER_MADDE,
             title = "Türler Arası Etkileşim",
-            emoji = "💧",
+            emoji = "",
             description = "Güçlü/zayıf etkileşimler, Lewis yapısı, maddenin halleri, karışımlar ve ayırma yöntemleri.",
             conditionLabel = "Türler Arası Etkileşim ve Madde'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -842,7 +842,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_BIYOLOJI_UZMANI,
             title = "Biyoloji Uzmanı",
-            emoji = "🧬",
+            emoji = "",
             description = "Sistemler, genetik ve ekoloji sorularında mekanizmaları berrak biçimde açıklayan uzman.",
             conditionLabel = "Biyoloji'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -850,12 +850,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF4ADE80,
             icon = Icons.Default.Psychology,
             category = BadgeCategory.BIOLOGY,
-            symbolText = "🧬"
+            symbolText = "DNA"
         ),
         SharkBadgeDef(
             id = BADGE_BIYO_HUCRE_CANLILAR,
             title = "Hücre & Canlılar",
-            emoji = "🔬",
+            emoji = "",
             description = "Yaşam bilimi biyoloji, organik bileşikler, hücre zarı madde geçişleri, organeller ve sınıflandırma.",
             conditionLabel = "Hücre ve Sınıflandırma'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -863,12 +863,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF4ADE80,
             icon = Icons.Default.Psychology,
             category = BadgeCategory.BIOLOGY,
-            symbolText = "🔬"
+            symbolText = "µm"
         ),
         SharkBadgeDef(
             id = BADGE_BIYO_INSAN_FIZYOLOJISI,
             title = "İnsan Fizyolojisi",
-            emoji = "🫀",
+            emoji = "",
             description = "Sindirim, dolaşım, bağışıklık, solunum, üriner/boşaltım ve destek-hareket sistemleri.",
             conditionLabel = "İnsan Fizyolojisi ve Sistemler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -876,12 +876,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF86EFAC,
             icon = Icons.Default.Psychology,
             category = BadgeCategory.BIOLOGY,
-            symbolText = "♥"
+            symbolText = "O₂"
         ),
         SharkBadgeDef(
             id = BADGE_BIYO_ENDOKRIN_SINIR,
             title = "Sinir & Endokrin",
-            emoji = "🧠",
+            emoji = "",
             description = "Sinir sistemi, impuls iletimi, beyin bölümleri, endokrin hormonlar ve duyu organları.",
             conditionLabel = "Sinir, Endokrin ve Duyu'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -889,12 +889,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF34D399,
             icon = Icons.Default.Psychology,
             category = BadgeCategory.BIOLOGY,
-            symbolText = "🧠"
+            symbolText = "mV"
         ),
         SharkBadgeDef(
             id = BADGE_BIYO_KALITIM_EVRIM,
             title = "Kalıtım & Bölünme",
-            emoji = "🧬",
+            emoji = "",
             description = "Mitoz-mayoz hücre bölünmeleri, Mendel genetiği, eşeye bağlı kalıtım ve soyağacı analizi.",
             conditionLabel = "Kalıtım ve Hücre Bölünmeleri'nden 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -907,7 +907,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_BIYO_GENDEN_PROTEINE,
             title = "Genden Proteine",
-            emoji = "🧪",
+            emoji = "",
             description = "DNA replikasyonu, genetik şifre, transkripsiyon, translasyon, protein sentezi ve biyoteknoloji.",
             conditionLabel = "Genden Proteine'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -920,20 +920,20 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_BIYO_BITKI,
             title = "Bitki Biyolojisi",
-            emoji = "🌿",
+            emoji = "",
             description = "Bitkisel dokular, hormonlar, tropizma-nasti hareketleri, madde taşınması ve bitkilerde üreme.",
-            conditionLabel = "Bitki Biyolojisi'nden 15 soru doğru çöz (15 / 45 / 100 / 220)",
+            conditionLabel = "Bitki Biyolojisi'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
             primaryColorHex = 0xFF16A34A,
             secondaryColorHex = 0xFF4ADE80,
             icon = Icons.Default.Psychology,
             category = BadgeCategory.BIOLOGY,
-            symbolText = "🌿"
+            symbolText = "CO₂"
         ),
         SharkBadgeDef(
             id = BADGE_BIYO_EKOLOJI_ENERJI,
             title = "Fotosentez & Ekoloji",
-            emoji = "☀️",
+            emoji = "",
             description = "ATP, fotosentez, kemosentez, hücresel solunum, komünite-popülasyon ve ekosistem ekolojisi.",
             conditionLabel = "Fotosentez, Solunum ve Ekoloji'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -950,7 +950,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_PARAGRAF_AVCISI,
             title = "Paragraf Avcısı",
-            emoji = "📖",
+            emoji = "",
             description = "Türkçe, Paragraf ve Edebiyat sorularında ana düşünceyi saniyeler içinde yakalayan okuyucu.",
             conditionLabel = "Türkçe ve Edebiyat'tan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -963,7 +963,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_TUR_PARAGRAF_ANLAM,
             title = "Paragraf Analisti",
-            emoji = "📑",
+            emoji = "",
             description = "Paragrafta ana düşünce, yardımcı düşünce, yapı, akış bozan cümle ve anlatım biçimleri.",
             conditionLabel = "Paragrafta Anlam'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -976,7 +976,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_TUR_SOZCUK_CUMLE,
             title = "Sözcük & Cümle Anlam",
-            emoji = "💬",
+            emoji = "",
             description = "Çok anlamlılık, deyimler, cümlede anlam ilişkileri, kesin yargı ve cümle yorumu.",
             conditionLabel = "Sözcük ve Cümlede Anlam'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -989,7 +989,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_TUR_DIL_BILGISI,
             title = "Dil Bilgisi Uzmanı",
-            emoji = "🔤",
+            emoji = "",
             description = "Ses bilgisi, sözcükte yapı/ekler, sözcük türleri, fiilimsiler, cümlenin ögeleri ve anlatım bozukluğu.",
             conditionLabel = "Dil Bilgisi'nden 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1002,7 +1002,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_TUR_YAZIM_NOKTALAMA,
             title = "Yazım & Noktalama",
-            emoji = "✍️",
+            emoji = "",
             description = "TDK yazım kuralları, birleşik/ayrı yazımlar, büyük harfler ve noktalama işaretleri.",
             conditionLabel = "Yazım ve Noktalama'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1015,7 +1015,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_EDB_SIIR_DONEMLER,
             title = "Şiir & Dönemler",
-            emoji = "🪶",
+            emoji = "",
             description = "Şiir bilgisi, söz sanatları, İslamiyet öncesi, Halk, Divan, Tanzimat, Servetifünun ve Milli Edebiyat.",
             conditionLabel = "Şiir ve Edebi Dönemler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1023,12 +1023,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFFF472B6,
             icon = Icons.Default.School,
             category = BadgeCategory.TURKISH_LIT,
-            symbolText = "✒"
+            symbolText = "ABAB"
         ),
         SharkBadgeDef(
             id = BADGE_EDB_ROMAN_HIKAYE,
             title = "Roman & Hikâye",
-            emoji = "📜",
+            emoji = "",
             description = "Cumhuriyet dönemi roman-hikâye, yazar-eser eşleştirmeleri, tiyatro ve edebi akımlar.",
             conditionLabel = "Roman, Hikâye ve Eserler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1036,7 +1036,7 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFFFDA4AF,
             icon = Icons.Default.School,
             category = BadgeCategory.TURKISH_LIT,
-            symbolText = "📜"
+            symbolText = "§"
         ),
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -1045,7 +1045,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_SOSYAL_BILGE,
             title = "Sosyal Bilge",
-            emoji = "🌍",
+            emoji = "",
             description = "Tarih, Coğrafya, Felsefe, Din Kültürü ve Yabancı Dil sorularını derinlemesine yorumlayan bilge.",
             conditionLabel = "Sosyal Bilimler'den 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1053,12 +1053,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF5EEAD4,
             icon = Icons.Default.Public,
             category = BadgeCategory.SOCIAL_LANG,
-            symbolText = "🧭"
+            symbolText = ""
         ),
         SharkBadgeDef(
             id = BADGE_TAR_OSMANLI_ISLAM,
             title = "Türk & Osmanlı Tarihi",
-            emoji = "⚔️",
+            emoji = "",
             description = "İlk ve Orta Çağlarda Türk Dünyası, Türk-İslam devletleri ve Osmanlı kuruluş-yükseliş-dağılma.",
             conditionLabel = "Türk ve Osmanlı Tarihi'nden 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1066,12 +1066,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFFFBBF24,
             icon = Icons.Default.Public,
             category = BadgeCategory.SOCIAL_LANG,
-            symbolText = "⚔"
+            symbolText = "1453"
         ),
         SharkBadgeDef(
             id = BADGE_TAR_INKILAP_CAGDAS,
             title = "İnkılap & Çağdaş Tarih",
-            emoji = "🏛️",
+            emoji = "",
             description = "Milli Mücadele, Atatürk ilke ve inkılapları, Türk dış politikası ve 20. yüzyıl dünya tarihi.",
             conditionLabel = "İnkılap ve Çağdaş Tarih'ten 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1079,12 +1079,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFFFDE047,
             icon = Icons.Default.Public,
             category = BadgeCategory.SOCIAL_LANG,
-            symbolText = "🏛"
+            symbolText = "1923"
         ),
         SharkBadgeDef(
             id = BADGE_COG_DOGAL_TURKIYE,
             title = "Coğrafya & Harita",
-            emoji = "🗺️",
+            emoji = "",
             description = "İklim, iç-dış kuvvetler, nüfus-yerleşme, ekonomik faaliyetler, bölge ve Türkiye coğrafyası.",
             conditionLabel = "Coğrafya'dan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1092,12 +1092,12 @@ object SharkBadgeCatalog {
             secondaryColorHex = 0xFF2DD4BF,
             icon = Icons.Default.Public,
             category = BadgeCategory.SOCIAL_LANG,
-            symbolText = "🗺"
+            symbolText = "36°N"
         ),
         SharkBadgeDef(
             id = BADGE_FEL_FELSEFE_MANTIK,
             title = "Felsefe & Mantık",
-            emoji = "🦉",
+            emoji = "",
             description = "Bilgi-varlık-ahlak felsefesi, psikoloji, sosyoloji ve klasik/sembolik mantık çıkarımları.",
             conditionLabel = "Felsefe Grubu ve Mantık'tan 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1110,7 +1110,7 @@ object SharkBadgeCatalog {
         SharkBadgeDef(
             id = BADGE_DIL_INGILIZCE_DIN,
             title = "YDT İngilizce & Din",
-            emoji = "🌐",
+            emoji = "",
             description = "Yabancı Dil (İngilizce kelime, gramer, okuma) ve Din Kültürü kavram/yorum soruları.",
             conditionLabel = "Yabancı Dil ve Din Kültürü'nden 15 soru doğru çöz (15 / 45 / 100 / 220)",
             thresholds = DEFAULT_TOPIC_THRESHOLDS,
@@ -1783,7 +1783,7 @@ fun SharkBadgeChip(
                 tier = activeTier
             )
             Text(
-                text = if (compact) "${activeTier.emoji} ${badge.title}" else "${activeTier.emoji} ${badge.title} (${activeTier.shortLabel})",
+                text = if (compact) badge.title else "${badge.title} (${activeTier.shortLabel})",
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = FontWeight.Bold,
                     fontSize = if (compact) 10.sp else 11.sp

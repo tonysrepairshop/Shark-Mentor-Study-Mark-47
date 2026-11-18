@@ -564,7 +564,7 @@ private fun AiPlannerConsole(
                     )
                 } else {
                     Text(
-                        text = "⚡ Yapay Zeka ile Haftalık Planı Oluştur",
+                        text = "Yapay Zeka ile Haftalık Planı Oluştur",
                         color = Color.Black,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
@@ -574,7 +574,7 @@ private fun AiPlannerConsole(
 
             if (uiState is PlannerUiState.Error) {
                 Text(
-                    text = "⚠️ ${(uiState as PlannerUiState.Error).message}",
+                    text = (uiState as PlannerUiState.Error).message,
                     color = MaterialTheme.colorScheme.error,
                     fontSize = 12.sp
                 )

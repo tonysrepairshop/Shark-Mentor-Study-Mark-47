@@ -2,6 +2,7 @@ package com.example.sharkmentor.ui.components
 
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
@@ -10,34 +11,56 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
+private val BOLD_TOKEN_REGEX = Regex("\\*\\*(.*?)\\*\\*")
+private val HEADING_REGEX = Regex("^(#{1,3})\\s+(.*)")
+private val STEP_HEADER_REGEX = Regex(
+    "^((?:(?:\\d+\\.\\s*Adım|Adım\\s*\\d+|Çözüm|Sonuç|Cevap|Formül|Verilenler|İstenen|Not|Dikkat|Önemli)[:.]?))\\s*(.*)",
+    RegexOption.IGNORE_CASE
+)
+private val OPTION_PREFIX_REGEX = Regex("^([A-E][\\).])\\s*(.*)")
+private val INLINE_CODE_REGEX = Regex("`(.*?)`")
+private val ACTION_BLOCK_REGEX = Regex("#ACTION:(\\{.*?\\})#", RegexOption.DOT_MATCHES_ALL)
+private val ACTION_TAG_REGEX = Regex("#ACTION:[A-Z_]+")
+private val LATEX_FRAC_REGEX = Regex("\\\\frac\\{([^}]+)\\}\\{([^}]+)\\}")
+private val LATEX_SQRT_N_REGEX = Regex("\\\\sqrt\\[([^]]+)\\]\\{([^}]+)\\}")
+private val LATEX_SQRT_REGEX = Regex("\\\\sqrt\\{([^}]+)\\}")
+private val LATEX_TEXT_CMD_REGEX = Regex("\\\\(?:text|mathrm|mathit)\\{([^}]+)\\}")
+private val LATEX_MATHBF_REGEX = Regex("\\\\mathbf\\{([^}]+)\\}")
+private val LATEX_FUNC_REGEX = Regex("\\\\(sin|cos|tan|cot|sec|csc|log|ln|lim|det)")
+private val LATEX_BRACED_SUP_REGEX = Regex("\\^\\{([^}]+)\\}")
+private val LATEX_BRACED_SUB_REGEX = Regex("_\\{([^}]+)\\}")
+private val LATEX_SPACE_CMD_REGEX = Regex("\\\\([ ,;:])")
+private val LONE_DOLLAR_REGEX = Regex("(?<!\\\\)\\$")
+
 @Composable
 fun RichChatText(
     text: String,
     modifier: Modifier = Modifier,
     textColor: Color = Color(0xFFF8FAFC) // High-contrast Slate-50 for crystal clarity
 ) {
-    val cleanedText = cleanAndFormatMath(text)
-    val annotated = buildAnnotatedString {
-        var cursor = 0
-        // Match **bold** tokens
-        val boldRegex = Regex("\\*\\*(.*?)\\*\\*")
-        val matches = boldRegex.findAll(cleanedText)
+    val annotated = remember(text, textColor) {
+        val cleanedText = cleanAndFormatMath(text)
+        buildAnnotatedString {
+            var cursor = 0
+            // Match **bold** tokens
+            val matches = BOLD_TOKEN_REGEX.findAll(cleanedText)
 
-        for (match in matches) {
-            val range = match.range
-            if (range.first > cursor) {
-                val segment = cleanedText.substring(cursor, range.first)
+            for (match in matches) {
+                val range = match.range
+                if (range.first > cursor) {
+                    val segment = cleanedText.substring(cursor, range.first)
+                    appendFormattedSegment(segment, textColor)
+                }
+                // Bold text with high contrast
+                pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color.White))
+                append(match.groupValues[1])
+                pop()
+                cursor = range.last + 1
+            }
+            if (cursor < cleanedText.length) {
+                val segment = cleanedText.substring(cursor)
                 appendFormattedSegment(segment, textColor)
             }
-            // Bold text with high contrast
-            pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color.White))
-            append(match.groupValues[1])
-            pop()
-            cursor = range.last + 1
-        }
-        if (cursor < cleanedText.length) {
-            val segment = cleanedText.substring(cursor)
-            appendFormattedSegment(segment, textColor)
         }
     }
 
@@ -68,15 +91,14 @@ private fun androidx.compose.ui.text.AnnotatedString.Builder.appendFormattedSegm
         val trimmed = line.trim()
 
         // 1. Markdown Headings: ### Header or ## Header
-        val headingMatch = Regex("^(#{1,3})\\s+(.*)").find(trimmed)
+        val headingMatch = HEADING_REGEX.find(trimmed)
         if (headingMatch != null) {
             pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp))
             append(headingMatch.groupValues[2])
             pop()
         } else {
             // 2. Step Headers: 1. Adım, Adım 1, Çözüm, Sonuç, Formül, etc.
-            val stepRegex = Regex("^((?:(?:\\d+\\.\\s*Adım|Adım\\s*\\d+|Çözüm|Sonuç|Cevap|Formül|Verilenler|İstenen|Not|Dikkat|Önemli)[:.]?))\\s*(.*)", RegexOption.IGNORE_CASE)
-            val stepMatch = stepRegex.find(trimmed)
+            val stepMatch = STEP_HEADER_REGEX.find(trimmed)
 
             if (stepMatch != null) {
                 val stepLabel = stepMatch.groupValues[1]
@@ -97,8 +119,7 @@ private fun androidx.compose.ui.text.AnnotatedString.Builder.appendFormattedSegm
                 }
             } else {
                 // 3. Multiple Choice Options: A), B), C), D), E) or A., B., etc.
-                val optionRegex = Regex("^([A-E][\\).])\\s*(.*)")
-                val optionMatch = optionRegex.find(trimmed)
+                val optionMatch = OPTION_PREFIX_REGEX.find(trimmed)
 
                 if (optionMatch != null) {
                     pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))) // Sky-400
@@ -137,8 +158,7 @@ private fun androidx.compose.ui.text.AnnotatedString.Builder.appendInlineStyledT
     }
 
     var cursor = 0
-    val codeRegex = Regex("`(.*?)`")
-    val matches = codeRegex.findAll(text)
+    val matches = INLINE_CODE_REGEX.findAll(text)
 
     for (match in matches) {
         val range = match.range
@@ -170,8 +190,8 @@ private fun androidx.compose.ui.text.AnnotatedString.Builder.appendInlineStyledT
 fun cleanAndFormatMath(raw: String): String {
     var s = raw
         // Remove Action blocks
-        .replace(Regex("#ACTION:(\\{.*?\\})#", RegexOption.DOT_MATCHES_ALL), "")
-        .replace(Regex("#ACTION:[A-Z_]+"), "")
+        .replace(ACTION_BLOCK_REGEX, "")
+        .replace(ACTION_TAG_REGEX, "")
         // Remove LaTeX delimiters
         .replace("\\[", "")
         .replace("\\]", "")
@@ -180,24 +200,24 @@ fun cleanAndFormatMath(raw: String): String {
         .replace("$$", "")
 
     // Fractions: \frac{a}{b} -> (a / b)
-    s = s.replace(Regex("\\\\frac\\{([^}]+)\\}\\{([^}]+)\\}")) {
+    s = s.replace(LATEX_FRAC_REGEX) {
         "(${it.groupValues[1]} / ${it.groupValues[2]})"
     }
 
     // Roots: \sqrt[n]{x} -> ⁿ√(x) & \sqrt{x} -> √(x)
-    s = s.replace(Regex("\\\\sqrt\\[([^]]+)\\]\\{([^}]+)\\}")) {
+    s = s.replace(LATEX_SQRT_N_REGEX) {
         "${toSuperScript(it.groupValues[1])}√(${it.groupValues[2]})"
     }
-    s = s.replace(Regex("\\\\sqrt\\{([^}]+)\\}")) {
+    s = s.replace(LATEX_SQRT_REGEX) {
         "√(${it.groupValues[1]})"
     }
 
     // Text formatting inside LaTeX
-    s = s.replace(Regex("\\\\(?:text|mathrm|mathit)\\{([^}]+)\\}")) { it.groupValues[1] }
-    s = s.replace(Regex("\\\\mathbf\\{([^}]+)\\}")) { "**${it.groupValues[1]}**" }
+    s = s.replace(LATEX_TEXT_CMD_REGEX) { it.groupValues[1] }
+    s = s.replace(LATEX_MATHBF_REGEX) { "**${it.groupValues[1]}**" }
 
     // Standard Math Functions
-    s = s.replace(Regex("\\\\(sin|cos|tan|cot|sec|csc|log|ln|lim|det)")) { it.groupValues[1] }
+    s = s.replace(LATEX_FUNC_REGEX) { it.groupValues[1] }
 
     // Parentheses & brackets
     s = s.replace("\\left(", "(").replace("\\right)", ")")
@@ -250,7 +270,7 @@ fun cleanAndFormatMath(raw: String): String {
         .replace("\\epsilon", "ε")
 
     // Braced Superscripts: ^{12}, ^{x}, etc.
-    s = s.replace(Regex("\\^\\{([^}]+)\\}")) {
+    s = s.replace(LATEX_BRACED_SUP_REGEX) {
         toSuperScript(it.groupValues[1])
     }
 
@@ -273,7 +293,7 @@ fun cleanAndFormatMath(raw: String): String {
         .replace("^-1", "⁻¹")
 
     // Braced Subscripts: _{12}, _{max}, etc.
-    s = s.replace(Regex("_\\{([^}]+)\\}")) {
+    s = s.replace(LATEX_BRACED_SUB_REGEX) {
         toSubScript(it.groupValues[1])
     }
 
@@ -293,9 +313,9 @@ fun cleanAndFormatMath(raw: String): String {
         .replace("_n", "ₙ")
 
     // Clean remaining lone backslashes used as LaTeX spaces (e.g. \ )
-    s = s.replace(Regex("\\\\([ ,;:])"), "$1")
+    s = s.replace(LATEX_SPACE_CMD_REGEX, "$1")
     // Remove isolated single $ signs
-    s = s.replace(Regex("(?<!\\\\)\\$"), "")
+    s = s.replace(LONE_DOLLAR_REGEX, "")
 
     return s.trim()
 }

@@ -518,7 +518,7 @@ fun QuestionImageAnnotator(
                             .background(controller.penColor)
                     )
                     Text(
-                        text = "✏️ Kalem Araçları",
+                        text = "Kalem Araçları",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = onSurfaceColor

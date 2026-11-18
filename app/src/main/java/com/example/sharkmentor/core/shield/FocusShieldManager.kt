@@ -1,4 +1,4 @@
-﻿package com.example.sharkmentor.core.shield
+package com.example.sharkmentor.core.shield
 
 import android.app.Activity
 import android.content.Context
@@ -90,7 +90,7 @@ fun FocusShieldHandler(
                     // App returned
                     if (gracePeriodJob?.isActive == true) {
                         gracePeriodJob?.cancel()
-                        Toast.makeText(context, "Kalkana geri döndün! Odak devam ediyor.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Odak kalkanına geri dönüldü. Seans devam ediyor.", Toast.LENGTH_SHORT).show()
                     }
                 }
                 else -> {}
@@ -133,7 +133,7 @@ fun FocusShieldHandler(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Odak İhlali!",
+                        text = "Odak İhlali",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.error

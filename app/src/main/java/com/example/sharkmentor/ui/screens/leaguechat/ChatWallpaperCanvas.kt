@@ -75,37 +75,37 @@ enum class ChatWallpaperStyle(
         id = "sade_tema",
         title = "Sade Tema",
         subtitle = "Temiz ve odak dostu zemin",
-        emoji = "🎨"
+        emoji = ""
     ),
     KARELI_MATEMATIK(
         id = "kareli_matematik",
         title = "Kareli Matematik Defteri",
         subtitle = "Klasik kareli defter çizgileri",
-        emoji = "📐"
+        emoji = ""
     ),
     NOKTALI_PLANLAYICI(
         id = "noktali_planlayici",
         title = "Noktalı Planlayıcı",
         subtitle = "Minimal nokta matrisi",
-        emoji = "📓"
+        emoji = ""
     ),
     GEOMETRIK_CIZIMLER(
         id = "geometrik_cizimler",
         title = "Geometrik Çizimler",
         subtitle = "Üçgen, altıgen ve açı desenleri",
-        emoji = "🔷"
+        emoji = ""
     ),
     OKYANUS_DALGALARI(
         id = "okyanus_dalgalari",
         title = "Okyanus Dalgaları",
         subtitle = "Shark derin deniz dalgaları",
-        emoji = "🌊"
+        emoji = ""
     ),
     FORMUL_SEMBOLLER(
         id = "formul_semboller",
         title = "Formül & Semboller",
         subtitle = "∑ ∫ π Δ √ ∞ bilimsel semboller",
-        emoji = "∫"
+        emoji = ""
     );
 
     companion object {
@@ -599,7 +599,7 @@ fun ChatWallpaperPickerSheet(
                                     }
                                 }
                                 Text(
-                                    text = "${style.emoji} ${style.title}",
+                                    text = style.title,
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,

@@ -66,6 +66,21 @@ interface GoalsDao {
     @Query("DELETE FROM resources WHERE id = :id")
     suspend fun deleteResourcePermanently(id: Long)
 
+    @Query("SELECT * FROM resources WHERE cloudId = :cloudId LIMIT 1")
+    suspend fun getResourceByCloudId(cloudId: String): ResourceEntity?
+
+    @Query("SELECT * FROM resources WHERE id = :id LIMIT 1")
+    suspend fun getResourceById(id: Long): ResourceEntity?
+
+    @Query("SELECT * FROM topic_goals WHERE id = :id LIMIT 1")
+    suspend fun getTopicById(id: Long): TopicGoalEntity?
+
+    @Query("SELECT * FROM topic_goals WHERE isSynced = 0 AND isDeleted = 1")
+    suspend fun getPendingDeletedTopics(): List<TopicGoalEntity>
+
+    @Query("DELETE FROM topic_goals WHERE id = :id")
+    suspend fun deleteTopicPermanently(id: Long)
+
     @Query("DELETE FROM resources WHERE id NOT IN (:remoteIds) AND isSynced = 1")
     suspend fun deleteOrphanedResources(remoteIds: List<Long>)
 

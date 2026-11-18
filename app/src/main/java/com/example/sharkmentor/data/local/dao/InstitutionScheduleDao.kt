@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.example.sharkmentor.data.local.entity.InstitutionScheduleEntity
 
 @Dao
@@ -29,9 +30,42 @@ interface InstitutionScheduleDao {
     @Query("SELECT * FROM institution_schedule ORDER BY dayOfWeek ASC, startTime ASC")
     fun getAllSchedulesFlow(): kotlinx.coroutines.flow.Flow<List<InstitutionScheduleEntity>>
 
-    /** Wipe-and-replace on every full Firestore sync. */
+    /** Wipe-and-replace on explicit full reset. */
     @Query("DELETE FROM institution_schedule")
     suspend fun deleteAll()
+
+    @Query("DELETE FROM institution_schedule WHERE id LIKE 'CUSTOM_SCHED_%'")
+    suspend fun deleteCustomSchedules()
+
+    @Transaction
+    suspend fun replaceCustomSchedules(schedules: List<InstitutionScheduleEntity>) {
+        deleteCustomSchedules()
+        if (schedules.isNotEmpty()) {
+            insertAll(schedules)
+        }
+    }
+
+    @Query("DELETE FROM institution_schedule WHERE isSynced = 1 AND id NOT LIKE 'CUSTOM_SCHED_%'")
+    suspend fun deleteSyncedRemoteNonCustomSchedules()
+
+    @Transaction
+    suspend fun replaceSyncedRemoteNonCustomSchedules(schedules: List<InstitutionScheduleEntity>) {
+        deleteSyncedRemoteNonCustomSchedules()
+        if (schedules.isNotEmpty()) {
+            insertAll(schedules)
+        }
+    }
+
+    @Query("DELETE FROM institution_schedule WHERE id NOT LIKE 'CUSTOM_SCHED_%'")
+    suspend fun deleteNonCustomSchedules()
+
+    @Transaction
+    suspend fun replaceIndividualSchedules(schedules: List<InstitutionScheduleEntity>) {
+        deleteNonCustomSchedules()
+        if (schedules.isNotEmpty()) {
+            insertAll(schedules)
+        }
+    }
 
     @Query("DELETE FROM institution_schedule WHERE id = :id")
     suspend fun deleteById(id: String)

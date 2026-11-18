@@ -273,7 +273,7 @@ fun GoalsScreen(
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "${folder.topics.size} Konu • Ort. Seviye: ⭐ ${String.format("%.1f", folder.averageLevel)}/5",
+                                            text = "${folder.topics.size} Konu • Ort. Seviye: ${String.format("%.1f", folder.averageLevel)}/5",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )

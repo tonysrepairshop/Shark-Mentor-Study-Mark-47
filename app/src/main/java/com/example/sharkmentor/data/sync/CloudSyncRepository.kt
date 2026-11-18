@@ -13,10 +13,14 @@ import com.example.sharkmentor.data.local.entity.FocusSessionEntity
 import com.example.sharkmentor.data.local.entity.ResourceEntity
 import com.example.sharkmentor.data.local.entity.TargetEntity
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -79,16 +83,23 @@ class CloudSyncRepository(private val context: Context) {
             return 0
         }
 
-        var syncedCount = 0
-        syncedCount += syncPendingQuestions(uid)
-        syncedCount += syncPendingSessions(uid)
-        syncedCount += syncPendingTargets(uid)
-        syncedCount += syncPendingResources(uid)
-        syncedCount += syncPendingTopics(uid)
-        syncedCount += syncPendingInstitutionSchedules(uid)
-        syncedCount += syncPendingSimulations(uid)
-        syncedCount += syncPendingTrainingFolders(uid)
-        syncedCount += syncPendingTrainingQuestions(uid)
+        val syncedCount = coroutineScope {
+            val counts = listOf(
+                async { syncPendingQuestions(uid) },
+                async { syncPendingSessions(uid) },
+                async { syncPendingTargets(uid) },
+                async { syncPendingResources(uid) },
+                async { syncPendingTopics(uid) },
+                async { syncPendingInstitutionSchedules(uid) },
+                async { syncPendingSimulations(uid) },
+                async {
+                    val folders = syncPendingTrainingFolders(uid)
+                    val questions = syncPendingTrainingQuestions(uid)
+                    folders + questions
+                }
+            ).awaitAll()
+            counts.sum()
+        }
 
         Log.i(TAG, "syncAll complete: $syncedCount items synced")
         return syncedCount
@@ -276,18 +287,25 @@ class CloudSyncRepository(private val context: Context) {
         val pending = syncDao.getUnsyncedResources(BATCH_SIZE)
         if (pending.isEmpty()) return 0
 
-        Log.d(TAG, "Uploading ${pending.size} resources and (via syncPendingTopics) topics to hedeflerim...")
+        Log.d(TAG, "Uploading ${pending.size} pending resources to Firestore...")
         var synced = 0
         for (resource in pending) {
             try {
-                // Absolute path: hedeflerim/kaynaklarim/items/{resourceId}
-                val docRef = fs.document("hedeflerim/kaynaklarim/items/${resource.id}")
-                val docData = buildResourceDocument(resource)
+                val docId = resource.cloudId?.takeIf { it.isNotBlank() } ?: "${uid}_${resource.id}"
+                val docData = buildResourceDocument(uid, resource, docId)
 
-                docRef.set(docData, SetOptions.merge()).await()
-                syncDao.markResourcesAsSynced(listOf(resource.id))
+                fs.collection("resources").document(docId)
+                    .set(docData, SetOptions.merge())
+                    .await()
+                runCatching {
+                    fs.collection("students").document(uid).collection("resources").document(docId)
+                        .set(docData, SetOptions.merge())
+                        .await()
+                }
+
+                syncDao.markResourceSynced(resource.id, docId)
                 synced++
-                Log.d(TAG, "Synced resource id=${resource.id} → hedeflerim/kaynaklarim/items/${resource.id}")
+                Log.d(TAG, "Synced resource id=${resource.id} -> resources/$docId")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to sync resource id=${resource.id}: ${e.message}")
             }
@@ -295,17 +313,27 @@ class CloudSyncRepository(private val context: Context) {
         return synced
     }
 
-    private fun buildResourceDocument(resource: ResourceEntity): Map<String, Any?> = mapOf(
-        "id"              to resource.id.toString(),
-        "title"           to resource.title,
-        "subject"         to resource.subject,
-        "currentUnits"    to resource.completedUnits,
-        "completedUnits"  to resource.completedUnits,
-        "totalUnits"      to resource.totalUnits,
-        "isCompleted"     to (resource.completedUnits >= resource.totalUnits),
-        "colorHex"        to (resource.colorHex ?: "#0ea5e9"),
-        "isDeleted"       to false,
-        "updatedAt"       to com.google.firebase.firestore.FieldValue.serverTimestamp()
+    private fun buildResourceDocument(
+        uid: String,
+        resource: ResourceEntity,
+        docId: String
+    ): Map<String, Any?> = mapOf(
+        "id"                to docId,
+        "localId"           to resource.id,
+        "studentId"         to uid,
+        "userId"            to uid,
+        "title"             to resource.title,
+        "subject"           to resource.subject,
+        "unitType"          to resource.unitType,
+        "currentUnits"      to resource.completedUnits,
+        "completedUnits"    to resource.completedUnits,
+        "totalUnits"        to resource.totalUnits,
+        "isCompleted"       to (resource.completedUnits >= resource.totalUnits),
+        "colorHex"          to (resource.colorHex ?: "#0ea5e9"),
+        "origin"            to "APP",
+        "isAssignedByCoach" to resource.isAssignedByCoach,
+        "isDeleted"         to false,
+        "updatedAt"         to FieldValue.serverTimestamp()
     )
 
     // ── Topics (Konularım) ──────────────────────────────────────────
@@ -315,40 +343,35 @@ class CloudSyncRepository(private val context: Context) {
         val pending = syncDao.getUnsyncedTopics()
         if (pending.isEmpty()) return 0
 
-        Log.d(TAG, "Uploading ${pending.size} topics to hedeflerim/konularim/dersler/...")
+        Log.d(TAG, "Uploading ${pending.size} pending topics to Firestore...")
         var synced = 0
         for (topic in pending) {
             try {
-                // 1. Legacy write
-                // Absolute path: hedeflerim/konularim/dersler/{subjectName}/topics/{topicId}
-                val docRef = fs.document(
-                    "hedeflerim/konularim/dersler/${topic.subject}/topics/${topic.id}"
-                )
-                val docData = mapOf<String, Any?>(
-                    "id"               to topic.id.toString(),
-                    "subjectName"      to topic.subject,
-                    "topicName"        to topic.topic,
-                    "proficiencyScore" to topic.currentLevel,  // 0–5 mastery rating
-                    "isCompleted"      to (topic.currentLevel >= 4),
-                    "isDeleted"        to false,
-                    "updatedAt"        to com.google.firebase.firestore.FieldValue.serverTimestamp()
-                )
-                docRef.set(docData, SetOptions.merge()).await()
-
-                // 2. New root collection write for Web portal
+                val docId = "${uid}_${topic.id}"
                 val rootTopicData = hashMapOf<String, Any?>(
-                    "studentId"   to uid,
-                    "subject"     to topic.subject,
-                    "topicName"   to topic.topic,
-                    "masteryLevel" to topic.currentLevel,
-                    "updatedAt"   to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                    "id"                 to docId,
+                    "localId"            to topic.id,
+                    "studentId"          to uid,
+                    "userId"             to uid,
+                    "subject"            to topic.subject,
+                    "topic"              to topic.topic,
+                    "topicName"          to topic.topic,
+                    "masteryLevel"       to topic.currentLevel,
+                    "targetMasteryScore" to topic.targetLevel,
+                    "isDeleted"          to false,
+                    "updatedAt"          to FieldValue.serverTimestamp()
                 )
-                fs.collection("topics").document(topic.id.toString())
+                fs.collection("topics").document(docId)
                     .set(rootTopicData, SetOptions.merge())
                     .await()
+                runCatching {
+                    fs.collection("students").document(uid).collection("topics").document(docId)
+                        .set(rootTopicData, SetOptions.merge())
+                        .await()
+                }
                 syncDao.markTopicsAsSynced(listOf(topic.id))
                 synced++
-                Log.d(TAG, "Synced topic id=${topic.id} → hedeflerim/konularim/dersler/${topic.subject}/topics/${topic.id}")
+                Log.d(TAG, "Synced topic id=${topic.id} -> topics/$docId")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to sync topic id=${topic.id}: ${e.message}")
             }

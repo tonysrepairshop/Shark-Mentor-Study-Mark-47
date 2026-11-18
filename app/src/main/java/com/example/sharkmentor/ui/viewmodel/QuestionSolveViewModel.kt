@@ -32,7 +32,7 @@ enum class SolveRewardTier(
     val colorHex: Long
 ) {
     GOLD_100(
-        badgeText = "⚡ Altın %100: +100 Puan & +15 dk",
+        badgeText = "Altın %100: +100 Puan & +15 dk",
         shortLabel = "Altın %100",
         timeRangeLabel = "0-15 dk",
         points = 100,
@@ -41,7 +41,7 @@ enum class SolveRewardTier(
         colorHex = 0xFFF59E0B
     ),
     SILVER_70(
-        badgeText = "🥈 Gümüş %70: +70 Puan & +10 dk",
+        badgeText = "Gümüş %70: +70 Puan & +10 dk",
         shortLabel = "Gümüş %70",
         timeRangeLabel = "15-60 dk",
         points = 70,
@@ -50,7 +50,7 @@ enum class SolveRewardTier(
         colorHex = 0xFF94A3B8
     ),
     BRONZE_40(
-        badgeText = "🥉 Bronz %40: +40 Puan & +6 dk",
+        badgeText = "Bronz %40: +40 Puan & +6 dk",
         shortLabel = "Bronz %40",
         timeRangeLabel = "60-105 dk",
         points = 40,
@@ -59,7 +59,7 @@ enum class SolveRewardTier(
         colorHex = 0xFFD97706
     ),
     EXPIRED_0(
-        badgeText = "⌛ Süre Doldu (%0 Ödül)",
+        badgeText = "Süre Doldu (%0 Ödül)",
         shortLabel = "Süre Doldu",
         timeRangeLabel = "105+ dk",
         points = 0,
@@ -71,16 +71,16 @@ enum class SolveRewardTier(
 
 /**
  * Soru Çözüm Ekranındaki 4 ana araç sekmesi:
- * 1. PEN: ✏️ Kalem (basınç hassasiyetli çizim)
- * 2. TEXT_BOX: 📝 Metin Kutusu (en az 25 karakter kuralı)
- * 3. CAMERA_GALLERY: 📷 Kamera / Galeri (kağıda çözülen fotoğrafı seçme)
- * 4. SHARK_AI: 🤖 Shark AI (AI çözüm kilidi onay diyaloğu)
+ * 1. PEN: Kalem (basınç hassasiyetli çizim)
+ * 2. TEXT_BOX: Metin Kutusu (en az 25 karakter kuralı)
+ * 3. CAMERA_GALLERY: Kamera / Galeri (kağıda çözülen fotoğrafı seçme)
+ * 4. SHARK_AI: Shark AI (AI çözüm kilidi onay diyaloğu)
  */
-enum class SolveWorkspaceTool(val label: String, val emoji: String) {
-    PEN("Kalem", "✏️"),
-    TEXT_BOX("Metin Kutusu", "📝"),
-    CAMERA_GALLERY("Kamera / Galeri", "📷"),
-    SHARK_AI("Shark AI", "🤖")
+enum class SolveWorkspaceTool(val label: String, val emoji: String = "") {
+    PEN("Kalem", ""),
+    TEXT_BOX("Metin Kutusu", ""),
+    CAMERA_GALLERY("Kamera / Galeri", ""),
+    SHARK_AI("Shark AI", "")
 }
 
 /**

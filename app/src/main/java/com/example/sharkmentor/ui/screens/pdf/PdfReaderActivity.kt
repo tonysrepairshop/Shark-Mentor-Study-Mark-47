@@ -1594,7 +1594,7 @@ fun PdfReaderScreen(
                                 }
                             ) {
                                 Text(
-                                    text = if (isDrawingNow) "✏️ Çizim Aktif" else "🖐️ Gezinme (Kaydır)",
+                                    text = if (isDrawingNow) "Çizim Aktif" else "Gezinme (Kaydır)",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = if (isDrawingNow) primaryColor else onSurfaceColor,
@@ -1667,7 +1667,7 @@ fun PdfReaderScreen(
                                         }
                                     ) {
                                         Text(
-                                            text = if (isDrawingNow) "✏️ Çizim Modu (Kaydırma için dokun)" else "🖐️ Gezinme / Kaydırma Modu",
+                                            text = if (isDrawingNow) "Çizim Modu (Kaydırma için dokun)" else "Gezinme / Kaydırma Modu",
                                             style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.SemiBold,
                                             color = if (isDrawingNow) primaryColor else onSurfaceColor,

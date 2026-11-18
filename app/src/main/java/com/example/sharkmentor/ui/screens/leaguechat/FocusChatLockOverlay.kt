@@ -151,7 +151,7 @@ fun FocusChatLockOverlay(
                 )
 
                 Text(
-                    text = "Aktif bir odak seansı devam ederken grup sohbeti ve mesajlaşma kilitlenir. Mola saatine kadar hedefine kilitlen!",
+                    text = "Aktif bir odak seansı devam ederken grup sohbeti ve mesajlaşma kilitlenir. Mola saatine kadar çalışmanıza devam edin.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center

@@ -51,9 +51,9 @@ private const val SILVER_ELAPSED_MS: Long = 60L * 60L * 1_000L   // 15..60 min -
 
 enum class ChatFilterTab(val label: String) {
     ALL("Tümü"),
-    OPEN_QUESTIONS("🔥 Açık Sorular"),
-    PENDING_APPROVAL("⏳ Onay Bekleyenler"),
-    RESOLVED("✅ Çözülenler")
+    OPEN_QUESTIONS("Açık Sorular"),
+    PENDING_APPROVAL("Onay Bekleyenler"),
+    RESOLVED("Çözülenler")
 }
 
 enum class LeagueChatMode {
@@ -64,16 +64,16 @@ enum class LeagueChatMode {
 
 enum class QuestionRewardTier(
     val title: String,
-    val emoji: String,
+    val emoji: String = "",
     val percent: Int,
     val points: Int,
     val bonusMinutes: Int
 ) {
-    GOLD("Altın %100", "⚡", 100, 100, 15),
-    SILVER("Gümüş %70", "🥈", 70, 70, 10),
-    BRONZE("Bronz %40", "🥉", 40, 40, 6);
+    GOLD("Altın %100", "", 100, 100, 15),
+    SILVER("Gümüş %70", "", 70, 70, 10),
+    BRONZE("Bronz %40", "", 40, 40, 6);
 
-    fun summaryBadge(): String = "$emoji $title • +$points Puan & +$bonusMinutes dk"
+    fun summaryBadge(): String = "$title • +$points Puan & +$bonusMinutes dk"
 }
 
 @Immutable
@@ -513,7 +513,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                 _uiState.value = _uiState.value.copy(
                     isSending = false,
                     activeDmThread = thread.copy(status = "PENDING", requestNote = cleanNote),
-                    statusMessage = "📩 Mesaj isteği gönderildi! Onaylandığında sohbet açılacak."
+                    statusMessage = "Mesaj isteği gönderildi. Onaylandığında sohbet açılacak."
                 )
             }.onFailure { e ->
                 _uiState.value = _uiState.value.copy(
@@ -543,7 +543,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                 _uiState.value = _uiState.value.copy(
                     activeDmThread = if (_uiState.value.activeDmThread?.threadId == thread.threadId) updated else _uiState.value.activeDmThread,
                     statusMessage = if (accept) {
-                        "💬 Mesaj isteği kabul edildi! Artık mesajlaşabilirsiniz."
+                        "Mesaj isteği kabul edildi. Artık mesajlaşabilirsiniz."
                     } else {
                         "Mesaj isteği reddedildi."
                     }
@@ -566,7 +566,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
         if (state.mode == LeagueChatMode.DM_THREAD && state.activeDmThread?.status != "ACCEPTED") {
             _uiState.value = state.copy(
-                statusMessage = "Karşı taraf mesaj isteğini onaylamadan mesaj gönderemezsin."
+                statusMessage = "Karşı taraf mesaj isteğini onaylamadan mesaj gönderilemez."
             )
             return
         }
@@ -616,7 +616,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
         if (state.mode == LeagueChatMode.DM_THREAD && state.activeDmThread?.status != "ACCEPTED") {
             _uiState.value = state.copy(
-                statusMessage = "Karşı taraf mesaj isteğini onaylamadan soru paylaşamazsın."
+                statusMessage = "Karşı taraf mesaj isteğini onaylamadan soru paylaşılamaz."
             )
             return
         }
@@ -655,7 +655,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     database.collection("dm_threads").document(state.activeDmThread.threadId)
                         .set(
                             mapOf(
-                                "lastMessageText" to "📸 Soru Paylaşımı: $cleanSubject ($cleanTopic)",
+                                "lastMessageText" to "Soru Paylaşımı: $cleanSubject ($cleanTopic)",
                                 "updatedAtMillis" to now,
                                 "updatedAt" to FieldValue.serverTimestamp()
                             ),
@@ -668,7 +668,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
                 _uiState.value = _uiState.value.copy(
                     isSending = false,
-                    statusMessage = "🔥 Soru sohbete eklendi! 105 dakikalık ödül sayacı başladı."
+                    statusMessage = "Soru sohbete eklendi. 105 dakikalık ödül sayacı başladı."
                 )
             }.onFailure { e ->
                 Log.w("LeagueChatVM", "shareErrorQuestion error: ${e.message}")
@@ -733,7 +733,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     database.collection("dm_threads").document(state.activeDmThread.threadId)
                         .set(
                             mapOf(
-                                "lastMessageText" to "✏️ Çözüm gönderildi (+${tier.points} P bekliyor)",
+                                "lastMessageText" to "Çözüm gönderildi (+${tier.points} P bekliyor)",
                                 "updatedAtMillis" to now,
                                 "updatedAt" to FieldValue.serverTimestamp()
                             ),
@@ -743,7 +743,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
                 _uiState.value = _uiState.value.copy(
                     isSending = false,
-                    statusMessage = "⏳ Çözüm gönderildi! +${tier.points} Puan soru sahibinin onayını bekliyor."
+                    statusMessage = "Çözüm gönderildi. +${tier.points} Puan soru sahibinin onayını bekliyor."
                 )
             }.onFailure { e ->
                 Log.w("LeagueChatVM", "submitSolution error: ${e.message}")
@@ -860,7 +860,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                 }
 
                 _uiState.value = _uiState.value.copy(
-                    statusMessage = "✅ Çözüm onaylandı! ${solution.senderName} +${solution.escrowPoints} Puan & +${solution.escrowBonusMinutes} dk kazandı."
+                    statusMessage = "Çözüm onaylandı. ${solution.senderName} +${solution.escrowPoints} Puan ve +${solution.escrowBonusMinutes} dk kazandı."
                 )
             }.onFailure {
                 _uiState.value = _uiState.value.copy(
@@ -998,7 +998,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                 val updatedSaved = persistSavedQuestionId(question.messageId)
                 _uiState.value = _uiState.value.copy(
                     savedQuestionIds = updatedSaved,
-                    statusMessage = "📥 Soru Hata Bankana kaydedildi!"
+                    statusMessage = "Soru Hata Bankasına kaydedildi."
                 )
             } else {
                 _uiState.value = _uiState.value.copy(
@@ -1137,7 +1137,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.value = _uiState.value.copy(
                 blockedUserIds = updated,
                 statusMessage = if (block) {
-                    "🚫 $targetName engellendi. Mesajları ve soruları gizlendi."
+                    "$targetName engellendi. Mesajları ve soruları gizlendi."
                 } else {
                     "$targetName engeli kaldırıldı."
                 }
@@ -1164,7 +1164,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             )
             _uiState.value = _uiState.value.copy(
                 statusMessage = if (ok) {
-                    "🚩 $targetName hakkında şikayet incelenmek üzere iletildi."
+                    "$targetName hakkında şikayet incelenmek üzere iletildi."
                 } else {
                     "Şikayet gönderilemedi, internet bağlantını kontrol et."
                 }
@@ -1216,7 +1216,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     .await()
                 _uiState.value = _uiState.value.copy(
                     dmStatusByPeerId = _uiState.value.dmStatusByPeerId + (target.studentId to "PENDING"),
-                    statusMessage = "📩 $peerName için mesaj isteği gönderildi!"
+                    statusMessage = "$peerName için mesaj isteği gönderildi."
                 )
             }.onFailure {
                 _uiState.value = _uiState.value.copy(

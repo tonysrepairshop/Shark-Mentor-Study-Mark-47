@@ -66,6 +66,9 @@ KESİN DAVRANIŞ KURALLARI:
         )
 
         private val PDF_PAGE_TAG_REGEX = Regex("\\[PDF_PAGE:([^\\]]+)\\]")
+        private val HTML_TAG_REGEX = Regex("<[^>]+>")
+        private val EXCESS_NEWLINES_REGEX = Regex("\\n{3,}")
+        private val PDF_HEADER_REGEX = Regex("^[^\\n]+\\([0-9]+\\s*sayfa\\)", RegexOption.IGNORE_CASE)
 
         fun splitContentIntoPages(cleanContent: String): List<String> {
             if (cleanContent.isEmpty()) return listOf("")
@@ -89,8 +92,8 @@ KESİN DAVRANIŞ KURALLARI:
             return raw
                 .replace(PAGE_BREAK_SPLIT_REGEX, "\n\n")
                 .replace(BASE64_OR_PATH_REGEX, "")
-                .replace(Regex("<[^>]+>"), "")
-                .replace(Regex("\\n{3,}"), "\n\n")
+                .replace(HTML_TAG_REGEX, "")
+                .replace(EXCESS_NEWLINES_REGEX, "\n\n")
                 .trim()
                 .take(12_000)
         }
@@ -429,10 +432,20 @@ KESİN DAVRANIŞ KURALLARI:
 
                 // Check if the note consists primarily of PDF pages without substantial typed/extracted body text
                 val textWithoutPdfHeader = cleanNoteText
-                    .replace(Regex("^[^\n]+\\([0-9]+\\s*sayfa\\)", RegexOption.IGNORE_CASE), "")
+                    .replace(PDF_HEADER_REGEX, "")
                     .replace("Tüm PDF sayfaları yüklendi. Notlarınızı aşağıya ekleyebilirsiniz:", "")
                     .replace("Tüm PDF sayfaları yüklendi.", "")
                     .trim()
+
+                var lastStreamUiEmitMs = 0L
+                fun emitThrottledStream(partial: String) {
+                    val now = System.currentTimeMillis()
+                    if (lastStreamUiEmitMs == 0L || now - lastStreamUiEmitMs >= 45L) {
+                        lastStreamUiEmitMs = now
+                        _aiResult.value = partial
+                        _isAiLoading.value = false
+                    }
+                }
 
                 val hasSubstantialText = textWithoutPdfHeader.length >= 80
                 val shouldUseVisionForPdf = pdfPagePaths.isNotEmpty() && !hasSubstantialText
@@ -477,8 +490,7 @@ KESİN DAVRANIŞ KURALLARI:
                                 maxOutputTokens = 8192,
                                 timeoutMs = 75_000L,
                                 onPartialText = { partial ->
-                                    _aiResult.value = partial
-                                    _isAiLoading.value = false
+                                    emitThrottledStream(partial)
                                 }
                             )
 
@@ -553,6 +565,7 @@ KESİN DAVRANIŞ KURALLARI:
                 }
 
                 if (targetExternalProvider != null) {
+                    lastStreamUiEmitMs = 0L
                     try {
                         val streamedResult = MultiProviderAiClient.streamChatCompletion(
                             provider = targetExternalProvider,
@@ -562,8 +575,7 @@ KESİN DAVRANIŞ KURALLARI:
                             maxTokens = 4096,
                             context = appContext,
                             onAccumulatedChunk = { partial ->
-                                _aiResult.value = partial
-                                _isAiLoading.value = false
+                                emitThrottledStream(partial)
                             }
                         )
                         if (streamedResult.isNotBlank()) {
@@ -580,6 +592,7 @@ KESİN DAVRANIŞ KURALLARI:
                     }
                 }
 
+                lastStreamUiEmitMs = 0L
                 val geminiResult = GeminiAiFactory.streamContentWithFailover(
                     context = appContext,
                     systemInstruction = ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
@@ -588,8 +601,7 @@ KESİN DAVRANIŞ KURALLARI:
                     maxOutputTokens = 6144,
                     timeoutMs = 60_000L,
                     onPartialText = { partial ->
-                        _aiResult.value = partial.trimStart()
-                        _isAiLoading.value = false
+                        emitThrottledStream(partial.trimStart())
                     }
                 )
 

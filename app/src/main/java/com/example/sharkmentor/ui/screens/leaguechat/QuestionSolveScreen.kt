@@ -105,10 +105,10 @@ import kotlinx.coroutines.withContext
  * - FLAG_SECURE ile ekran görüntüsü ve ekran kaydı engeli (DisposableEffect ile girişte aktif, çıkışta temizlenir)
  * - 105 dakikalık canlı geri sayım sayacı ve Kademeli Ödül Banner'ı (Altın %100 / Gümüş %70 / Bronz %40)
  * - 4 Tam Araç Desteği:
- *   1. ✏️ Kalem (basınç hassasiyetli çizim)
- *   2. 📝 Metin Kutusu (en az 25 karakter kuralı)
- *   3. 📷 Kamera / Galeri (kağıda çözülen fotoğrafı seçme)
- *   4. 🤖 Shark AI ("AI çözümünü görürsen bu soruya çözüm gönderemez ve puan alamazsın" onay diyaloğu + onAiLockConfirmed + gönder butonu kilidi)
+ *   1. Kalem (basınç hassasiyetli çizim)
+ *   2. Metin Kutusu (en az 25 karakter kuralı)
+ *   3. Kamera / Galeri (kağıda çözülen fotoğrafı seçme)
+ *   4. Shark AI ("AI çözümünü görürsen bu soruya çözüm gönderemez ve puan alamazsın" onay diyaloğu + onAiLockConfirmed + gönder butonu kilidi)
  */
 @Composable
 fun QuestionSolveScreen(
@@ -236,7 +236,7 @@ fun QuestionSolveScreen(
             },
             title = {
                 Text(
-                    text = "🤖 Shark AI Çözüm Kilidi",
+                    text = "Shark AI Çözüm Kilidi",
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 17.sp,
                     textAlign = TextAlign.Center
@@ -476,7 +476,7 @@ fun QuestionSolveScreen(
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 4 Tam Araç Çubuğu: 1. ✏️ Kalem | 2. 📝 Metin Kutusu | 3. 📷 Kamera/Galeri | 4. 🤖 Shark AI
+                // 4 Tam Araç Çubuğu: 1. Kalem | 2. Metin Kutusu | 3. Kamera/Galeri | 4. Shark AI
                 SolveToolsBar(
                     activeTool = activeTool,
                     hasPenStrokes = annotatorState.hasAnnotations,
@@ -533,10 +533,10 @@ fun QuestionSolveScreen(
                     ) {
                         Text(
                             text = when (activeTool) {
-                                SolveWorkspaceTool.PEN -> "✏️ Basınç Hassasiyetli Kalem Modu"
-                                SolveWorkspaceTool.TEXT_BOX -> "📝 Metin Kutusu (En Az 25 Karakter)"
-                                SolveWorkspaceTool.CAMERA_GALLERY -> "📷 Kağıda Çözülen Fotoğrafı Ekle"
-                                SolveWorkspaceTool.SHARK_AI -> "🤖 Shark AI Çözüm Desteği"
+                                SolveWorkspaceTool.PEN -> "Basınç Hassasiyetli Kalem Modu"
+                                SolveWorkspaceTool.TEXT_BOX -> "Metin Kutusu (En Az 25 Karakter)"
+                                SolveWorkspaceTool.CAMERA_GALLERY -> "Kağıda Çözülen Fotoğrafı Ekle"
+                                SolveWorkspaceTool.SHARK_AI -> "Shark AI Çözüm Desteği"
                             },
                             color = Color.White,
                             fontSize = 12.5.sp,
@@ -610,7 +610,7 @@ fun QuestionSolveScreen(
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Text(
-                                            text = "Soru görseli üzerindeki yüzen kalem kutusuyla basınç hassasiyetli çizim yapabilirsin.",
+                                            text = "Soru görseli üzerindeki yüzen kalem kutusuyla basınç hassasiyetli çizim yapabilirsiniz.",
                                             color = Color(0xFFCBD5E1),
                                             fontSize = 11.5.sp
                                         )
@@ -619,7 +619,7 @@ fun QuestionSolveScreen(
                                         onClick = { viewModel.selectTool(SolveWorkspaceTool.TEXT_BOX) }
                                     ) {
                                         Text(
-                                            text = "📝 Açıklama Yaz",
+                                            text = "Açıklama Yaz",
                                             color = Color(0xFF38BDF8),
                                             fontSize = 11.5.sp,
                                             fontWeight = FontWeight.Bold
@@ -637,13 +637,13 @@ fun QuestionSolveScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Text(
-                                            text = "Adım adım çözümünü açıkla (min. 25 karakter):",
+                                            text = "Adım adım çözümünüzü açıklayın (min. 25 karakter):",
                                             color = Color(0xFF94A3B8),
                                             fontSize = 11.5.sp
                                         )
                                         Text(
                                             text = if (meetsMinCharRule) {
-                                                "✓ $trimmedExplanationLength / ${QuestionSolveViewModel.MIN_EXPLANATION_LENGTH} karakter"
+                                                "$trimmedExplanationLength / ${QuestionSolveViewModel.MIN_EXPLANATION_LENGTH} karakter (Tamam)"
                                             } else {
                                                 "$trimmedExplanationLength / ${QuestionSolveViewModel.MIN_EXPLANATION_LENGTH} min. karakter"
                                             },
@@ -942,7 +942,7 @@ fun QuestionSolveScreen(
                                                     }
                                                 ) {
                                                     Text(
-                                                        text = "🤖 Shark AI Çözümünü Getir",
+                                                        text = "Shark AI Çözümünü Getir",
                                                         color = Color(0xFFFBBF24),
                                                         fontSize = 12.sp,
                                                         fontWeight = FontWeight.Bold
@@ -1063,7 +1063,7 @@ fun QuestionSolveScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "🔒 AI Çözümü Görüldü • Çözüm Gönderilemez",
+                            text = "AI Çözümü Görüldü • Çözüm Gönderilemez",
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 13.5.sp
                         )
@@ -1092,10 +1092,10 @@ fun QuestionSolveScreen(
 
 /**
  * 4 Tam Araç Seçici Bar:
- * 1. ✏️ Kalem
- * 2. 📝 Metin Kutusu
- * 3. 📷 Kamera / Galeri
- * 4. 🤖 Shark AI
+ * 1. Kalem
+ * 2. Metin Kutusu
+ * 3. Kamera / Galeri
+ * 4. Shark AI
  */
 @Composable
 private fun SolveToolsBar(
@@ -1171,9 +1171,16 @@ private fun SolveToolChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
-            Text(
-                text = tool.emoji,
-                fontSize = 12.sp
+            Icon(
+                imageVector = when (tool) {
+                    SolveWorkspaceTool.PEN -> Icons.Default.Brush
+                    SolveWorkspaceTool.TEXT_BOX -> Icons.Default.EditNote
+                    SolveWorkspaceTool.CAMERA_GALLERY -> Icons.Default.CameraAlt
+                    SolveWorkspaceTool.SHARK_AI -> Icons.Default.AutoAwesome
+                },
+                contentDescription = null,
+                tint = if (isSelected) accentColor else Color(0xFF94A3B8),
+                modifier = Modifier.size(13.dp)
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
@@ -1335,7 +1342,7 @@ private fun TierStagePill(
 }
 
 /**
- * OOM güvenli galeri fotoğrafı декоdlayıcı (ARGB_8888).
+ * OOM güvenli galeri fotoğrafı çözücü (ARGB_8888).
  */
 private suspend fun decodeSampledBitmapFromUri(
     context: Context,

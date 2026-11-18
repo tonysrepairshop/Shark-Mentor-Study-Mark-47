@@ -27,7 +27,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.tasks.await
+import kotlin.math.abs
 
 @Stable
 data class SubjectFolderUiModel(
@@ -141,19 +142,26 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             val database = SharkMentorDatabase.getDatabase(application)
             dao = database.goalsDao()
             targetDao = database.concreteTargetDao()
-            
+
             launch {
                 targetDao?.getTargetFlow()?.collect { _concreteTarget.value = it }
             }
-            
+
             launch {
-                dao?.getAllTopicGoalsFlow()?.collect { 
-                    _topicGoals.value = it 
-                    _isLoading.value = false 
+                dao?.getAllTopicGoalsFlow()?.collect {
+                    _topicGoals.value = it
+                    _isLoading.value = false
                 }
             }
-            
-            // Listen to resources from Firestore directly only when authenticated
+
+            launch {
+                dao?.getAllResourcesFlow()?.collect {
+                    _resources.value = it
+                    _isLoading.value = false
+                }
+            }
+
+            // Reconcile incoming remote resource changes into Room (single source of truth)
             val currentUser = runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
                 ?: GoogleServicesHelper.getCurrentUser(context = getApplication())
             val uid = currentUser?.uid
@@ -167,26 +175,55 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
                                 return@addSnapshotListener
                             }
                             if (snapshots != null) {
-                                val list = snapshots.documents.mapNotNull { doc ->
-                                    try {
-                                        com.example.sharkmentor.data.local.entity.ResourceEntity(
-                                            id = doc.id.hashCode().toLong(),
-                                            title = doc.getString("title") ?: "",
-                                            subject = doc.getString("subject") ?: "",
-                                            totalUnits = doc.getLong("totalUnits")?.toInt() ?: doc.getLong("totalTarget")?.toInt() ?: 1,
-                                            completedUnits = doc.getLong("completedUnits")?.toInt() ?: doc.getLong("currentUnits")?.toInt() ?: 0,
-                                            unitType = doc.getString("unitType") ?: doc.getString("unit") ?: "Sayfa",
-                                            colorHex = doc.getString("colorHex") ?: "#0ea5e9",
-                                            cloudId = doc.id,
-                                            isSynced = true,
-                                            isAssignedByCoach = doc.getBoolean("isCoachAssigned") ?: (doc.getString("assignedBy") == "coach")
-                                        )
-                                    } catch (e: Exception) {
-                                        null
+                                launch(Dispatchers.IO) {
+                                    val goalsDao = dao ?: return@launch
+                                    snapshots.documents.forEach { doc ->
+                                        runCatching {
+                                            val existingByCloud = goalsDao.getResourceByCloudId(doc.id)
+                                            val resolvedId = existingByCloud?.id
+                                                ?: doc.getLong("localId")
+                                                ?: doc.getLong("id")
+                                                ?: doc.id.removePrefix("res_").removePrefix("${uid}_").toLongOrNull()
+                                                ?: abs(doc.id.hashCode().toLong())
+                                            val isDeleted = doc.getBoolean("isDeleted") ?: false
+                                            if (isDeleted) {
+                                                goalsDao.deleteResourcePermanently(resolvedId)
+                                                return@runCatching
+                                            }
+                                            val existing = existingByCloud ?: goalsDao.getResourceById(resolvedId)
+                                            if (existing != null && !existing.isSynced) {
+                                                // Preserve pending local offline mutations until SyncWorker uploads them
+                                                return@runCatching
+                                            }
+                                            val totalUnits = (doc.getLong("totalUnits")?.toInt()
+                                                ?: doc.getLong("totalTarget")?.toInt()
+                                                ?: 1).coerceAtLeast(1)
+                                            val completedUnits = (doc.getLong("completedUnits")?.toInt()
+                                                ?: doc.getLong("currentUnits")?.toInt()
+                                                ?: 0).coerceIn(0, totalUnits)
+                                            val remoteUpdatedMs = doc.getTimestamp("updatedAt")?.toDate()?.time
+                                                ?: System.currentTimeMillis()
+                                            val entity = ResourceEntity(
+                                                id = resolvedId,
+                                                title = doc.getString("title") ?: existing?.title ?: "",
+                                                subject = doc.getString("subject") ?: existing?.subject ?: "Genel",
+                                                totalUnits = totalUnits,
+                                                completedUnits = completedUnits,
+                                                unitType = doc.getString("unitType") ?: doc.getString("unit") ?: existing?.unitType ?: "Sayfa",
+                                                updatedAtMillis = remoteUpdatedMs,
+                                                colorHex = doc.getString("colorHex") ?: existing?.colorHex ?: "#0ea5e9",
+                                                cloudId = doc.id,
+                                                isSynced = true,
+                                                lastModifiedMillis = remoteUpdatedMs,
+                                                isAssignedByCoach = doc.getBoolean("isAssignedByCoach")
+                                                    ?: doc.getBoolean("isCoachAssigned")
+                                                    ?: (doc.getString("assignedBy") == "coach")
+                                            )
+                                            goalsDao.upsertResource(entity)
+                                        }
                                     }
+                                    _isLoading.value = false
                                 }
-                                _resources.value = list
-                                _isLoading.value = false
                             }
                         }
                 }.onFailure { e ->
@@ -196,40 +233,50 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // â”€â”€ Direct Firestore Sync Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Direct Firestore Sync Helpers ──────────────────────────────────────────
 
-    private fun syncTopicToFirestore(topicId: String, subject: String, topicName: String, masteryLevel: Int) {
+    private suspend fun syncTopicToFirestore(localTopicId: Long, subject: String, topicName: String, masteryLevel: Int) {
         val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid ?: return
         val db = GoogleServicesHelper.getFirebaseFirestore(getApplication()) ?: return
+        val docId = "${uid}_${localTopicId}"
 
         val topicData = hashMapOf<String, Any?>(
-            "studentId"   to uid,
-            "subject"     to subject,
-            "topicName"   to topicName,
+            "id"           to docId,
+            "localId"      to localTopicId,
+            "studentId"    to uid,
+            "userId"       to uid,
+            "subject"      to subject,
+            "topic"        to topicName,
+            "topicName"    to topicName,
             "masteryLevel" to masteryLevel,
-            "updatedAt"   to FieldValue.serverTimestamp()
+            "isDeleted"    to false,
+            "updatedAt"    to FieldValue.serverTimestamp()
         )
 
-        db.collection("topics").document(topicId)
-            .set(topicData, SetOptions.merge())
-            .addOnSuccessListener {
-                Log.d("SharkSync", "Topic $topicId synced to root topics collection.")
+        runCatching {
+            db.collection("topics").document(docId).set(topicData, SetOptions.merge()).await()
+            runCatching {
+                db.collection("students").document(uid).collection("topics").document(docId)
+                    .set(topicData, SetOptions.merge()).await()
             }
-            .addOnFailureListener { e ->
-                Log.e("SharkSync", "Failed to sync topic $topicId: ${e.message}", e)
-            }
+        }.onFailure { e ->
+            Log.e("SharkSync", "Failed to sync topic $docId: ${e.message}", e)
+        }
     }
 
-    private fun syncResourceToFirestore(resource: ResourceEntity) {
-        val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid ?: return
-        val db = GoogleServicesHelper.getFirebaseFirestore(getApplication()) ?: return
-        val resourceId = resource.cloudId ?: resource.id.toString()
-        val totalUnits = resource.totalUnits
+    private suspend fun syncResourceToFirestore(resource: ResourceEntity): Boolean {
+        val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid ?: return false
+        val db = GoogleServicesHelper.getFirebaseFirestore(getApplication()) ?: return false
+        val docId = resource.cloudId?.takeIf { it.isNotBlank() } ?: "${uid}_${resource.id}"
+        val totalUnits = resource.totalUnits.coerceAtLeast(1)
         val clamped = resource.completedUnits.coerceIn(0, totalUnits)
 
         val resourceData = hashMapOf<String, Any?>(
+            "id"                to docId,
+            "localId"           to resource.id,
             "title"             to resource.title,
             "subject"           to resource.subject,
+            "unitType"          to resource.unitType,
             "currentUnits"      to clamped,
             "completedUnits"    to clamped,
             "isCompleted"       to (clamped >= totalUnits),
@@ -238,15 +285,25 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             "totalTarget"       to totalUnits,
             "colorHex"          to (resource.colorHex ?: "#0ea5e9"),
             "studentId"         to uid,
+            "userId"            to uid,
             "origin"            to "APP",
             "isDeleted"         to false,
             "isAssignedByCoach" to resource.isAssignedByCoach,
             "updatedAt"         to FieldValue.serverTimestamp()
         )
 
-        db.collection("resources").document(resourceId)
-            .set(resourceData, SetOptions.merge())
-            .addOnFailureListener { e -> Log.e("ResourceSync", "GÃ¼ncelleme hatasÄ±", e) }
+        return runCatching {
+            db.collection("resources").document(docId).set(resourceData, SetOptions.merge()).await()
+            runCatching {
+                db.collection("students").document(uid).collection("resources").document(docId)
+                    .set(resourceData, SetOptions.merge()).await()
+            }
+            dao?.updateResource(resource.copy(cloudId = docId, isSynced = true))
+            true
+        }.getOrElse { e ->
+            Log.e("ResourceSync", "Güncelleme hatası: ${e.message}", e)
+            false
+        }
     }
 
     fun updateTopicGoal(topicGoal: TopicGoalEntity) {
@@ -256,10 +313,9 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
                 updatedAtMillis = System.currentTimeMillis()
             )
             dao?.updateTopicGoal(updated)
-            syncTopicToFirestore(updated.id.toString(), updated.subject, updated.topic, updated.currentLevel)
+            syncTopicToFirestore(updated.id, updated.subject, updated.topic, updated.currentLevel)
             val context = getApplication<android.app.Application>()
-            android.util.Log.d("SharkMentorSync", "Triggering sync for updateTopicGoal")
-            com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
+            SyncWorker.enqueueImmediateSync(context)
         }
     }
 
@@ -277,10 +333,9 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             )
             val insertedId = dao?.insertTopicGoal(entity) ?: 0L
             if (insertedId > 0L) {
-                syncTopicToFirestore(insertedId.toString(), subject, topic, 1)
+                syncTopicToFirestore(insertedId, subject, topic, 1)
             }
-            Log.d("SharkMentorSync", "Triggering sync for insertTopicGoal")
-            com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
+            SyncWorker.enqueueImmediateSync(context)
         }
     }
 
@@ -292,11 +347,10 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             database.pendingDeletionDao().insert(
                 com.example.sharkmentor.data.local.entity.PendingDeletionEntity(
                     entityId = topic.id.toString(),
-                    collectionName = "hedeflerim/konularim/dersler/${topic.subject}/topics"
+                    collectionName = "topics"
                 )
             )
-            android.util.Log.d("SharkMentorSync", "Triggering sync for deleteTopic id=${topic.id} subject=${topic.subject}")
-            com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
+            SyncWorker.enqueueImmediateSync(context)
         }
     }
 
@@ -306,17 +360,16 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             val database = SharkMentorDatabase.getDatabase(context)
             val allTopics = dao?.getAllTopicsRaw()?.filter { it.subject == subjectName }
             dao?.softDeleteBySubject(subjectName)
-            
+
             allTopics?.forEach { topic ->
                 database.pendingDeletionDao().insert(
                     com.example.sharkmentor.data.local.entity.PendingDeletionEntity(
                         entityId = topic.id.toString(),
-                        collectionName = "hedeflerim/konularim/dersler/${topic.subject}/topics"
+                        collectionName = "topics"
                     )
                 )
             }
-            android.util.Log.d("SharkMentorSync", "Triggering sync for deleteSubjectFolder: $subjectName (${allTopics?.size ?: 0} topics)")
-            com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
+            SyncWorker.enqueueImmediateSync(context)
         }
     }
 
@@ -327,87 +380,101 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
                 lastModifiedMillis = System.currentTimeMillis()
             )
             dao?.updateResource(updated)
-            syncResourceToFirestore(updated)
-            val context = getApplication<Application>()
-            android.util.Log.d("SharkMentorSync", "Triggering sync for updateResource")
-            com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
+            val synced = syncResourceToFirestore(updated)
+            if (!synced) {
+                SyncWorker.enqueueImmediateSync(getApplication())
+            }
         }
     }
 
     fun incrementResource(resourceId: Long, step: Int = 1) {
         viewModelScope.launch(Dispatchers.IO) {
-            val resource = _resources.value.find { it.id == resourceId } ?: return@launch
-            val targetVal = (resource.completedUnits + step).coerceIn(0, resource.totalUnits)
-            val cloudId = resource.cloudId ?: resource.id.toString()
-
-            val firestore = com.example.sharkmentor.core.util.GoogleServicesHelper.getFirebaseFirestore(getApplication())
-            firestore?.collection("resources")?.document(cloudId)
-                ?.update(
-                    mapOf(
-                        "currentUnits" to targetVal,
-                        "completedUnits" to targetVal,
-                        "isCompleted" to (targetVal >= resource.totalUnits),
-                        "completed" to (targetVal >= resource.totalUnits)
-                    )
-                )
-            dao?.incrementProgress(resourceId, step)
+            val resource = dao?.getResourceById(resourceId)
+                ?: _resources.value.find { it.id == resourceId }
+                ?: return@launch
+            val now = System.currentTimeMillis()
+            val nextUnits = (resource.completedUnits + step).coerceIn(0, resource.totalUnits)
+            val updated = resource.copy(
+                completedUnits = nextUnits,
+                isSynced = false,
+                updatedAtMillis = now,
+                lastModifiedMillis = now
+            )
+            dao?.updateResource(updated)
+            if (!syncResourceToFirestore(updated)) {
+                SyncWorker.enqueueImmediateSync(getApplication())
+            }
         }
     }
 
     fun decrementResource(resourceId: Long, step: Int = 1) {
         viewModelScope.launch(Dispatchers.IO) {
-            val resource = _resources.value.find { it.id == resourceId } ?: return@launch
-            val targetVal = (resource.completedUnits - step).coerceIn(0, resource.totalUnits)
-            val cloudId = resource.cloudId ?: resource.id.toString()
-
-            val firestore = com.example.sharkmentor.core.util.GoogleServicesHelper.getFirebaseFirestore(getApplication())
-            firestore?.collection("resources")?.document(cloudId)
-                ?.update(
-                    mapOf(
-                        "currentUnits" to targetVal,
-                        "completedUnits" to targetVal,
-                        "isCompleted" to (targetVal >= resource.totalUnits),
-                        "completed" to (targetVal >= resource.totalUnits)
-                    )
-                )
-            dao?.decrementProgress(resourceId, step)
+            val resource = dao?.getResourceById(resourceId)
+                ?: _resources.value.find { it.id == resourceId }
+                ?: return@launch
+            val now = System.currentTimeMillis()
+            val nextUnits = (resource.completedUnits - step).coerceIn(0, resource.totalUnits)
+            val updated = resource.copy(
+                completedUnits = nextUnits,
+                isSynced = false,
+                updatedAtMillis = now,
+                lastModifiedMillis = now
+            )
+            dao?.updateResource(updated)
+            if (!syncResourceToFirestore(updated)) {
+                SyncWorker.enqueueImmediateSync(getApplication())
+            }
         }
     }
 
     fun setResourceUnits(resource: ResourceEntity, newUnits: Int) {
         viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
             val targetVal = newUnits.coerceIn(0, resource.totalUnits)
-            val cloudId = resource.cloudId ?: resource.id.toString()
-
-            val firestore = com.example.sharkmentor.core.util.GoogleServicesHelper.getFirebaseFirestore(getApplication())
-            firestore?.collection("resources")?.document(cloudId)
-                ?.update(
-                    mapOf(
-                        "currentUnits" to targetVal,
-                        "completedUnits" to targetVal,
-                        "isCompleted" to (targetVal >= resource.totalUnits),
-                        "completed" to (targetVal >= resource.totalUnits)
-                    )
-                )
-            dao?.setProgress(resource.id, targetVal)
+            val updated = resource.copy(
+                completedUnits = targetVal,
+                isSynced = false,
+                updatedAtMillis = now,
+                lastModifiedMillis = now
+            )
+            dao?.updateResource(updated)
+            if (!syncResourceToFirestore(updated)) {
+                SyncWorker.enqueueImmediateSync(getApplication())
+            }
         }
     }
 
     fun deleteResource(resource: ResourceEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            val cloudId = resource.cloudId ?: resource.id.toString()
-            if (cloudId.isNotBlank()) {
-                val firestore = com.example.sharkmentor.core.util.GoogleServicesHelper.getFirebaseFirestore(getApplication())
-                firestore?.collection("resources")?.document(cloudId)
-                    ?.delete()
-                    ?.addOnSuccessListener {
-                        Log.d("ResourceSync", "Kaynak Firestore'dan kalÄ±cÄ± olarak silindi: $cloudId")
-                    }
-                    ?.addOnFailureListener { e ->
-                        Log.e("ResourceSync", "Silme hatasÄ±", e)
-                    }
-            }
             dao?.softDeleteResource(resource.id)
+            val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
+            val db = GoogleServicesHelper.getFirebaseFirestore(getApplication())
+            val docId = resource.cloudId?.takeIf { it.isNotBlank() }
+                ?: if (!uid.isNullOrBlank()) "${uid}_${resource.id}" else resource.id.toString()
+
+            var deletedRemote = false
+            if (db != null && docId.isNotBlank()) {
+                val deletePayload = mapOf("isDeleted" to true, "updatedAt" to FieldValue.serverTimestamp())
+                deletedRemote = runCatching {
+                    db.collection("resources").document(docId).set(deletePayload, SetOptions.merge()).await()
+                    if (!uid.isNullOrBlank()) {
+                        runCatching {
+                            db.collection("students").document(uid).collection("resources").document(docId)
+                                .set(deletePayload, SetOptions.merge()).await()
+                        }
+                    }
+                    Log.d("ResourceSync", "Kaynak Firestore'da silindi olarak işaretlendi: $docId")
+                    true
+                }.getOrElse { e ->
+                    Log.e("ResourceSync", "Silme hatası: ${e.message}", e)
+                    false
+                }
+            }
+            if (deletedRemote) {
+                dao?.deleteResourcePermanently(resource.id)
+            } else {
+                SyncWorker.enqueueImmediateSync(getApplication())
+            }
         }
     }
 
@@ -426,10 +493,12 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             val insertedId = dao?.insertResource(entity) ?: 0L
             val entityWithId = if (insertedId > 0L) entity.copy(id = insertedId) else entity
             if (insertedId > 0L) {
-                syncResourceToFirestore(entityWithId)
+                if (!syncResourceToFirestore(entityWithId)) {
+                    SyncWorker.enqueueImmediateSync(context)
+                }
+            } else {
+                SyncWorker.enqueueImmediateSync(context)
             }
-            Log.d("SharkMentorSync", "Triggering sync for insertResource")
-            SyncWorker.enqueueImmediateSync(context)
         }
     }
 
@@ -438,7 +507,7 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             _isScanning.value = true
             _scanError.value = null
             _lastScannedUri.value = documentUri
-            
+
             val result = kotlinx.coroutines.withContext(Dispatchers.IO) {
                 aiService.extractTopicsFromDocument(documentUri)
             }
@@ -458,17 +527,18 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     val insertedIds = dao?.insertTopicGoals(entities) ?: emptyList()
                     entities.forEachIndexed { index, topicEntity ->
-                        val topicId = insertedIds.getOrNull(index)?.takeIf { it > 0L }?.toString() ?: topicEntity.id.toString()
-                        syncTopicToFirestore(topicId, topicEntity.subject, topicEntity.topic, topicEntity.currentLevel)
+                        val topicId = insertedIds.getOrNull(index)?.takeIf { it > 0L } ?: topicEntity.id
+                        if (topicId > 0L) {
+                            syncTopicToFirestore(topicId, topicEntity.subject, topicEntity.topic, topicEntity.currentLevel)
+                        }
                     }
-                    Log.d("SharkMentorSync", "Triggering sync for extractTopicsFromDocument")
                     SyncWorker.enqueueImmediateSync(context)
                 }
 
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
                     android.widget.Toast.makeText(
                         context,
-                        "${topicPairs.size} adet konu baÅŸarÄ±yla eklendi!",
+                        "${topicPairs.size} adet konu başarıyla eklendi.",
                         android.widget.Toast.LENGTH_SHORT
                     ).show()
                 }

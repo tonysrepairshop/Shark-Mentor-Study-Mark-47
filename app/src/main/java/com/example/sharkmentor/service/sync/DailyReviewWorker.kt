@@ -62,7 +62,7 @@ class DailyReviewWorker(
             .setSmallIcon(smallIconRes)
             .setLargeIcon(largeIconBitmap)
             .setColor(context.getColor(R.color.shark_blue_primary))
-            .setContentTitle("Bugünkü Çalışman Nasıl Geçti? 🦈")
+            .setContentTitle("Günlük Çalışma Değerlendirmesi")
             .setContentText("Günün değerlendirmesini yapmak ve verilerini kaydetmek için dokun.")
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)

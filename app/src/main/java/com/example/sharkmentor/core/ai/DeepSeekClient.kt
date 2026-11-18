@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -58,6 +60,11 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
 
     private val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+            .dispatcher(Dispatcher().apply {
+                maxRequests = 24
+                maxRequestsPerHost = 12
+            })
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)

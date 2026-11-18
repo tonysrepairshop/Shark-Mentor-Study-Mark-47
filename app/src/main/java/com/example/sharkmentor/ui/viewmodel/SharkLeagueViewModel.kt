@@ -56,15 +56,16 @@ const val NUDGE_COOLDOWN_MS: Long = 15L * 60L * 1_000L
 const val GLOBAL_LEAGUE_BUCKET = "GLOBAL_INDIVIDUAL"
 
 private const val INVITE_STALENESS_MS = 24L * 60L * 60L * 1_000L
+private val GROUP_CODE_SANITIZE_REGEX = Regex("[^A-Z0-9]")
 
 // ─── Data models ─────────────────────────────────────────────────────────────
 
 enum class SharkTier(val label: String, val emoji: String, val color: Long) {
-    CAMGOZ     ("Camgöz",      "🦈", 0xFF94A3B8),
-    MAKO       ("Mako",        "⚡", 0xFF38BDF8),
-    CEKICBAS   ("Çekiçbaş",    "🌊", 0xFF6366F1),
-    KAPLAN     ("Kaplan",      "🔥", 0xFFF59E0B),
-    BUYUK_BEYAZ("Büyük Beyaz", "👑", 0xFFE2E8F0)
+    CAMGOZ     ("Camgöz",      "", 0xFF94A3B8),
+    MAKO       ("Mako",        "", 0xFF38BDF8),
+    CEKICBAS   ("Çekiçbaş",    "", 0xFF6366F1),
+    KAPLAN     ("Kaplan",      "", 0xFFF59E0B),
+    BUYUK_BEYAZ("Büyük Beyaz", "", 0xFFE2E8F0)
 }
 
 fun Long.toTier(): SharkTier = when {
@@ -347,50 +348,63 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             val myFriendCode = _uiState.value.myFriendCode.ifBlank { userPrefs.getOrCreateFriendCode(uid) }
 
             if (database != null && uid.isNotBlank() && uid != "local_student" && uid != "student_default") {
-                runCatching {
-                    database.collection("students").document(uid)
-                        .set(
-                            mapOf("name" to cleanName, "displayName" to cleanName),
-                            SetOptions.merge()
-                        )
-                        .await()
-                }
-                runCatching {
-                    database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
-                        .collection("weeklyLeague").document(uid)
-                        .set(mapOf("displayName" to cleanName), SetOptions.merge())
-                        .await()
-                }
                 val instCode = _uiState.value.institutionCode
-                if (instCode.isNotBlank() && instCode != GLOBAL_LEAGUE_BUCKET) {
-                    runCatching {
-                        database.collection("institutions").document(instCode)
-                            .collection("weeklyLeague").document(uid)
-                            .set(mapOf("displayName" to cleanName), SetOptions.merge())
-                            .await()
+                coroutineScope {
+                    val writes = mutableListOf(
+                        async {
+                            runCatching {
+                                database.collection("students").document(uid)
+                                    .set(mapOf("name" to cleanName, "displayName" to cleanName), SetOptions.merge())
+                                    .await()
+                            }
+                        },
+                        async {
+                            runCatching {
+                                database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
+                                    .collection("weeklyLeague").document(uid)
+                                    .set(mapOf("displayName" to cleanName), SetOptions.merge())
+                                    .await()
+                            }
+                        },
+                        async {
+                            runCatching {
+                                database.collection("friend_codes").document(myFriendCode)
+                                    .set(mapOf("displayName" to cleanName), SetOptions.merge())
+                                    .await()
+                            }
+                        }
+                    )
+                    if (instCode.isNotBlank() && instCode != GLOBAL_LEAGUE_BUCKET) {
+                        writes.add(
+                            async {
+                                runCatching {
+                                    database.collection("institutions").document(instCode)
+                                        .collection("weeklyLeague").document(uid)
+                                        .set(mapOf("displayName" to cleanName), SetOptions.merge())
+                                        .await()
+                                }
+                            }
+                        )
                     }
-                }
-                runCatching {
-                    database.collection("friend_codes").document(myFriendCode)
-                        .set(mapOf("displayName" to cleanName), SetOptions.merge())
-                        .await()
-                }
-                for (groupCode in userPrefs.joinedGroupCodes) {
-                    runCatching {
-                        database.collection("study_groups").document(groupCode)
-                            .set(
-                                mapOf("memberNames" to mapOf(uid to cleanName)),
-                                SetOptions.merge()
-                            )
-                            .await()
+                    userPrefs.joinedGroupCodes.forEach { groupCode ->
+                        writes.add(
+                            async {
+                                runCatching {
+                                    database.collection("study_groups").document(groupCode)
+                                        .set(mapOf("memberNames" to mapOf(uid to cleanName)), SetOptions.merge())
+                                        .await()
+                                }
+                            }
+                        )
                     }
+                    writes.awaitAll()
                 }
             }
 
             _uiState.value = _uiState.value.copy(
                 isActionInProgress = false,
                 needsNameSetup = false,
-                statusMessage = "Adın \"$cleanName\" olarak güncellendi!"
+                statusMessage = "Adın \"$cleanName\" olarak güncellendi."
             )
             loadLeague(preserveTab = true)
         }
@@ -433,7 +447,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         val msg = SyncWorker.sanitizeTurkishText(
                             doc.getString("message").orEmpty()
                         ).ifBlank {
-                            "$fromName seni birlikte çalışmaya davet ediyor! Hadi masaya geç ve odak seansını başlat 🦈"
+                            "$fromName seni birlikte çalışmaya davet ediyor. Odak seansını başlatabilirsin."
                         }
                         IncomingStudyInvite(
                             id = doc.id,
@@ -517,11 +531,11 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 SessionManager.setTimerRunning(true)
             }
             _uiState.value = _uiState.value.copy(
-                statusMessage = if (started) "🦈 Odak seansın başlatıldı! İyi çalışmalar!" else "Odak sayacı ana ekranda başlatılabilir."
+                statusMessage = if (started) "Odak seansın başlatıldı. İyi çalışmalar." else "Odak sayacı ana ekranda başlatılabilir."
             )
         } else {
             _uiState.value = _uiState.value.copy(
-                statusMessage = "🦈 Davet onaylandı — odak sayacın zaten aktif!"
+                statusMessage = "Davet onaylandı; odak sayacın zaten aktif."
             )
         }
     }
@@ -530,9 +544,11 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
     fun loadLeague(preserveTab: Boolean = true) {
         viewModelScope.launch {
-            val currentTab = _uiState.value.activeTab
-            _uiState.value = _uiState.value.copy(
-                isLoading = true,
+            val currentState = _uiState.value
+            val currentTab = currentState.activeTab
+            val showBlockingLoader = currentState.leaderboard.isEmpty()
+            _uiState.value = currentState.copy(
+                isLoading = showBlockingLoader,
                 activeTab = if (preserveTab) currentTab else LeagueTab.GLOBAL_INDIVIDUAL,
                 error = null
             )
@@ -547,15 +563,16 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 }
 
                 val currentWeekKey = SharkBadgeCatalog.currentIsoWeekKey()
+                val localBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
+                val localUnlocked = SharkBadgeCatalog.getUnlockedBadgeIds(appContext)
+                val localProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
+                val localPoints = SharkBadgeCatalog.getMentorPoints(appContext)
+                val localBonusSecs = SharkBadgeCatalog.getWeeklyBonusSeconds(appContext, currentWeekKey)
+                val localBlocked = SharkBadgeCatalog.getBlockedUserIds(appContext)
+
                 val database = db
                 if (database == null || uid == "local_student" || uid == "student_default") {
                     val offlineName = resolveStudentDisplayName(uid, null, null)
-                    val localBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
-                    val localUnlocked = SharkBadgeCatalog.getUnlockedBadgeIds(appContext)
-                    val localProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
-                    val localPoints = SharkBadgeCatalog.getMentorPoints(appContext)
-                    val localBonusSecs = SharkBadgeCatalog.getWeeklyBonusSeconds(appContext, currentWeekKey)
-                    val localBlocked = SharkBadgeCatalog.getBlockedUserIds(appContext)
                     val fallbackMe = buildMyLeagueEntry(
                         uid = uid,
                         name = offlineName,
@@ -583,13 +600,35 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     return@launch
                 }
 
+                // Pre-populate own summary immediately if myEntry is null so header/profile state is ready
+                if (_uiState.value.myEntry == null) {
+                    val initialName = SyncWorker.sanitizeTurkishText(userPrefs.studentName).takeIf { isMeaningfulName(it) } ?: "Öğrenci"
+                    val quickMe = buildMyLeagueEntry(
+                        uid = uid,
+                        name = initialName,
+                        friendCode = myFriendCode,
+                        weeklySeconds = localWeeklySeconds,
+                        weeklyBonusSeconds = localBonusSecs,
+                        streakDays = localStreakDays,
+                        mentorPoints = localPoints,
+                        showcaseBadges = localBadges,
+                        badgeProgress = localProgress
+                    )
+                    _uiState.value = _uiState.value.copy(
+                        myEntry = quickMe,
+                        myFriendCode = myFriendCode
+                    )
+                }
+
                 ensureSocialListeners(uid)
 
-                // 2. Read student doc from Firestore (without requiring branchCode!)
-                val studentDoc = try {
-                    database.collection("students").document(uid).get().await()
-                } catch (_: Exception) {
-                    null
+                // 2. Fetch students/{uid} and cloud weekly focus stats concurrently
+                val (studentDoc, cloudWeeklySeconds) = coroutineScope {
+                    val studentDeferred = async {
+                        runCatching { database.collection("students").document(uid).get().await() }.getOrNull()
+                    }
+                    val cloudSecsDeferred = async { computeCloudWeeklyFocusSeconds(uid) }
+                    studentDeferred.await() to cloudSecsDeferred.await()
                 }
 
                 val branchCode = (studentDoc?.getString("branchCode")
@@ -606,8 +645,6 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     userPrefs.friendCode = remoteFriendCode
                 }
 
-                // 3. Combine local & cloud weekly focus seconds (max of both to avoid undercounting)
-                val cloudWeeklySeconds = computeCloudWeeklyFocusSeconds(uid)
                 val weeklySeconds = maxOf(localWeeklySeconds, cloudWeeklySeconds)
                 val remoteStreak = studentDoc?.getLong("streakDays")?.toInt() ?: 0
                 val streakDays = maxOf(localStreakDays, remoteStreak)
@@ -624,7 +661,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 }
                 val mergedWeeklyBonusSecs = SharkBadgeCatalog.saveWeeklyBonusSeconds(
                     appContext,
-                    maxOf(remoteWeekBonus, SharkBadgeCatalog.getWeeklyBonusSeconds(appContext, currentWeekKey)),
+                    maxOf(remoteWeekBonus, localBonusSecs),
                     currentWeekKey
                 )
 
@@ -680,7 +717,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
                 // Badges & Mentor Points sync
                 val remotePoints = studentDoc?.getLong("mentorPoints")?.toInt() ?: 0
-                val mergedPoints = maxOf(remotePoints, SharkBadgeCatalog.getMentorPoints(appContext))
+                val mergedPoints = maxOf(remotePoints, localPoints)
                 SharkBadgeCatalog.saveMentorPoints(appContext, mergedPoints)
 
                 val remoteProgress = SharkBadgeCatalog.parseRemoteProgressMap(studentDoc?.get("badgeProgress"))
@@ -712,34 +749,6 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val myUnlocked = SharkBadgeCatalog.getUnlockedBadgeIds(appContext)
                 val finalProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
 
-                // 4. Register friendCode & upsert into GLOBAL_INDIVIDUAL (and institution league if any)
-                registerFriendCodeAndProfile(
-                    uid = uid,
-                    name = myName,
-                    friendCode = effectiveFriendCode,
-                    weeklyFocusSeconds = weeklySeconds,
-                    weeklyBonusSeconds = mergedWeeklyBonusSecs,
-                    weekKey = currentWeekKey,
-                    streakDays = streakDays,
-                    branchCode = branchCode,
-                    avatarBase64 = myAvatarBase64,
-                    avatarPresetId = myAvatarPresetId,
-                    mentorPoints = mergedPoints,
-                    showcaseBadges = myShowcase,
-                    unlockedBadges = myUnlocked,
-                    badgeProgress = finalProgress
-                )
-
-                // Sync real name into joined study_groups memberNames map if meaningful
-                if (isMeaningfulName(myName)) {
-                    for (code in allGroupCodes) {
-                        runCatching {
-                            database.collection("study_groups").document(code)
-                                .set(mapOf("memberNames" to mapOf(uid to myName)), SetOptions.merge())
-                        }
-                    }
-                }
-
                 val myEntry = buildMyLeagueEntry(
                     uid = uid,
                     name = myName,
@@ -754,26 +763,67 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     badgeProgress = finalProgress
                 )
 
-                // 5. Fetch Global Individual League (or Institution League if user toggled it)
+                // 3. Concurrently push profile/league stats, sync study_group names, and pull leaderboard + social circles
                 val useInst = _uiState.value.useInstitutionFilter && branchCode.isNotBlank()
                 val targetBucket = if (useInst) branchCode else GLOBAL_LEAGUE_BUCKET
+                val activeSelectedGroup = _uiState.value.selectedGroupCode
 
-                val globalEntries = fetchLeaderboardBucket(
-                    bucketId = targetBucket,
-                    currentUid = uid,
-                    myEntry = myEntry,
-                    weekKey = currentWeekKey
-                ).filter { it.isCurrentUser || !blockedSet.contains(it.studentId) }
+                val (globalEntries, socialPair) = coroutineScope {
+                    val pushProfileJob = async {
+                        registerFriendCodeAndProfile(
+                            uid = uid,
+                            name = myName,
+                            friendCode = effectiveFriendCode,
+                            weeklyFocusSeconds = weeklySeconds,
+                            weeklyBonusSeconds = mergedWeeklyBonusSecs,
+                            weekKey = currentWeekKey,
+                            streakDays = streakDays,
+                            branchCode = branchCode,
+                            avatarBase64 = myAvatarBase64,
+                            avatarPresetId = myAvatarPresetId,
+                            mentorPoints = mergedPoints,
+                            showcaseBadges = myShowcase,
+                            unlockedBadges = myUnlocked,
+                            badgeProgress = finalProgress
+                        )
+                        if (isMeaningfulName(myName) && allGroupCodes.isNotEmpty()) {
+                            allGroupCodes.map { code ->
+                                async {
+                                    runCatching {
+                                        database.collection("study_groups").document(code)
+                                            .set(mapOf("memberNames" to mapOf(uid to myName)), SetOptions.merge())
+                                            .await()
+                                    }
+                                }
+                            }.awaitAll()
+                        }
+                    }
 
-                // 6. Fetch User's Joined Study Groups & Friends comparison list
-                val (groupSummaries, rawSocialEntries) = fetchGroupsAndFriendsEntries(
-                    uid = uid,
-                    myEntry = myEntry,
-                    groupCodes = allGroupCodes,
-                    friendIds = allFriendIds,
-                    selectedGroupCode = _uiState.value.selectedGroupCode,
-                    weekKey = currentWeekKey
-                )
+                    val leaderboardDeferred = async {
+                        fetchLeaderboardBucket(
+                            bucketId = targetBucket,
+                            currentUid = uid,
+                            myEntry = myEntry,
+                            weekKey = currentWeekKey
+                        ).filter { it.isCurrentUser || !blockedSet.contains(it.studentId) }
+                    }
+
+                    val socialDeferred = async {
+                        fetchGroupsAndFriendsEntries(
+                            uid = uid,
+                            myEntry = myEntry,
+                            groupCodes = allGroupCodes,
+                            friendIds = allFriendIds,
+                            selectedGroupCode = activeSelectedGroup,
+                            weekKey = currentWeekKey
+                        )
+                    }
+
+                    pushProfileJob.await()
+                    leaderboardDeferred.await() to socialDeferred.await()
+                }
+
+                val (groupSummaries, rawSocialEntries) = socialPair
                 val socialEntries = rawSocialEntries.filter { it.isCurrentUser || !blockedSet.contains(it.studentId) }
 
                 eligibleSocialMemberIds = (allFriendIds + socialEntries.map { it.studentId })
@@ -870,16 +920,22 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         "createdAt" to FieldValue.serverTimestamp(),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
-                    database.collection("study_groups").document(inviteCode)
-                        .set(groupData, SetOptions.merge())
-                        .await()
-
-                    database.collection("students").document(uid)
-                        .set(
-                            mapOf("joinedGroupCodes" to FieldValue.arrayUnion(inviteCode)),
-                            SetOptions.merge()
-                        )
-                        .await()
+                    coroutineScope {
+                        val groupWrite = async {
+                            database.collection("study_groups").document(inviteCode)
+                                .set(groupData, SetOptions.merge())
+                                .await()
+                        }
+                        val studentWrite = async {
+                            database.collection("students").document(uid)
+                                .set(
+                                    mapOf("joinedGroupCodes" to FieldValue.arrayUnion(inviteCode)),
+                                    SetOptions.merge()
+                                )
+                                .await()
+                        }
+                        awaitAll(groupWrite, studentWrite)
+                    }
                 }
 
                 val newGroupSummary = StudyGroupSummary(
@@ -894,7 +950,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     selectedGroupCode = inviteCode,
                     joinedGroups = (_uiState.value.joinedGroups + newGroupSummary).distinctBy { it.inviteCode },
                     groupName = cleanName,
-                    statusMessage = "\"$cleanName\" grubu oluşturuldu! Davet Kodu: $inviteCode"
+                    statusMessage = "\"$cleanName\" grubu oluşturuldu. Davet Kodu: $inviteCode"
                 )
                 loadLeague(preserveTab = true)
             } catch (e: Exception) {
@@ -992,14 +1048,22 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
                     userPrefs.addedFriendIds = userPrefs.addedFriendIds + friendUid
                     eligibleSocialMemberIds = eligibleSocialMemberIds + friendUid
-                    database.collection("students").document(uid)
-                        .set(mapOf("friendIds" to FieldValue.arrayUnion(friendUid)), SetOptions.merge())
-                        .await()
-                    try {
-                        database.collection("students").document(friendUid)
-                            .set(mapOf("friendIds" to FieldValue.arrayUnion(uid)), SetOptions.merge())
-                            .await()
-                    } catch (_: Exception) {}
+                    coroutineScope {
+                        val myWrite = async {
+                            database.collection("students").document(uid)
+                                .set(mapOf("friendIds" to FieldValue.arrayUnion(friendUid)), SetOptions.merge())
+                                .await()
+                        }
+                        val peerWrite = async {
+                            runCatching {
+                                database.collection("students").document(friendUid)
+                                    .set(mapOf("friendIds" to FieldValue.arrayUnion(uid)), SetOptions.merge())
+                                    .await()
+                            }
+                        }
+                        myWrite.await()
+                        peerWrite.await()
+                    }
 
                     val cleanFriendName = SyncWorker.sanitizeTurkishText(
                         friendName?.takeIf { isMeaningfulName(it) } ?: "Arkadaş"
@@ -1008,12 +1072,12 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         isActionInProgress = false,
                         activeTab = LeagueTab.GROUPS_AND_FRIENDS,
                         selectedGroupCode = null,
-                        statusMessage = "$cleanFriendName ($normalizedFriendCode) arkadaş listene eklendi!"
+                        statusMessage = "$cleanFriendName ($normalizedFriendCode) arkadaş listene eklendi."
                     )
                     loadLeague(preserveTab = true)
                 } else {
                     // 6-digit Study Group Code
-                    val groupCode = cleaned.replace("[^A-Z0-9]".toRegex(), "")
+                    val groupCode = cleaned.replace(GROUP_CODE_SANITIZE_REGEX, "")
                     val groupDoc = database.collection("study_groups").document(groupCode).get().await()
                     if (!groupDoc.exists()) {
                         _uiState.value = _uiState.value.copy(
@@ -1039,23 +1103,29 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     if (isMeaningfulName(myName)) {
                         groupUpdate["memberNames"] = mapOf(uid to myName)
                     }
-                    database.collection("study_groups").document(groupCode)
-                        .set(groupUpdate, SetOptions.merge())
-                        .await()
-
-                    database.collection("students").document(uid)
-                        .set(
-                            mapOf("joinedGroupCodes" to FieldValue.arrayUnion(groupCode)),
-                            SetOptions.merge()
-                        )
-                        .await()
+                    coroutineScope {
+                        val groupWrite = async {
+                            database.collection("study_groups").document(groupCode)
+                                .set(groupUpdate, SetOptions.merge())
+                                .await()
+                        }
+                        val studentWrite = async {
+                            database.collection("students").document(uid)
+                                .set(
+                                    mapOf("joinedGroupCodes" to FieldValue.arrayUnion(groupCode)),
+                                    SetOptions.merge()
+                                )
+                                .await()
+                        }
+                        awaitAll(groupWrite, studentWrite)
+                    }
 
                     _uiState.value = _uiState.value.copy(
                         isActionInProgress = false,
                         activeTab = LeagueTab.GROUPS_AND_FRIENDS,
                         selectedGroupCode = groupCode,
                         groupName = groupTitle,
-                        statusMessage = "\"$groupTitle\" ($groupCode) çalışma grubuna katıldın!"
+                        statusMessage = "\"$groupTitle\" ($groupCode) çalışma grubuna katıldın."
                     )
                     loadLeague(preserveTab = true)
                 }
@@ -1155,32 +1225,39 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     "receiverName" to targetCleanName,
                     "groupId" to activeGroupId,
                     "type" to "STUDY_INVITE",
-                    "message" to "🦈 $myName seni birlikte çalışmaya davet ediyor! Masaya geçip odak seansını başlat.",
+                    "message" to "$myName seni birlikte çalışmaya davet ediyor. Masaya geçip odak seansını başlatabilirsin.",
                     "createdAt" to FieldValue.serverTimestamp(),
                     "createdAtMillis" to now,
                     "seen" to false
                 )
 
-                database.collection("nudges").document(nudgeDocId)
-                    .set(nudgePayload, SetOptions.merge())
-                    .await()
-
-                try {
-                    sentNudgeRef.set(
-                        mapOf(
-                            "targetStudentId" to target.studentId,
-                            "lastSentAtMillis" to now,
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        ),
-                        SetOptions.merge()
-                    ).await()
-                } catch (_: Exception) {}
+                coroutineScope {
+                    val nudgeWrite = async {
+                        database.collection("nudges").document(nudgeDocId)
+                            .set(nudgePayload, SetOptions.merge())
+                            .await()
+                    }
+                    val cooldownWrite = async {
+                        runCatching {
+                            sentNudgeRef.set(
+                                mapOf(
+                                    "targetStudentId" to target.studentId,
+                                    "lastSentAtMillis" to now,
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                ),
+                                SetOptions.merge()
+                            ).await()
+                        }
+                    }
+                    nudgeWrite.await()
+                    cooldownWrite.await()
+                }
 
                 userPrefs.recordNudgeSent(target.studentId, now)
                 updateEntryNudgeTimestamp(target.studentId, now)
 
                 _uiState.value = _uiState.value.copy(
-                    statusMessage = "🦈 $targetCleanName çalışma davetiyle çağrıldı!"
+                    statusMessage = "$targetCleanName çalışma davetiyle çağrıldı."
                 )
             } catch (e: Exception) {
                 Log.e("SharkLeagueVM", "nudgeLeagueMember error", e)
@@ -1205,7 +1282,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             friendsAndGroupMembers = current.friendsAndGroupMembers.map {
                 if (it.isCurrentUser) it.copy(showcaseBadges = saved) else it
             },
-            statusMessage = "5 rozet vitrinin güncellendi!"
+            statusMessage = "5 rozet vitrinin güncellendi."
         )
 
         val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: return
@@ -1239,7 +1316,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     leaderboard = current.leaderboard.filter { it.isCurrentUser || !updatedBlocked.contains(it.studentId) },
                     friendsAndGroupMembers = current.friendsAndGroupMembers.filter { it.isCurrentUser || !updatedBlocked.contains(it.studentId) },
                     incomingStudyInvite = current.incomingStudyInvite?.takeUnless { it.fromUid == target.studentId },
-                    statusMessage = "🚫 $targetName engellendi. Mesajları ve davetleri gizlendi."
+                    statusMessage = "$targetName engellendi. Mesajları ve davetleri gizlendi."
                 )
             } else {
                 _uiState.value = current.copy(
@@ -1269,7 +1346,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             )
             _uiState.value = _uiState.value.copy(
                 statusMessage = if (ok) {
-                    "🚩 $targetName hakkında şikayet incelenmek üzere iletildi."
+                    "$targetName hakkında şikayet incelenmek üzere iletildi."
                 } else {
                     "Şikayet yerel olarak kaydedilemedi, internet bağlantını kontrol et."
                 }
@@ -1325,7 +1402,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     target.rawName.ifBlank { target.displayName }
                 )
                 val cleanNote = SyncWorker.sanitizeTurkishText(note.trim()).ifBlank {
-                    "Soru & çalışma hakkında direkt mesaj isteği"
+                    "Soru ve çalışma hakkında direkt mesaj isteği"
                 }
                 val now = System.currentTimeMillis()
                 val payload = hashMapOf<String, Any>(
@@ -1362,7 +1439,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
                 _uiState.value = _uiState.value.copy(
                     dmStatusByPeerId = _uiState.value.dmStatusByPeerId + (target.studentId to "PENDING"),
-                    statusMessage = "$peerName için direkt mesaj isteği gönderildi!"
+                    statusMessage = "$peerName için direkt mesaj isteği gönderildi."
                 )
             } catch (e: Exception) {
                 Log.w("SharkLeagueVM", "sendDmRequest warning: ${e.message}")
@@ -1463,34 +1540,41 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             val database = db ?: return 0L
             val now = System.currentTimeMillis()
             val weekStart = now - 7L * 24 * 3600 * 1000
+            val studentDocRef = database.collection("students").document(uid)
 
-            val sessionsSnap = try {
-                database.collection("students").document(uid)
-                    .collection("sessions")
-                    .whereGreaterThanOrEqualTo("timestamp", weekStart)
-                    .get()
-                    .await()
-            } catch (_: Exception) {
-                null
+            coroutineScope {
+                val sessionsDeferred = async {
+                    try {
+                        studentDocRef.collection("sessions")
+                            .whereGreaterThanOrEqualTo("timestamp", weekStart)
+                            .get()
+                            .await()
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val focusDeferred = async {
+                    try {
+                        studentDocRef.collection("focus_sessions")
+                            .whereGreaterThanOrEqualTo("timestamp", weekStart)
+                            .get()
+                            .await()
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+
+                val fromSessions = sessionsDeferred.await()?.documents?.sumOf { doc ->
+                    doc.getLong("durationSeconds") ?: 0L
+                } ?: 0L
+                if (fromSessions > 0L) {
+                    fromSessions
+                } else {
+                    focusDeferred.await()?.documents?.sumOf { doc ->
+                        doc.getLong("durationSeconds") ?: 0L
+                    } ?: 0L
+                }
             }
-            val fromSessions = sessionsSnap?.documents?.sumOf { doc ->
-                doc.getLong("durationSeconds") ?: 0L
-            } ?: 0L
-
-            if (fromSessions > 0L) return fromSessions
-
-            val focusSnap = try {
-                database.collection("students").document(uid)
-                    .collection("focus_sessions")
-                    .whereGreaterThanOrEqualTo("timestamp", weekStart)
-                    .get()
-                    .await()
-            } catch (_: Exception) {
-                null
-            }
-            focusSnap?.documents?.sumOf { doc ->
-                doc.getLong("durationSeconds") ?: 0L
-            } ?: 0L
         } catch (e: Exception) {
             0L
         }
@@ -1539,36 +1623,6 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 "lastSessionAt" to FieldValue.serverTimestamp()
             )
 
-            // 1. Always upsert into Bireysel Genel Lig (GLOBAL_INDIVIDUAL)
-            database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
-                .collection("weeklyLeague").document(uid)
-                .set(leaguePayload, SetOptions.merge())
-                .await()
-
-            // 2. If user also belongs to an institution, upsert into institution weeklyLeague
-            if (branchCode.isNotBlank() && branchCode != GLOBAL_LEAGUE_BUCKET) {
-                database.collection("institutions").document(branchCode)
-                    .collection("weeklyLeague").document(uid)
-                    .set(leaguePayload, SetOptions.merge())
-                    .await()
-            }
-
-            // 3. Register friend_codes/{friendCode} for instant lookup
-            try {
-                database.collection("friend_codes").document(friendCode)
-                    .set(
-                        mapOf(
-                            "friendCode" to friendCode,
-                            "studentId" to uid,
-                            "displayName" to name,
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        ),
-                        SetOptions.merge()
-                    )
-                    .await()
-            } catch (_: Exception) {}
-
-            // 4. Mirror summary stats on students/{uid} so friends & groups can read them
             val studentPayload = hashMapOf<String, Any>(
                 "id" to uid,
                 "friendCode" to friendCode,
@@ -1588,9 +1642,54 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 studentPayload["name"] = name
                 studentPayload["displayName"] = name
             }
-            database.collection("students").document(uid)
-                .set(studentPayload, SetOptions.merge())
-                .await()
+
+            coroutineScope {
+                // 1. Always upsert into Bireysel Genel Lig (GLOBAL_INDIVIDUAL)
+                val globalJob = async {
+                    database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
+                        .collection("weeklyLeague").document(uid)
+                        .set(leaguePayload, SetOptions.merge())
+                        .await()
+                }
+                // 2. If user also belongs to an institution, upsert into institution weeklyLeague
+                val branchJob = if (branchCode.isNotBlank() && branchCode != GLOBAL_LEAGUE_BUCKET) {
+                    async {
+                        runCatching {
+                            database.collection("institutions").document(branchCode)
+                                .collection("weeklyLeague").document(uid)
+                                .set(leaguePayload, SetOptions.merge())
+                                .await()
+                        }
+                    }
+                } else null
+                // 3. Register friend_codes/{friendCode} for instant lookup
+                val friendCodeJob = async {
+                    try {
+                        database.collection("friend_codes").document(friendCode)
+                            .set(
+                                mapOf(
+                                    "friendCode" to friendCode,
+                                    "studentId" to uid,
+                                    "displayName" to name,
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                ),
+                                SetOptions.merge()
+                            )
+                            .await()
+                    } catch (_: Exception) {}
+                }
+                // 4. Mirror summary stats on students/{uid} so friends & groups can read them
+                val studentJob = async {
+                    database.collection("students").document(uid)
+                        .set(studentPayload, SetOptions.merge())
+                        .await()
+                }
+
+                globalJob.await()
+                branchJob?.await()
+                friendCodeJob.await()
+                studentJob.await()
+            }
         } catch (e: Exception) {
             Log.w("SharkLeagueVM", "registerFriendCodeAndProfile warning: ${e.message}")
         }
@@ -1766,41 +1865,55 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         weekKey: String
     ): Pair<List<StudyGroupSummary>, List<LeagueEntry>> {
         val database = db ?: return emptyList<StudyGroupSummary>() to listOf(myEntry)
-        val groupSummaries = mutableListOf<StudyGroupSummary>()
-        val groupMemberMap = mutableMapOf<String, Set<String>>()
-        val memberNamesLookup = mutableMapOf<String, String>()
 
-        for (code in groupCodes) {
-            try {
-                val doc = database.collection("study_groups").document(code).get().await()
-                if (doc.exists()) {
-                    val gName = SyncWorker.sanitizeTurkishText(doc.getString("name") ?: "Grup $code")
-                    val members = (doc.get("memberIds") as? List<*>)
-                        ?.mapNotNull { it?.toString()?.trim() }
-                        ?.filter { it.isNotBlank() }
-                        ?.toSet()
-                        ?: setOf(uid)
-                    val namesMap = doc.get("memberNames") as? Map<*, *>
-                    namesMap?.forEach { (k, v) ->
-                        val memberKey = k?.toString()?.trim().orEmpty()
-                        val memberVal = SyncWorker.sanitizeTurkishText(v?.toString()).trim()
-                        if (memberKey.isNotBlank() && isMeaningfulName(memberVal)) {
-                            memberNamesLookup[memberKey] = memberVal
+        val fetchedGroups = if (groupCodes.isEmpty()) {
+            emptyList()
+        } else {
+            coroutineScope {
+                groupCodes.map { code ->
+                    async {
+                        try {
+                            val doc = database.collection("study_groups").document(code).get().await()
+                            if (!doc.exists()) return@async null
+                            val gName = SyncWorker.sanitizeTurkishText(doc.getString("name") ?: "Grup $code")
+                            val members = (doc.get("memberIds") as? List<*>)
+                                ?.mapNotNull { it?.toString()?.trim() }
+                                ?.filter { it.isNotBlank() }
+                                ?.toSet()
+                                ?: setOf(uid)
+                            val namesMap = doc.get("memberNames") as? Map<*, *>
+                            val localNames = buildMap<String, String> {
+                                namesMap?.forEach { (k, v) ->
+                                    val memberKey = k?.toString()?.trim().orEmpty()
+                                    val memberVal = SyncWorker.sanitizeTurkishText(v?.toString()).trim()
+                                    if (memberKey.isNotBlank() && isMeaningfulName(memberVal)) {
+                                        put(memberKey, memberVal)
+                                    }
+                                }
+                            }
+                            Triple(
+                                StudyGroupSummary(
+                                    inviteCode = code,
+                                    name = gName,
+                                    memberCount = members.size.coerceAtLeast(1),
+                                    creatorId = doc.getString("creatorId") ?: ""
+                                ),
+                                members,
+                                localNames
+                            )
+                        } catch (e: Exception) {
+                            Log.w("SharkLeagueVM", "Failed to load study_group $code: ${e.message}")
+                            null
                         }
                     }
-                    groupSummaries.add(
-                        StudyGroupSummary(
-                            inviteCode = code,
-                            name = gName,
-                            memberCount = members.size.coerceAtLeast(1),
-                            creatorId = doc.getString("creatorId") ?: ""
-                        )
-                    )
-                    groupMemberMap[code] = members
-                }
-            } catch (e: Exception) {
-                Log.w("SharkLeagueVM", "Failed to load study_group $code: ${e.message}")
+                }.awaitAll().filterNotNull()
             }
+        }
+
+        val groupSummaries = fetchedGroups.map { it.first }
+        val groupMemberMap = fetchedGroups.associate { it.first.inviteCode to it.second }
+        val memberNamesLookup = buildMap<String, String> {
+            fetchedGroups.forEach { putAll(it.third) }
         }
 
         val targetMemberIds: Set<String> = if (!selectedGroupCode.isNullOrBlank()) {
@@ -1810,120 +1923,132 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             allGroupMembers + friendIds + uid
         }
 
-        val entries = mutableListOf<LeagueEntry>()
-        entries.add(myEntry)
+        val peerIds = targetMemberIds.filter { it != uid && it.isNotBlank() }
+        val peerEntries = if (peerIds.isEmpty()) {
+            emptyList()
+        } else {
+            coroutineScope {
+                peerIds.map { memberId ->
+                    async {
+                        try {
+                            // Fetch students/{memberId} and GLOBAL_INDIVIDUAL weeklyLeague concurrently
+                            val studentDeferred = async {
+                                database.collection("students").document(memberId).get().await()
+                            }
+                            val leagueDeferred = async {
+                                try {
+                                    database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
+                                        .collection("weeklyLeague").document(memberId).get().await()
+                                } catch (_: Exception) {
+                                    null
+                                }
+                            }
+                            val studentSnap = studentDeferred.await()
+                            val globalLeagueSnap = leagueDeferred.await()
 
-        for (memberId in targetMemberIds) {
-            if (memberId == uid || memberId.isBlank()) continue
-            try {
-                // Check students/{memberId} and GLOBAL_INDIVIDUAL weeklyLeague
-                val studentSnap = database.collection("students").document(memberId).get().await()
-                val globalLeagueSnap = try {
-                    database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
-                        .collection("weeklyLeague").document(memberId).get().await()
-                } catch (_: Exception) {
-                    null
-                }
+                            val extracted = extractPreferredName(studentSnap, globalLeagueSnap, fallback = "")
+                            val mapFallback = memberNamesLookup[memberId]
+                            val rawName = SyncWorker.sanitizeTurkishText(
+                                when {
+                                    isMeaningfulName(extracted) -> extracted
+                                    isMeaningfulName(mapFallback) -> mapFallback!!
+                                    else -> extractPreferredName(studentSnap, globalLeagueSnap, fallback = "Arkadaş")
+                                }
+                            )
+                            val weeklySecs = maxOf(
+                                studentSnap.getLong("weeklyFocusSeconds") ?: 0L,
+                                globalLeagueSnap?.getLong("weeklyFocusSeconds") ?: 0L
+                            )
+                            val fromStudentBonusMap = SharkBadgeCatalog.parseWeeklyBonusForWeek(
+                                studentSnap.get("weeklyBonusByWeek"),
+                                weekKey
+                            )
+                            val fromLeagueBonusMap = SharkBadgeCatalog.parseWeeklyBonusForWeek(
+                                globalLeagueSnap?.get("weeklyBonusByWeek"),
+                                weekKey
+                            )
+                            val fromStudentBonusFlat = if (studentSnap.getString("weeklyBonusWeekKey") == weekKey) {
+                                (studentSnap.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
+                            } else 0L
+                            val fromLeagueBonusFlat = if (globalLeagueSnap?.getString("weeklyBonusWeekKey") == weekKey) {
+                                (globalLeagueSnap.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
+                            } else 0L
+                            val bonusSecs = maxOf(
+                                fromStudentBonusMap,
+                                fromLeagueBonusMap,
+                                fromStudentBonusFlat,
+                                fromLeagueBonusFlat
+                            )
+                            val effectiveSecs = weeklySecs.coerceAtLeast(0L) + minOf(bonusSecs.coerceAtLeast(0L), MAX_WEEKLY_BONUS_SECONDS)
 
-                val extracted = extractPreferredName(studentSnap, globalLeagueSnap, fallback = "")
-                val mapFallback = memberNamesLookup[memberId]
-                val rawName = SyncWorker.sanitizeTurkishText(
-                    when {
-                        isMeaningfulName(extracted) -> extracted
-                        isMeaningfulName(mapFallback) -> mapFallback!!
-                        else -> extractPreferredName(studentSnap, globalLeagueSnap, fallback = "Arkadaş")
+                            val streak = maxOf(
+                                studentSnap.getLong("streakDays")?.toInt() ?: 0,
+                                globalLeagueSnap?.getLong("streakDays")?.toInt() ?: 0
+                            )
+                            val fCode = studentSnap.getString("friendCode")
+                                ?: globalLeagueSnap?.getString("friendCode")
+                                ?: ""
+                            val isStudying = studentSnap.getBoolean("isStudying") ?: false
+                            val activeSubj = studentSnap.getString("activeSubject")
+                            val avatarBase64 = studentSnap.getString("avatarBase64")?.takeIf { it.isNotBlank() }
+                                ?: globalLeagueSnap?.getString("avatarBase64").orEmpty()
+                            val avatarPresetId = if (avatarBase64.isNotBlank()) {
+                                ""
+                            } else {
+                                studentSnap.getString("avatarPresetId")?.takeIf { it.isNotBlank() }
+                                    ?: globalLeagueSnap?.getString("avatarPresetId").orEmpty()
+                            }
+                            val points = maxOf(
+                                studentSnap.getLong("mentorPoints")?.toInt() ?: 0,
+                                globalLeagueSnap?.getLong("mentorPoints")?.toInt() ?: 0
+                            )
+                            val studentShowcase = (studentSnap.get("showcaseBadges") as? List<*>)
+                                ?.mapNotNull { it?.toString()?.trim() }
+                                ?.filter { it.isNotBlank() }
+                                ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                                .orEmpty()
+                            val showcaseBadges = if (studentShowcase.isNotEmpty()) {
+                                studentShowcase
+                            } else {
+                                (globalLeagueSnap?.get("showcaseBadges") as? List<*>)
+                                    ?.mapNotNull { it?.toString()?.trim() }
+                                    ?.filter { it.isNotBlank() }
+                                    ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                                    .orEmpty()
+                            }
+                            val peerBadgeProgress = SharkBadgeCatalog.parseRemoteProgressMap(studentSnap.get("badgeProgress"))
+                                .ifEmpty { SharkBadgeCatalog.parseRemoteProgressMap(globalLeagueSnap?.get("badgeProgress")) }
+
+                            LeagueEntry(
+                                studentId = memberId,
+                                displayName = rawName,
+                                rawName = rawName,
+                                friendCode = fCode,
+                                weeklyFocusSeconds = weeklySecs,
+                                weeklyBonusSeconds = bonusSecs,
+                                dailyAverageMinutes = ((weeklySecs / 60L) / 7L).toInt(),
+                                streakDays = streak,
+                                tier = effectiveSecs.toTier(),
+                                isCurrentUser = false,
+                                isStudyingNow = isStudying,
+                                activeSubject = activeSubj,
+                                lastNudgeSentMillis = userPrefs.getLastNudgeMillis(memberId),
+                                avatarBase64 = avatarBase64,
+                                avatarPresetId = avatarPresetId,
+                                mentorPoints = points,
+                                showcaseBadges = showcaseBadges,
+                                badgeProgress = peerBadgeProgress
+                            )
+                        } catch (e: Exception) {
+                            Log.w("SharkLeagueVM", "Failed to load friend/member $memberId: ${e.message}")
+                            null
+                        }
                     }
-                )
-                val weeklySecs = maxOf(
-                    studentSnap.getLong("weeklyFocusSeconds") ?: 0L,
-                    globalLeagueSnap?.getLong("weeklyFocusSeconds") ?: 0L
-                )
-                val fromStudentBonusMap = SharkBadgeCatalog.parseWeeklyBonusForWeek(
-                    studentSnap.get("weeklyBonusByWeek"),
-                    weekKey
-                )
-                val fromLeagueBonusMap = SharkBadgeCatalog.parseWeeklyBonusForWeek(
-                    globalLeagueSnap?.get("weeklyBonusByWeek"),
-                    weekKey
-                )
-                val fromStudentBonusFlat = if (studentSnap.getString("weeklyBonusWeekKey") == weekKey) {
-                    (studentSnap.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
-                } else 0L
-                val fromLeagueBonusFlat = if (globalLeagueSnap?.getString("weeklyBonusWeekKey") == weekKey) {
-                    (globalLeagueSnap.getLong("weeklyBonusSeconds") ?: 0L).coerceAtLeast(0L)
-                } else 0L
-                val bonusSecs = maxOf(
-                    fromStudentBonusMap,
-                    fromLeagueBonusMap,
-                    fromStudentBonusFlat,
-                    fromLeagueBonusFlat
-                )
-                val effectiveSecs = weeklySecs.coerceAtLeast(0L) + minOf(bonusSecs.coerceAtLeast(0L), MAX_WEEKLY_BONUS_SECONDS)
-
-                val streak = maxOf(
-                    studentSnap.getLong("streakDays")?.toInt() ?: 0,
-                    globalLeagueSnap?.getLong("streakDays")?.toInt() ?: 0
-                )
-                val fCode = studentSnap.getString("friendCode")
-                    ?: globalLeagueSnap?.getString("friendCode")
-                    ?: ""
-                val isStudying = studentSnap.getBoolean("isStudying") ?: false
-                val activeSubj = studentSnap.getString("activeSubject")
-                val avatarBase64 = studentSnap.getString("avatarBase64")?.takeIf { it.isNotBlank() }
-                    ?: globalLeagueSnap?.getString("avatarBase64").orEmpty()
-                val avatarPresetId = if (avatarBase64.isNotBlank()) {
-                    ""
-                } else {
-                    studentSnap.getString("avatarPresetId")?.takeIf { it.isNotBlank() }
-                        ?: globalLeagueSnap?.getString("avatarPresetId").orEmpty()
-                }
-                val points = maxOf(
-                    studentSnap.getLong("mentorPoints")?.toInt() ?: 0,
-                    globalLeagueSnap?.getLong("mentorPoints")?.toInt() ?: 0
-                )
-                val studentShowcase = (studentSnap.get("showcaseBadges") as? List<*>)
-                    ?.mapNotNull { it?.toString()?.trim() }
-                    ?.filter { it.isNotBlank() }
-                    ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
-                    .orEmpty()
-                val showcaseBadges = if (studentShowcase.isNotEmpty()) {
-                    studentShowcase
-                } else {
-                    (globalLeagueSnap?.get("showcaseBadges") as? List<*>)
-                        ?.mapNotNull { it?.toString()?.trim() }
-                        ?.filter { it.isNotBlank() }
-                        ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
-                        .orEmpty()
-                }
-                val peerBadgeProgress = SharkBadgeCatalog.parseRemoteProgressMap(studentSnap.get("badgeProgress"))
-                    .ifEmpty { SharkBadgeCatalog.parseRemoteProgressMap(globalLeagueSnap?.get("badgeProgress")) }
-
-                entries.add(
-                    LeagueEntry(
-                        studentId = memberId,
-                        displayName = rawName,
-                        rawName = rawName,
-                        friendCode = fCode,
-                        weeklyFocusSeconds = weeklySecs,
-                        weeklyBonusSeconds = bonusSecs,
-                        dailyAverageMinutes = ((weeklySecs / 60L) / 7L).toInt(),
-                        streakDays = streak,
-                        tier = effectiveSecs.toTier(),
-                        isCurrentUser = false,
-                        isStudyingNow = isStudying,
-                        activeSubject = activeSubj,
-                        lastNudgeSentMillis = userPrefs.getLastNudgeMillis(memberId),
-                        avatarBase64 = avatarBase64,
-                        avatarPresetId = avatarPresetId,
-                        mentorPoints = points,
-                        showcaseBadges = showcaseBadges,
-                        badgeProgress = peerBadgeProgress
-                    )
-                )
-            } catch (e: Exception) {
-                Log.w("SharkLeagueVM", "Failed to load friend/member $memberId: ${e.message}")
+                }.awaitAll().filterNotNull()
             }
         }
+
+        val entries = listOf(myEntry) + peerEntries
 
         val sortedEntries = entries
             .distinctBy { it.studentId }

@@ -16,7 +16,9 @@ import com.example.sharkmentor.core.util.PdfBitmapConverter
 import com.example.sharkmentor.core.util.SessionManager
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.ActivePlanEntity
+import com.example.sharkmentor.data.local.entity.ConcreteTargetEntity
 import com.example.sharkmentor.data.local.entity.ErrorQuestionEntity
+import com.example.sharkmentor.data.local.entity.InstitutionScheduleEntity
 import com.example.sharkmentor.data.local.entity.PlanEntity
 import com.example.sharkmentor.data.local.entity.PlanFolderEntity
 import com.example.sharkmentor.data.local.entity.ResourceEntity
@@ -24,6 +26,7 @@ import com.example.sharkmentor.data.local.entity.StudyTaskEntity
 import com.example.sharkmentor.data.local.entity.TargetEntity
 import com.example.sharkmentor.data.local.entity.TargetPeriod
 import com.example.sharkmentor.data.local.entity.TargetType
+import com.example.sharkmentor.data.local.entity.TargetWithTasks
 import com.example.sharkmentor.data.local.entity.TopicGoalEntity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -60,6 +63,8 @@ import com.google.gson.Gson
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -124,6 +129,20 @@ object SharkAiHandoffManager {
 }
 
 open class SharkAiViewModel(application: Application) : AndroidViewModel(application) {
+
+    companion object {
+        private val CHAT_ACTION_LINE_REGEX = Regex("#ACTION:.*")
+        private val STREAM_ACTION_BLOCK_REGEX = Regex("#ACTION:(\\{.*?\\})#", RegexOption.DOT_MATCHES_ALL)
+        private val STREAM_ACTION_TAIL_REGEX = Regex("#ACTION:.*", RegexOption.DOT_MATCHES_ALL)
+        private val JSON_FENCE_COMPLETE_REGEX = Regex("```json[\\s\\S]*?```", RegexOption.IGNORE_CASE)
+        private val JSON_FENCE_OPEN_REGEX = Regex("```json[\\s\\S]*", RegexOption.IGNORE_CASE)
+        private val CODE_FENCE_COMPLETE_REGEX = Regex("```[\\s\\S]*?```")
+        private val CODE_FENCE_OPEN_REGEX = Regex("```(?:json)?\\s*", RegexOption.IGNORE_CASE)
+        private val NON_ALNUM_TR_REGEX = Regex("[^a-z0-9çğıöşü\\s]")
+        private val MULTI_SPACE_REGEX = Regex("\\s+")
+        private val OPTION_PAREN_REGEX = Regex("""\b[a-eA-E]\)""")
+        private val OPTION_WORD_REGEX = Regex("""\b[a-eA-E]\s*şıkkı""")
+    }
 
     private val gson = Gson()
     private val userAiPrefs = UserAiPreferences.initialize(application)
@@ -451,6 +470,8 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                 userAiPrefs.selectedClaudeModel,
                 userAiPrefs.userOpenAiKey,
                 userAiPrefs.selectedOpenAiModel,
+                userAiPrefs.userGrokKey,
+                userAiPrefs.selectedGrokModel,
                 userAiPrefs.selectedAiProvider
             ).collect {
                 _activeModelDisplay.value = userAiPrefs.getActiveDisplayText()
@@ -602,43 +623,54 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         activeAiJob?.cancel()
         activeAiJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                val memorySnapshot = memoryRepository.buildSemanticSnapshot()
-                val userStatsAndLibrarySnapshot = withContext(Dispatchers.IO) {
-                    val concrete = database.concreteTargetDao().getTargetRaw()
-                    val targetInfo = if (concrete != null) {
-                        "${concrete.targetTitle} (${concrete.targetScoreOrRank})"
-                    } else "Girilmedi"
-                    val shortTargets = database.targetDao().getTargetsWithTasksSync(TargetType.SHORT_TERM)
-                    val longTargets = database.targetDao().getTargetsWithTasksSync(TargetType.LONG_TERM)
-                    val allTargets = (shortTargets + longTargets).map { it.target }
-                    val targetSummary = if (allTargets.isNotEmpty()) {
-                        allTargets.take(8).joinToString(" | ") { t ->
-                            "id=${t.id} \"${t.title}\" (${t.type.name}, ${t.solvedQuestions}/${t.targetQuestions} Soru, %${(t.progress * 100).toInt()})"
-                        }
-                    } else "Aktif hedef yok"
-
-                    val allResources = database.goalsDao().getAllResourcesRaw()
-                    val librarySummary = if (allResources.isNotEmpty()) {
-                        allResources.take(12).joinToString(" | ") { r ->
-                            "id=${r.id} \"${r.title}\" (Ders: ${r.subject}, İlerleme: ${r.completedUnits}/${r.totalUnits} ${r.unitType})"
-                        }
-                    } else "Kütüphanede kayıtlı kitap yok"
-
-                    val allTopics = database.goalsDao().getAllTopicsRaw()
-                    val topicSummary = if (allTopics.isNotEmpty()) {
-                        val bySubject = allTopics.groupBy { it.subject }
-                            .entries.take(8)
-                            .joinToString(", ") { "${it.key}: ${it.value.size} konu" }
-                        "Toplam ${allTopics.size} alt konu ($bySubject)"
-                    } else "Henüz konu eklenmedi"
-
-                    """
-                    - Net/Sıralama Hedefi: $targetInfo
-                    - [MEVCUT KÜTÜPHANE KAYNAKLARI (resources)]: $librarySummary
-                    - [MEVCUT HEDEFLER (targets)]: $targetSummary
-                    - [KONU HAKİMİYETİ ÖZETİ]: $topicSummary
-                    """.trimIndent()
+                val (memorySnapshot, concrete, shortTargets, longTargets, allResources, allTopics, schedules) = coroutineScope {
+                    val memoryDef = async { memoryRepository.buildSemanticSnapshot() }
+                    val concreteDef = async { database.concreteTargetDao().getTargetRaw() }
+                    val shortDef = async { database.targetDao().getTargetsWithTasksSync(TargetType.SHORT_TERM) }
+                    val longDef = async { database.targetDao().getTargetsWithTasksSync(TargetType.LONG_TERM) }
+                    val resourcesDef = async { database.goalsDao().getAllResourcesRaw() }
+                    val topicsDef = async { database.goalsDao().getAllTopicsRaw() }
+                    val schedulesDef = async { database.institutionScheduleDao().getAllSchedules() }
+                    ContextSnapshotBundle(
+                        memorySnapshot = memoryDef.await(),
+                        concrete = concreteDef.await(),
+                        shortTargets = shortDef.await(),
+                        longTargets = longDef.await(),
+                        resources = resourcesDef.await(),
+                        topics = topicsDef.await(),
+                        schedules = schedulesDef.await()
+                    )
                 }
+
+                val targetInfo = if (concrete != null) {
+                    "${concrete.targetTitle} (${concrete.targetScoreOrRank})"
+                } else "Girilmedi"
+                val allTargets = (shortTargets + longTargets).map { it.target }
+                val targetSummary = if (allTargets.isNotEmpty()) {
+                    allTargets.take(8).joinToString(" | ") { t ->
+                        "id=${t.id} \"${t.title}\" (${t.type.name}, ${t.solvedQuestions}/${t.targetQuestions} Soru, %${(t.progress * 100).toInt()})"
+                    }
+                } else "Aktif hedef yok"
+
+                val librarySummary = if (allResources.isNotEmpty()) {
+                    allResources.take(12).joinToString(" | ") { r ->
+                        "id=${r.id} \"${r.title}\" (Ders: ${r.subject}, İlerleme: ${r.completedUnits}/${r.totalUnits} ${r.unitType})"
+                    }
+                } else "Kütüphanede kayıtlı kitap yok"
+
+                val topicSummary = if (allTopics.isNotEmpty()) {
+                    val bySubject = allTopics.groupBy { it.subject }
+                        .entries.take(8)
+                        .joinToString(", ") { "${it.key}: ${it.value.size} konu" }
+                    "Toplam ${allTopics.size} alt konu ($bySubject)"
+                } else "Henüz konu eklenmedi"
+
+                val userStatsAndLibrarySnapshot = """
+                - Net/Sıralama Hedefi: $targetInfo
+                - [MEVCUT KÜTÜPHANE KAYNAKLARI (resources)]: $librarySummary
+                - [MEVCUT HEDEFLER (targets)]: $targetSummary
+                - [KONU HAKİMİYETİ ÖZETİ]: $topicSummary
+                """.trimIndent()
 
                 val projectionReport = if (currentPersona == AiPersona.GOAL_SETTER) {
                     val wizardState = netWizardState.value
@@ -653,7 +685,6 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     """.trimIndent()
                 } else ""
 
-                val schedules = withContext(Dispatchers.IO) { database.institutionScheduleDao().getAllSchedules() }
                 val scheduleConstraintPrompt = if (schedules.isNotEmpty()) {
                     val formattedSlots = schedules.groupBy { it.dayOfWeek }.map { (day, classes) ->
                         val busyTimes = classes.joinToString(", ") { "${it.subject} (${it.startTime}-${it.endTime})" }
@@ -672,41 +703,47 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     .filter { (it.sender == "user" || it.sender == "ai") && it.id != streamingMsgId }
                     .takeLast(6)
 
-                val openAiHistory = historyCandidates.map { msg ->
-                    val cleanContent = msg.text
-                        .replace("#ACTION:.*".toRegex(), "")
-                        .replace("```json[\\s\\S]*?```".toRegex(), "")
-                        .trim()
-                        .take(500)
-                    com.example.sharkmentor.core.ai.OpenAiChatMessage(
-                        role = if (msg.sender == "user") "user" else "assistant",
-                        content = if (msg.attachmentUri != null && cleanContent.isBlank()) "[Ekli Belge/Görsel: ${msg.attachmentName ?: "Dosya"}]" else cleanContent
-                    )
+                val openAiHistory = if (attachmentUri == null) {
+                    historyCandidates.map { msg ->
+                        val cleanContent = msg.text
+                            .replace(CHAT_ACTION_LINE_REGEX, "")
+                            .replace(JSON_FENCE_COMPLETE_REGEX, "")
+                            .trim()
+                            .take(500)
+                        com.example.sharkmentor.core.ai.OpenAiChatMessage(
+                            role = if (msg.sender == "user") "user" else "assistant",
+                            content = if (msg.attachmentUri != null && cleanContent.isBlank()) "[Ekli Belge/Görsel: ${msg.attachmentName ?: "Dosya"}]" else cleanContent
+                        )
+                    }
+                } else {
+                    emptyList()
                 }
 
-                val conversationHistoryPrompt = if (historyCandidates.isNotEmpty()) {
-                    val historyLines = historyCandidates.joinToString("\n") { msg ->
+                // Multimodal pipeline does not receive structured chatHistory, so include a concise 4-turn snippet only there.
+                val conversationHistoryPrompt = if (attachmentUri != null && historyCandidates.isNotEmpty()) {
+                    val historyLines = historyCandidates.takeLast(4).joinToString("\n") { msg ->
                         val tag = if (msg.sender == "user") "ÖĞRENCİ" else "SHARK AI"
                         val cleanContent = msg.text
-                            .replace("#ACTION:.*".toRegex(), "")
-                            .replace("```json[\\s\\S]*?```".toRegex(), "")
+                            .replace(CHAT_ACTION_LINE_REGEX, "")
+                            .replace(JSON_FENCE_COMPLETE_REGEX, "")
                             .trim()
-                            .take(350)
+                            .take(280)
                         val fileNote = if (msg.attachmentUri != null) " [Ek: ${msg.attachmentName ?: "Görsel"}]" else ""
                         "[$tag]$fileNote: $cleanContent"
                     }
                     "\n\n[SON SOHBET DİYALOĞU GEÇMİŞİ]:\n$historyLines\nTALİMAT: Öğrencinin 'bunu çöz', '2. soru', 'az önceki formül/plan' gibi atıflarını yukarıdaki son konuşulanları referans alarak cevapla."
                 } else ""
 
+                val isConversationalPeer = resolvedEngine == SharkAiEngine.CONVERSATIONAL_PEER
                 val compressedSystemPrompt = """
-                    ${getSystemPromptForPersona(currentPersona)}
+                    ${getSystemPromptForPersona(currentPersona, includeActionInstructions = isConversationalPeer, includeMandatoryRules = isConversationalPeer)}
 
                     [SİSTEMİK KİMLİK: SharkMentor Otonom Hub - Motor: ${resolvedEngine.displayName} - Mod: ${currentPersona.title}]
                     [ÖĞRENCİ, KÜTÜPHANE VE HEDEF BAĞLAMI]:
                     $userStatsAndLibrarySnapshot
                     [AKTİF HAFIZA: $memorySnapshot]$attachmentContext
                     $projectionReport$scheduleConstraintPrompt$conversationHistoryPrompt
-                    Talimat: Öğrencinin mevcut kütüphane kitaplarına, hedeflerine, geçmiş kararlarına ve son diyalog geçmişine sadık kal. Mevcut bir kitabın ilerlemesi söylendiğinde yeni kitap açma, UPDATE_RESOURCE_PROGRESS kullan.
+                    Talimat: Öğrencinin mevcut kütüphane kitaplarına, hedeflerine ve geçmiş kararlarına sadık kal. Mevcut bir kitabın ilerlemesi söylendiğinde yeni kitap açma, UPDATE_RESOURCE_PROGRESS kullan.
                 """.trimIndent()
 
                 val effectivePrompt = if (attachmentUri != null && text.isBlank()) {
@@ -722,30 +759,37 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     text
                 }
 
+                var lastUiEmitMs = 0L
+                var lastEmittedUiText = ""
                 val onStreamChunk: (String) -> Unit = streamCallback@{ partialText ->
                     if (_activeChatSessionId.value != originatingSessionId) {
                         return@streamCallback
                     }
                     // Strip in-progress or completed action tags and markdown json code blocks
-                    var cleanPartial = partialText
-                        .replace("#ACTION:(\\{.*?\\})#".toRegex(RegexOption.DOT_MATCHES_ALL), "")
-                        .replace("#ACTION:.*".toRegex(RegexOption.DOT_MATCHES_ALL), "")
-                        .replace("```json[\\s\\S]*?```".toRegex(), "")
-                        .replace("```json[\\s\\S]*".toRegex(), "")
-                        .replace("```[\\s\\S]*?```".toRegex(), "")
+                    val cleanPartial = partialText
+                        .replace(STREAM_ACTION_BLOCK_REGEX, "")
+                        .replace(STREAM_ACTION_TAIL_REGEX, "")
+                        .replace(JSON_FENCE_COMPLETE_REGEX, "")
+                        .replace(JSON_FENCE_OPEN_REGEX, "")
+                        .replace(CODE_FENCE_COMPLETE_REGEX, "")
                         .trim()
 
                     val displayText = if (cleanPartial.isEmpty() && (partialText.contains("\"schedule\"") || partialText.contains("CREATE_WEEKLY_PLAN"))) {
-                        "🗓️ Haftalık çalışma planın hazırlanıyor..."
+                        "Haftalık çalışma planın hazırlanıyor..."
                     } else if (cleanPartial.isEmpty() && partialText.contains("INSERT_TOPICS_BATCH")) {
-                        "📚 Konu hakimiyeti listesi ekleniyor..."
+                        "Konu hakimiyeti listesi ekleniyor..."
                     } else if (cleanPartial.startsWith("{") || cleanPartial.startsWith("[")) {
-                        "🗓️ Plan ve görevler hazırlanıyor..."
+                        "Plan ve görevler hazırlanıyor..."
                     } else {
                         cleanPartial
                     }
 
-                    if (displayText.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    if (displayText.isNotEmpty() && displayText != lastEmittedUiText &&
+                        (lastUiEmitMs == 0L || now - lastUiEmitMs >= 45L)
+                    ) {
+                        lastUiEmitMs = now
+                        lastEmittedUiText = displayText
                         val currentList = _uiState.value.messages
                         val existingIdx = currentList.indexOfFirst { it.id == streamingMsgId }
                         val updatedMsg = AiChatMessage(
@@ -768,7 +812,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
                 // Hybrid Multi-Provider Routing:
                 // - Multimodal/PDF/Images route through Vision pipeline.
-                // - Text-only honors UserAiPreferences.selectedAiProvider across all 5 providers and AUTO.
+                // - Text-only honors UserAiPreferences.selectedAiProvider across all 6 providers and AUTO.
                 val routerResult = if (attachmentUri != null) {
                     val visionContext = when (resolvedEngine) {
                         SharkAiEngine.SOLVER_ENGINE ->
@@ -932,6 +976,16 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         val cleanText: String,
         val createdPlanFolderId: String? = null,
         val isPlanCard: Boolean = false
+    )
+
+    private data class ContextSnapshotBundle(
+        val memorySnapshot: String,
+        val concrete: ConcreteTargetEntity?,
+        val shortTargets: List<TargetWithTasks>,
+        val longTargets: List<TargetWithTasks>,
+        val resources: List<ResourceEntity>,
+        val topics: List<TopicGoalEntity>,
+        val schedules: List<InstitutionScheduleEntity>
     )
 
     private fun extractActionsFromResponse(rawResponse: String): List<Pair<String, Map<String, Any>>> {
@@ -1738,7 +1792,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                             autoExpanded.map { (s, t) -> Triple(s, t, 5) }
                         )
                         if (added > 0) {
-                            cleanText += "\n\n✅ **Toplam $added ders ve alt konu** Konu Hakimiyeti tablosuna eksiksiz eklendi.\n\n#ACTION:NAV_TOPICS"
+                            cleanText += "\n\n**Toplam $added ders ve alt konu** Konu Hakimiyeti tablosuna eksiksiz eklendi.\n\n#ACTION:NAV_TOPICS"
                         }
                     }
                 }
@@ -1849,8 +1903,8 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                             isPlan = true
                             cleanText = cleanText.replace(jsonCandidate, "").trim()
 
-                            val userSummary = if (summary.isNotBlank()) "\n\n📌 **Haftalık Odak Stratejisi:** $summary" else ""
-                            cleanText = "🗓️ **7 Günlük Kişisel Çalışma Programın Hazırlandı!**$userSummary\n\nProgramın gün gün planlandı, hedef soru sayıları belirlendi ve doğrudan **Planlar** sekmesine kaydedildi.\n\n#ACTION:NAV_PLANS"
+                            val userSummary = if (summary.isNotBlank()) "\n\n**Haftalık Odak Stratejisi:** $summary" else ""
+                            cleanText = "**7 Günlük Kişisel Çalışma Programın Hazırlandı.**$userSummary\n\nProgramın gün gün planlandı, hedef soru sayıları belirlendi ve doğrudan **Planlar** sekmesine kaydedildi.\n\n#ACTION:NAV_PLANS"
 
                             memoryRepository.recordInsight(
                                 persona = persona,
@@ -1877,12 +1931,12 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
         // Clean out any raw markdown code blocks from the final chat display
         cleanText = cleanText
-            .replace("```json[\\s\\S]*?```".toRegex(), "")
-            .replace("```[\\s\\S]*?```".toRegex(), "")
+            .replace(JSON_FENCE_COMPLETE_REGEX, "")
+            .replace(CODE_FENCE_COMPLETE_REGEX, "")
             .trim()
 
         if (cleanText.isBlank() && isPlan) {
-            cleanText = "🗓️ **Haftalık Çalışma Programın Oluşturuldu!**\nProgram Planlar sekmesine gün gün dağıtıldı ve başarıyla kaydedildi.\n\n#ACTION:NAV_PLANS"
+            cleanText = "**Haftalık Çalışma Programın Oluşturuldu.**\nProgram Planlar sekmesine gün gün dağıtıldı ve başarıyla kaydedildi.\n\n#ACTION:NAV_PLANS"
         }
 
         return ProcessActionResult(
@@ -1934,8 +1988,8 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
     private fun normalizeForMatch(input: String): String {
         return input.lowercase(Locale("tr"))
-            .replace(Regex("[^a-z0-9çğıöşü\\s]"), " ")
-            .replace(Regex("\\s+"), " ")
+            .replace(NON_ALNUM_TR_REGEX, " ")
+            .replace(MULTI_SPACE_REGEX, " ")
             .trim()
     }
 
@@ -2009,7 +2063,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
     private fun extractBalancedJson(raw: String): String? {
         val text = raw
-            .replace(Regex("```(?:json)?\\s*"), "")
+            .replace(CODE_FENCE_OPEN_REGEX, "")
             .replace("```", "")
             .trim()
 
@@ -2179,12 +2233,14 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private fun getSystemPromptForPersona(
-        persona: AiPersona
+        persona: AiPersona,
+        includeActionInstructions: Boolean = true,
+        includeMandatoryRules: Boolean = true
     ): String {
-        val mandatoryPersonaRules = AiRouterRepository.MANDATORY_PERSONA_RULES
+        val rulesBlock = if (includeMandatoryRules) "\n${AiRouterRepository.MANDATORY_PERSONA_RULES}" else ""
 
-        val actionInstruction = """
-            
+        val actionInstruction = if (includeActionInstructions) """
+
             AKSİYON VE EYLEM TALİMATLARI (HEM METİN HEM GÖRSEL ANALİZİNDE GEÇERLİDİR):
             - Eğer öğrenci çalışma planı, haftalık program veya ders çalışma çizelgesi istiyorsa mesajının EN SONUNA plan eylemini ekle:
             #ACTION:{"type":"CREATE_WEEKLY_PLAN","title":"Haftalık Çalışma Programı","summary":"Haftalık odak stratejisi","schedule":[{"dayOfWeek":1,"timeSlot":"09:00 - 10:30","subject":"Matematik","topic":"Türev","targetQuestions":40}]}#
@@ -2203,7 +2259,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
             - Eğer öğrencinin hedefi yoksa veya hedeflerini güncellemesi gerekiyorsa mesajın en sonuna '#ACTION:NAV_TARGETS' ekle.
             - Eğer konuşma bittiyse ve öğrenciyi çalışmaya teşvik ediyorsan ('Hadi başlayalım', 'Masaya geçelim' vb.) mesajın sonuna '#ACTION:NAV_DESK' ekle.
             - Eğer plan oluşturduysan veya planı incelemesini istiyorsan mesajın sonuna '#ACTION:NAV_PLANS' ekle.
-        """.trimIndent()
+        """.trimIndent() else ""
 
         val lengthGuide = "Açıklamaları net, anlaşılır ve dengeli tut; kısa selamlamalarda maksimum 1 cümle kur."
 
@@ -2211,42 +2267,45 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
             AiPersona.SHARK_COACH -> """
                 Sen SharkMentor'un kıdemli sınav koçu ve akran mentörüsün.
                 MİSYONUN: Öğrenciye net analizi, stratejik yönlendirme ve odak desteği sağla.
-                TONUN: Doğal, net, sıfır laf kalabalığı, analitik ve samimi ($lengthGuide).
-                $mandatoryPersonaRules
+                TONUN: Doğal, net, sıfır laf kalabalığı, analitik ve samimi ($lengthGuide).$rulesBlock
             """.trimIndent()
 
             AiPersona.GOAL_SETTER -> """
                 Sen SharkMentor Hedef Belirleme AI koçusun.
                 MİSYONUN: Öğrencinin muğlak isteklerini somut net hedeflerine ve kısa/uzun vadeli sıralama rotalarına dönüştür.
-                TONUN: Odaklı, net, sayısal ve aksiyon odaklı ($lengthGuide).
-                $mandatoryPersonaRules
+                TONUN: Odaklı, net, sayısal ve aksiyon odaklı ($lengthGuide).$rulesBlock
             """.trimIndent()
 
             AiPersona.ZEN_CALM -> """
                 Sen SharkMentor Empatik Zen Sakinleşme Koçusun.
                 MİSYONUN: Sınav kaygısı, stres ve tükenmişlik hisseden öğrenciye psikolojik zemin sağla, nefes porsiyonlaması ver.
-                TONUN: Şefkatli, ferahlatıcı, sakin ve içten ($lengthGuide).
-                $mandatoryPersonaRules
+                TONUN: Şefkatli, ferahlatıcı, sakin ve içten ($lengthGuide).$rulesBlock
             """.trimIndent()
 
             AiPersona.DOPAMINE_COACH -> """
                 Sen SharkMentor Dopamin Orucu ve Nöral Odak Koçusun.
                 MİSYONUN: Öğrencinin sosyal medya, erteleme ve uyarım dürtülerini yönetmesine yardımcı ol, irade sürtünmesini azalt.
-                TONUN: Kararlı, nörolojik gerçeklere dayalı ve net ($lengthGuide).
-                $mandatoryPersonaRules
+                TONUN: Kararlı, nörolojik gerçeklere dayalı ve net ($lengthGuide).$rulesBlock
             """.trimIndent()
 
-            AiPersona.STUDY_PLANNER -> """
-                Sen SharkMentor Otonom Çalışma Planlayıcısısın.
-                GÖREV: Öğrencinin talebine dayanarak 7 günlük (Pazartesi-Pazar) operasyonel çalışma planı hazırla.
-                1. Önce öğrenciye 2-3 samimi cümleyle bu haftaki çalışma stratejisini, eksiklerini nasıl toparlayacağını açıkla.
-                2. Ardından mesajın en sonuna çalışma programını aşağıdaki sistem eylem formatında ekle:
-                #ACTION:{"type":"CREATE_WEEKLY_PLAN","title":"Haftalık Çalışma Programı","summary":"Bu haftaki stratejik yönelim özeti","schedule":[{"dayOfWeek":1,"timeSlot":"09:00 - 10:30","subject":"Matematik","topic":"Türev","targetQuestions":40,"focusStrategy":"Konu Pekiştirme"}]}#
-                $mandatoryPersonaRules
-            """.trimIndent()
+            AiPersona.STUDY_PLANNER -> if (includeActionInstructions) {
+                """
+                    Sen SharkMentor Otonom Çalışma Planlayıcısısın.
+                    GÖREV: Öğrencinin talebine dayanarak 7 günlük (Pazartesi-Pazar) operasyonel çalışma planı hazırla.
+                    1. Önce öğrenciye 2-3 samimi cümleyle bu haftaki çalışma stratejisini, eksiklerini nasıl toparlayacağını açıkla.
+                    2. Ardından mesajın en sonuna çalışma programını aşağıdaki sistem eylem formatında ekle:
+                    #ACTION:{"type":"CREATE_WEEKLY_PLAN","title":"Haftalık Çalışma Programı","summary":"Bu haftaki stratejik yönelim özeti","schedule":[{"dayOfWeek":1,"timeSlot":"09:00 - 10:30","subject":"Matematik","topic":"Türev","targetQuestions":40,"focusStrategy":"Konu Pekiştirme"}]}#$rulesBlock
+                """.trimIndent()
+            } else {
+                """
+                    Sen SharkMentor Otonom Çalışma Planlayıcısısın.
+                    GÖREV: Öğrencinin talebine dayanarak 7 günlük (Pazartesi-Pazar) operasyonel çalışma planı hazırla.
+                    Önce öğrenciye 2-3 samimi cümleyle bu haftaki çalışma stratejisini, eksiklerini nasıl toparlayacağını açıkla.$rulesBlock
+                """.trimIndent()
+            }
         }
 
-        return basePrompt + actionInstruction
+        return if (actionInstruction.isNotEmpty()) "$basePrompt\n$actionInstruction" else basePrompt
     }
 
     /**
@@ -2304,8 +2363,8 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     combinedText.contains("adım 1") ||
                     combinedText.contains("1. adım") ||
                     combinedText.contains("denklem") ||
-                    Regex("""\b[a-eA-E]\)""").containsMatchIn(aiResponseText) ||
-                    Regex("""\b[a-eA-E]\s*şıkkı""").containsMatchIn(aiResponseText)
+                    OPTION_PAREN_REGEX.containsMatchIn(aiResponseText) ||
+                    OPTION_WORD_REGEX.containsMatchIn(aiResponseText)
 
                 if (!hasQuestionSignal) {
                     Log.d("SharkAiAutoSave", "Görsel bir soru çözümü niteliği taşımıyor, Antrenman Bankasına kaydedilmedi.")

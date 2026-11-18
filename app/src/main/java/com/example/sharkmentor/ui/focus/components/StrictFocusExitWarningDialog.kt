@@ -29,7 +29,7 @@ fun StrictFocusExitWarningDialog(
         },
         title = {
             Text(
-                text = "Sert Odak Modu Aktif!",
+                text = "Sert Odak Modu Aktif",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center

@@ -122,7 +122,7 @@ fun DopamineProtocolSection(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Dopamin orucundasın! Zihnini bulandırma, masaya dön.",
+                            text = "Dopamin orucu protokolü devrede. Odak disiplininizi koruyarak çalışmaya devam edin.",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = onSurfaceColor

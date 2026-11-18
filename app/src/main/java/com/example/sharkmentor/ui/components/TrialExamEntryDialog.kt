@@ -208,7 +208,7 @@ fun TrialExamEntryDialog(
                 onClick = {
                     coroutineScope.launch {
                         saveTrialExam(context, examType, publisherName, subjects)
-                        Toast.makeText(context, "Deneme başarıyla kaydedildi!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Deneme başarıyla kaydedildi.", Toast.LENGTH_SHORT).show()
                         onSaveSuccess()
                         onDismiss()
                     }

@@ -128,7 +128,7 @@ object GeminiAiFactory {
         val startIdx = ApiKeyRotator.getStartIndex(context).coerceAtLeast(0) % effective.size
         val ordered = List(effective.size) { offset ->
             effective[(startIdx + offset) % effective.size]
-        }
+        }.sortedBy { if (ApiKeyRotator.isKeyCoolingDown(it)) 1 else 0 }
         return ordered to !hasCustom
     }
 
@@ -176,19 +176,20 @@ object GeminiAiFactory {
 
         val resolvedConfig = generationConfig ?: taskType.toGenerationConfig()
         val customKeysSet = UserAiPreferences.getParsedUserGeminiKeys().toSet()
+        val modelResolver: (String) -> String = { key ->
+            when {
+                !overrideModel.isNullOrBlank() && (!overrideKey.isNullOrBlank() || key in customKeysSet) ->
+                    GeminiRestClient.sanitizeModelName(overrideModel)
+                key in customKeysSet ->
+                    UserAiPreferences.resolveEffectiveGeminiModel(null, key)
+                else ->
+                    SOLE_GEMINI_MODEL
+            }
+        }
 
         val primaryAttempt = tryExecuteKeys(
             keys = keys,
-            modelResolver = { key ->
-                when {
-                    !overrideModel.isNullOrBlank() && (!overrideKey.isNullOrBlank() || key in customKeysSet) ->
-                        GeminiRestClient.sanitizeModelName(overrideModel)
-                    key in customKeysSet ->
-                        UserAiPreferences.resolveEffectiveGeminiModel(null, key)
-                    else ->
-                        SOLE_GEMINI_MODEL
-                }
-            },
+            modelResolver = modelResolver,
             contents = contents,
             systemPrompt = systemPrompt,
             generationConfig = resolvedConfig,
@@ -197,14 +198,16 @@ object GeminiAiFactory {
         primaryAttempt.response?.let { return@withContext it }
 
         val primaryError = primaryAttempt.lastError!!
-        val builtInKeys = keys.filter { it !in customKeysSet }
+        val builtInFallbackKeys = keys.filter {
+            it !in customKeysSet && modelResolver(it) != CONTROLLED_404_FALLBACK_MODEL
+        }
         val hasGenuine404 = primaryAttempt.genuine404Error != null || isGenuine404Failure(primaryError)
-        if (builtInKeys.isNotEmpty() && (isBuiltInMode || primaryAttempt.triedBuiltInKeys) && hasGenuine404) {
+        if (builtInFallbackKeys.isNotEmpty() && (isBuiltInMode || primaryAttempt.triedBuiltInKeys) && hasGenuine404) {
             safeLogW(
                 "$SOLE_GEMINI_MODEL returned 404 across built-in endpoints/keys. Trying controlled fallback $CONTROLLED_404_FALLBACK_MODEL..."
             )
             val fallbackAttempt = tryExecuteKeys(
-                keys = builtInKeys,
+                keys = builtInFallbackKeys,
                 modelResolver = { CONTROLLED_404_FALLBACK_MODEL },
                 contents = contents,
                 systemPrompt = systemPrompt,
@@ -295,19 +298,20 @@ object GeminiAiFactory {
 
         val resolvedConfig = generationConfig ?: taskType.toGenerationConfig()
         val customKeysSet = UserAiPreferences.getParsedUserGeminiKeys().toSet()
+        val modelResolver: (String) -> String = { key ->
+            when {
+                !overrideModel.isNullOrBlank() && (!overrideKey.isNullOrBlank() || key in customKeysSet) ->
+                    GeminiRestClient.sanitizeModelName(overrideModel)
+                key in customKeysSet ->
+                    UserAiPreferences.resolveEffectiveGeminiModel(null, key)
+                else ->
+                    SOLE_GEMINI_MODEL
+            }
+        }
 
         val primaryAttempt = tryStreamKeys(
             keys = keys,
-            modelResolver = { key ->
-                when {
-                    !overrideModel.isNullOrBlank() && (!overrideKey.isNullOrBlank() || key in customKeysSet) ->
-                        GeminiRestClient.sanitizeModelName(overrideModel)
-                    key in customKeysSet ->
-                        UserAiPreferences.resolveEffectiveGeminiModel(null, key)
-                    else ->
-                        SOLE_GEMINI_MODEL
-                }
-            },
+            modelResolver = modelResolver,
             contents = contents,
             systemPrompt = systemPrompt,
             generationConfig = resolvedConfig,
@@ -318,14 +322,16 @@ object GeminiAiFactory {
         primaryAttempt.response?.let { return@withContext it }
 
         val primaryError = primaryAttempt.lastError!!
-        val builtInKeys = keys.filter { it !in customKeysSet }
+        val builtInFallbackKeys = keys.filter {
+            it !in customKeysSet && modelResolver(it) != CONTROLLED_404_FALLBACK_MODEL
+        }
         val hasGenuine404 = primaryAttempt.genuine404Error != null || isGenuine404Failure(primaryError)
-        if (builtInKeys.isNotEmpty() && (isBuiltInMode || primaryAttempt.triedBuiltInKeys) && hasGenuine404) {
+        if (builtInFallbackKeys.isNotEmpty() && (isBuiltInMode || primaryAttempt.triedBuiltInKeys) && hasGenuine404) {
             safeLogW(
                 "Stream: $SOLE_GEMINI_MODEL returned 404 across built-in endpoints/keys. Trying controlled fallback $CONTROLLED_404_FALLBACK_MODEL..."
             )
             val fallbackAttempt = tryStreamKeys(
-                keys = builtInKeys,
+                keys = builtInFallbackKeys,
                 modelResolver = { CONTROLLED_404_FALLBACK_MODEL },
                 contents = contents,
                 systemPrompt = systemPrompt,
@@ -534,14 +540,19 @@ object GeminiAiFactory {
             )
 
             val startIdx = ApiKeyRotator.getStartIndex(context).coerceAtLeast(0) % keys.size
-            val orderedWithIndex = List(keys.size) { offset ->
+            val roundRobin = List(keys.size) { offset ->
                 val actualIdx = (startIdx + offset) % keys.size
                 actualIdx to keys[actualIdx]
             }
+            val (healthyEntries, coolingEntries) = roundRobin.partition { (_, candidateKey) ->
+                !ApiKeyRotator.isKeyCoolingDown(candidateKey)
+            }
+            val orderedWithIndex = healthyEntries + coolingEntries
 
             var lastException: Throwable? = null
             var genuine404BuiltInError: Throwable? = null
             var triedAnyBuiltInKey = false
+            var builtInKeysNeedFallbackModel = false
             val userKeysSet = UserAiPreferences.getParsedUserGeminiKeys().toSet()
             val failureNotes = mutableListOf<String>()
 
@@ -550,8 +561,14 @@ object GeminiAiFactory {
                 val masked = ApiKeyRotator.maskApiKey(activeKey, slotIndex = null)
                 val modelName = UserAiPreferences.resolveEffectiveGeminiModel(context, activeKey)
                 val isBuiltInKey = activeKey !in userKeysSet
-                if (isBuiltInKey) triedAnyBuiltInKey = true
+                if (isBuiltInKey) {
+                    triedAnyBuiltInKey = true
+                    if (modelName != CONTROLLED_404_FALLBACK_MODEL) {
+                        builtInKeysNeedFallbackModel = true
+                    }
+                }
 
+                var lastEmitted = ""
                 val attempt = executeSingleKey(
                     key = activeKey,
                     modelName = modelName,
@@ -561,7 +578,10 @@ object GeminiAiFactory {
                     generationConfig = genConfig,
                     tools = tools,
                     responseJson = responseJson,
-                    onPartialText = onPartialText
+                    onPartialText = { partial ->
+                        lastEmitted = partial
+                        onPartialText(partial)
+                    }
                 )
 
                 attempt.response?.let { resp ->
@@ -571,7 +591,8 @@ object GeminiAiFactory {
                         resp.text.trim()
                     }
                     if (finalText.isNotBlank() || resp.functionCalls.isNotEmpty()) {
-                        if (finalText.isNotBlank()) {
+                        ApiKeyRotator.reportKeySuccess(activeKey)
+                        if (finalText.isNotBlank() && finalText != lastEmitted) {
                             onPartialText(finalText)
                         }
                         ApiKeyRotator.markCurrentIndex(keyIndex)
@@ -596,6 +617,10 @@ object GeminiAiFactory {
                     )
                 }
 
+                if (err != null && ApiKeyRotator.shouldRotateKey(err)) {
+                    ApiKeyRotator.reportKeyFailure(activeKey)
+                }
+
                 if (isBuiltInKey && genuine404BuiltInError == null && isGenuine404Failure(err)) {
                     genuine404BuiltInError = err
                 }
@@ -606,14 +631,21 @@ object GeminiAiFactory {
 
                 if (pos + 1 < orderedWithIndex.size) {
                     ApiKeyRotator.rotateToNextKey(context)
-                    delay(100L)
+                    val apiErr = err as? GeminiApiException
+                    if (apiErr?.isQuotaOrRateLimit == true || apiErr?.isOverloadOrTransient == true) {
+                        delay(40L)
+                    }
                 }
             }
 
-            // Controlled 404 fallback ONLY on built-in keys when gemini-3.6-flash returns 404 across endpoints/keys
-            if (triedAnyBuiltInKey && genuine404BuiltInError != null) {
-                val builtInEntries = orderedWithIndex.filter { it.second !in userKeysSet }
+            // Controlled 404 fallback ONLY on built-in keys that did not already try CONTROLLED_404_FALLBACK_MODEL
+            if (triedAnyBuiltInKey && builtInKeysNeedFallbackModel && genuine404BuiltInError != null) {
+                val builtInEntries = orderedWithIndex.filter {
+                    it.second !in userKeysSet &&
+                        UserAiPreferences.resolveEffectiveGeminiModel(context, it.second) != CONTROLLED_404_FALLBACK_MODEL
+                }
                 for ((keyIndex, activeKey) in builtInEntries) {
+                    var lastEmitted = ""
                     val attempt = executeSingleKey(
                         key = activeKey,
                         modelName = CONTROLLED_404_FALLBACK_MODEL,
@@ -623,7 +655,10 @@ object GeminiAiFactory {
                         generationConfig = genConfig,
                         tools = tools,
                         responseJson = responseJson,
-                        onPartialText = onPartialText
+                        onPartialText = { partial ->
+                            lastEmitted = partial
+                            onPartialText(partial)
+                        }
                     )
                     attempt.response?.let { resp ->
                         val finalText = if (responseJson) {
@@ -632,7 +667,8 @@ object GeminiAiFactory {
                             resp.text.trim()
                         }
                         if (finalText.isNotBlank() || resp.functionCalls.isNotEmpty()) {
-                            if (finalText.isNotBlank()) {
+                            ApiKeyRotator.reportKeySuccess(activeKey)
+                            if (finalText.isNotBlank() && finalText != lastEmitted) {
                                 onPartialText(finalText)
                             }
                             ApiKeyRotator.markCurrentIndex(keyIndex)
@@ -721,7 +757,7 @@ object GeminiAiFactory {
                 }
                 val isTransient = (e as? GeminiApiException)?.isOverloadOrTransient == true
                 if (isTransient && retry < maxRetries) {
-                    delay(250L)
+                    delay(200L)
                     continue
                 }
                 break
@@ -892,6 +928,7 @@ object GeminiAiFactory {
                         generationConfig = generationConfig,
                         tools = tools
                     )
+                    ApiKeyRotator.reportKeySuccess(key)
                     return KeyAttemptOutcome(response = response, triedBuiltInKeys = triedBuiltIn)
                 } catch (ce: CancellationException) {
                     throw ce
@@ -918,15 +955,19 @@ object GeminiAiFactory {
                     val is503 = apiEx?.isOverloadOrTransient == true
 
                     if (is503 && retry < maxRetries) {
-                        delay(250L)
+                        delay(200L)
                         continue
+                    }
+
+                    if (ApiKeyRotator.shouldRotateKey(e)) {
+                        ApiKeyRotator.reportKeyFailure(key)
                     }
 
                     if (idx < keys.lastIndex) {
                         if (ApiKeyRotator.shouldRotateKey(e) || apiEx?.isModelNotFound == true) {
                             ApiKeyRotator.rotateToNextKey()
-                            if (apiEx?.isModelNotFound != true) {
-                                delay(100L)
+                            if (apiEx?.isQuotaOrRateLimit == true || apiEx?.isOverloadOrTransient == true) {
+                                delay(40L)
                             }
                             break
                         }
@@ -980,12 +1021,14 @@ object GeminiAiFactory {
                         },
                         onThinkingText = onThinkingText
                     )
+                    ApiKeyRotator.reportKeySuccess(key)
                     return KeyAttemptOutcome(response = response, triedBuiltInKeys = triedBuiltIn)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Throwable) {
                     if (partialBackup.length >= 40) {
                         safeLogW("Stream interrupted mid-response; retaining ${partialBackup.length} streamed chars.")
+                        ApiKeyRotator.reportKeySuccess(key)
                         return KeyAttemptOutcome(
                             response = GeminiResponse(
                                 text = partialBackup.toString(),
@@ -1016,15 +1059,19 @@ object GeminiAiFactory {
                     val is503 = apiEx?.isOverloadOrTransient == true
 
                     if (is503 && retry < maxRetries) {
-                        delay(250L)
+                        delay(200L)
                         continue
+                    }
+
+                    if (ApiKeyRotator.shouldRotateKey(e)) {
+                        ApiKeyRotator.reportKeyFailure(key)
                     }
 
                     if (idx < keys.lastIndex) {
                         if (ApiKeyRotator.shouldRotateKey(e) || apiEx?.isModelNotFound == true) {
                             ApiKeyRotator.rotateToNextKey()
-                            if (apiEx?.isModelNotFound != true) {
-                                delay(100L)
+                            if (apiEx?.isQuotaOrRateLimit == true || apiEx?.isOverloadOrTransient == true) {
+                                delay(40L)
                             }
                             break
                         }

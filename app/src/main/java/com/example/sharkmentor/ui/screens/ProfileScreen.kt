@@ -662,7 +662,7 @@ fun ProfileScreen(
                                                 studentName = updatedName
                                                 saveProfileNameLocallyAndCloud(context, uid, isGuest = isGuest, rawName = updatedName)
                                             }
-                                            Toast.makeText(context, "Koç ve kurum bağlantısı başarıyla sağlandı!", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Koç ve kurum bağlantısı sağlandı.", Toast.LENGTH_SHORT).show()
                                         },
                                         onError = { err ->
                                             isSubmitting = false
@@ -847,7 +847,7 @@ fun ProfileScreen(
                             studentName = clean
                             saveProfileNameLocallyAndCloud(context, uid, isGuest = isGuest, rawName = clean)
                             showNameEditDialog = false
-                            Toast.makeText(context, "Adın \"$clean\" olarak güncellendi!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Görünen ad \"$clean\" olarak güncellendi.", Toast.LENGTH_SHORT).show()
                         } else {
                             Toast.makeText(context, "Lütfen geçerli bir ad girin.", Toast.LENGTH_SHORT).show()
                         }
@@ -885,7 +885,7 @@ fun ProfileScreen(
                         badgeProgress = badgeProgress
                     )
                 }
-                Toast.makeText(context, "5 rozet vitrinin kaydedildi!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Vitrin rozetleriniz kaydedildi.", Toast.LENGTH_SHORT).show()
             }
         )
     }

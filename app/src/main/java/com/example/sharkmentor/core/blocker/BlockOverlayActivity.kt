@@ -41,7 +41,7 @@ class BlockOverlayActivity : ComponentActivity() {
                         )
                         Spacer(modifier = Modifier.height(24.dp))
                         Text(
-                            text = "Odaklanma Zamanı!",
+                            text = "Odaklanma Zamanı",
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onErrorContainer

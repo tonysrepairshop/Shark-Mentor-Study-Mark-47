@@ -165,11 +165,10 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
                         period = task.period
                     )
                 }
-                
-                // Clear old individual schedules and insert new ones
-                scheduleDao.deleteAll()
-                scheduleDao.insertAll(entities)
-                
+                // Clear old individual schedules without touching coach-assigned custom schedules
+                scheduleDao.replaceIndividualSchedules(entities)
+                com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(getApplication())
+
             }.onFailure {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     android.widget.Toast.makeText(
@@ -210,7 +209,7 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     fun clearAllIndividualSchedules() {
         viewModelScope.launch {
             try {
-                scheduleDao.deleteAll()
+                scheduleDao.deleteNonCustomSchedules()
             } catch (e: Exception) {
                 // Ignore or handle
             }
