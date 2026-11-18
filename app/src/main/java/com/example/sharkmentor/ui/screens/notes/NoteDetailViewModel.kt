@@ -55,11 +55,28 @@ KESİN DAVRANIŞ KURALLARI:
 4. ÇALIŞMA KANCASI: Yanıtın en sonuna, öğrencinin konuyu pekiştirmesi için tek cümlelik doğal bir çalışma önerisi veya takip sorusu ekle.
 """
 
+        const val NOTE_LAYOUT_PREFS = "note_layout_prefs"
+        const val KEY_DEFAULT_PAPER_PATTERN = "default_paper_pattern"
+        const val KEY_DEFAULT_PAPER_TINT = "default_paper_tint"
+        const val NOTE_PAGE_BREAK_DELIMITER = "\n<!--SHARK_PAGE_BREAK-->\n"
+        private val PAGE_BREAK_SPLIT_REGEX = Regex("\\n?<!--SHARK_PAGE_BREAK-->\\n?")
+
         private val BASE64_OR_PATH_REGEX = Regex(
             pattern = "(\\[PDF_(?:PAGE|FILE):[^\\]]+\\]|data:image/[^;]+;base64,[A-Za-z0-9+/=]+|file:///[^\\s]+|/data/user/[^\\s]+|[A-Za-z0-9+/=]{160,})"
         )
 
         private val PDF_PAGE_TAG_REGEX = Regex("\\[PDF_PAGE:([^\\]]+)\\]")
+
+        fun splitContentIntoPages(cleanContent: String): List<String> {
+            if (cleanContent.isEmpty()) return listOf("")
+            val parts = cleanContent.split(PAGE_BREAK_SPLIT_REGEX)
+            return if (parts.isEmpty()) listOf("") else parts
+        }
+
+        fun joinPagesToContent(pages: List<String>): String {
+            if (pages.isEmpty()) return ""
+            return pages.joinToString(separator = NOTE_PAGE_BREAK_DELIMITER)
+        }
 
         fun extractPdfPagePaths(rawContent: String): List<String> {
             return PDF_PAGE_TAG_REGEX.findAll(rawContent)
@@ -70,12 +87,28 @@ KESİN DAVRANIŞ KURALLARI:
 
         fun sanitizeNoteTextForAi(raw: String): String {
             return raw
+                .replace(PAGE_BREAK_SPLIT_REGEX, "\n\n")
                 .replace(BASE64_OR_PATH_REGEX, "")
                 .replace(Regex("<[^>]+>"), "")
                 .replace(Regex("\\n{3,}"), "\n\n")
                 .trim()
                 .take(12_000)
         }
+    }
+
+    fun getPreferredDefaultColorHex(): String {
+        val prefs = runCatching {
+            appContext?.getSharedPreferences(NOTE_LAYOUT_PREFS, Context.MODE_PRIVATE)
+        }.getOrNull()
+        val savedTint = prefs?.getString(KEY_DEFAULT_PAPER_TINT, "#F8FAFC")
+            ?.takeIf { it.startsWith("#") }
+            ?: "#F8FAFC"
+        val savedPatternName = prefs?.getString(KEY_DEFAULT_PAPER_PATTERN, PaperPattern.PLAIN.name)
+            ?: PaperPattern.PLAIN.name
+        val savedPattern = PaperPattern.entries.find {
+            it.name.equals(savedPatternName, ignoreCase = true)
+        } ?: PaperPattern.PLAIN
+        return NoteStyleParser.encode(savedTint, savedPattern)
     }
 
     private val _noteId = MutableStateFlow(UUID.randomUUID().toString())
@@ -87,7 +120,7 @@ KESİN DAVRANIŞ KURALLARI:
     private val _noteContent = MutableStateFlow("")
     val noteContent: StateFlow<String> = _noteContent.asStateFlow()
 
-    private val _colorHex = MutableStateFlow("#F8FAFC")
+    private val _colorHex = MutableStateFlow(getPreferredDefaultColorHex())
     val colorHex: StateFlow<String> = _colorHex.asStateFlow()
 
     private val _isPinned = MutableStateFlow(false)
@@ -167,7 +200,7 @@ KESİN DAVRANIŞ KURALLARI:
         _noteId.value = id
         _noteTitle.value = ""
         _noteContent.value = ""
-        _colorHex.value = "#F8FAFC"
+        _colorHex.value = getPreferredDefaultColorHex()
         _isPinned.value = false
         _aiResult.value = null
         _aiError.value = null
@@ -178,7 +211,7 @@ KESİN DAVRANIŞ KURALLARI:
                 if (note != null) {
                     _noteTitle.value = note.title
                     _noteContent.value = note.content
-                    _colorHex.value = note.colorHex
+                    _colorHex.value = note.colorHex.ifBlank { getPreferredDefaultColorHex() }
                     _isPinned.value = note.isPinned
                     _createdAt.value = note.createdAt
                 }
@@ -194,7 +227,7 @@ KESİN DAVRANIŞ KURALLARI:
         _noteId.value = UUID.randomUUID().toString()
         _noteTitle.value = ""
         _noteContent.value = ""
-        _colorHex.value = "#F8FAFC"
+        _colorHex.value = getPreferredDefaultColorHex()
         _isPinned.value = false
         _createdAt.value = System.currentTimeMillis()
         _aiResult.value = null
@@ -213,7 +246,7 @@ KESİN DAVRANIŞ KURALLARI:
         _noteId.value = initialNote?.id ?: UUID.randomUUID().toString()
         _noteTitle.value = initialNote?.title ?: fallbackTitle
         _noteContent.value = initialNote?.content ?: fallbackContent
-        _colorHex.value = initialNote?.colorHex ?: "#F8FAFC"
+        _colorHex.value = initialNote?.colorHex?.takeIf { it.isNotBlank() } ?: getPreferredDefaultColorHex()
         _isPinned.value = initialNote?.isPinned ?: false
         _createdAt.value = initialNote?.createdAt ?: System.currentTimeMillis()
         _aiResult.value = null
@@ -241,11 +274,23 @@ KESİN DAVRANIŞ KURALLARI:
     fun setPaperPattern(pattern: PaperPattern) {
         val currentTint = NoteStyleParser.getTintHex(_colorHex.value)
         _colorHex.value = NoteStyleParser.encode(currentTint, pattern)
+        runCatching {
+            appContext?.getSharedPreferences(NOTE_LAYOUT_PREFS, Context.MODE_PRIVATE)
+                ?.edit()
+                ?.putString(KEY_DEFAULT_PAPER_PATTERN, pattern.name)
+                ?.apply()
+        }
     }
 
     fun setPaperTint(tintHex: String) {
         val currentPattern = NoteStyleParser.getPattern(_colorHex.value)
         _colorHex.value = NoteStyleParser.encode(tintHex, currentPattern)
+        runCatching {
+            appContext?.getSharedPreferences(NOTE_LAYOUT_PREFS, Context.MODE_PRIVATE)
+                ?.edit()
+                ?.putString(KEY_DEFAULT_PAPER_TINT, tintHex)
+                ?.apply()
+        }
     }
 
     fun duplicateCurrentNote(onComplete: (String) -> Unit) {
@@ -346,14 +391,23 @@ KESİN DAVRANIŞ KURALLARI:
         targetNoteId: String,
         strokes: List<DrawingStroke>
     ) {
+        saveNotePageDrawingImmediately(context, targetNoteId, 0, strokes)
+    }
+
+    fun saveNotePageDrawingImmediately(
+        context: Context,
+        targetNoteId: String,
+        pageIndex: Int,
+        strokes: List<DrawingStroke>
+    ) {
         if (targetNoteId.isBlank()) return
         val appCtx = context.applicationContext
         val snapshot = strokes.toList()
         persistenceScope.launch {
             runCatching {
-                DrawingSerializer.saveNoteDrawing(appCtx, targetNoteId, snapshot)
+                DrawingSerializer.saveNotePageDrawing(appCtx, targetNoteId, pageIndex, snapshot)
             }.onFailure { e ->
-                Log.e("NoteDetailVM", "saveNoteDrawingImmediately failed for $targetNoteId", e)
+                Log.e("NoteDetailVM", "saveNotePageDrawingImmediately failed for $targetNoteId p$pageIndex", e)
             }
         }
     }

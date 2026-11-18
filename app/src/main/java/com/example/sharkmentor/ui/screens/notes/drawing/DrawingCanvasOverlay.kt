@@ -250,6 +250,10 @@ fun DrawingCanvasOverlay(
         }
     }
 
+    LaunchedEffect(controller, context) {
+        controller.bindPreferencesContext(context)
+    }
+
     // Adapt strokes if loaded from a different canvas width (e.g. orientation change or PDF resize)
     LaunchedEffect(canvasSize.width, controller.strokes.size) {
         val currentW = canvasSize.width.toFloat()
@@ -265,7 +269,7 @@ fun DrawingCanvasOverlay(
                         stroke.copy(
                             strokeWidth = (stroke.strokeWidth * scale).coerceIn(1f, 60f),
                             points = stroke.points.map { pt ->
-                                DrawingPoint(pt.x * scale, pt.y * scale)
+                                DrawingPoint(pt.x * scale, pt.y * scale, pt.pressure)
                             },
                             canvasWidth = currentW,
                             canvasHeight = if (currentH > 10f) currentH else stroke.canvasHeight * scale
@@ -288,21 +292,25 @@ fun DrawingCanvasOverlay(
     var lastStylusActivityMs by remember { mutableLongStateOf(0L) }
     val currentOnTwoFingerScroll by rememberUpdatedState(onTwoFingerScroll)
 
-    val stylusTrackerModifier = Modifier.pointerInput(Unit) {
-        awaitPointerEventScope {
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                val hasStylus = event.changes.any {
-                    it.type == PointerType.Stylus || it.type == PointerType.Eraser
-                }
-                if (hasStylus) {
-                    lastStylusActivityMs = SystemClock.elapsedRealtime()
+    val activeTool = controller.activeTool
+    val stylusTrackerModifier = if (activeTool == DrawingTool.NONE) {
+        Modifier
+    } else {
+        Modifier.pointerInput(activeTool) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val hasStylus = event.changes.any {
+                        it.type == PointerType.Stylus || it.type == PointerType.Eraser
+                    }
+                    if (hasStylus) {
+                        lastStylusActivityMs = SystemClock.elapsedRealtime()
+                    }
                 }
             }
         }
     }
 
-    val activeTool = controller.activeTool
     val pointerModifier = if (activeTool == DrawingTool.NONE) {
         Modifier
     } else {
@@ -314,6 +322,7 @@ fun DrawingCanvasOverlay(
             controller.eraserRadius,
             controller.stylusOnlyMode,
             controller.smartPalmRejectionEnabled,
+            controller.pressureSensitivityEnabled,
             onTwoFingerScroll != null
         ) {
             awaitEachGesture {
@@ -372,9 +381,17 @@ fun DrawingCanvasOverlay(
                 }
 
                 val gestureStartMs = SystemClock.elapsedRealtime()
+                var lastSampleTimeMs = gestureStartMs
                 val startX = activeDown.position.x
                 val startY = activeDown.position.y
-                val startPoint = DrawingPoint(startX, startY)
+                val initialPressure = resolvePointerPressure(
+                    change = activeDown,
+                    prevPoint = null,
+                    prevTimeMs = gestureStartMs,
+                    nowTimeMs = gestureStartMs,
+                    enabled = controller.pressureSensitivityEnabled
+                )
+                val startPoint = DrawingPoint(startX, startY, initialPressure)
 
                 inProgressPoints.clear()
                 var cancelledByMultiTouch = false
@@ -465,6 +482,7 @@ fun DrawingCanvasOverlay(
 
                     val pos = change.position
                     val delta = change.positionChange()
+                    val nowMs = SystemClock.elapsedRealtime()
                     change.consume()
 
                     when {
@@ -481,7 +499,7 @@ fun DrawingCanvasOverlay(
                                 controller.moveSelectionBy(delta.x, delta.y)
                             } else {
                                 val last = inProgressPoints.lastOrNull()
-                                val current = DrawingPoint(pos.x, pos.y)
+                                val current = DrawingPoint(pos.x, pos.y, 1.0f)
                                 if (last == null || last.distanceTo(current) >= 3f) {
                                     inProgressPoints.add(current)
                                 }
@@ -493,9 +511,9 @@ fun DrawingCanvasOverlay(
                             val dx = abs(pos.x - first.x)
                             val dy = abs(pos.y - first.y)
                             val endPt = if (dx > dy * 2.0f) {
-                                DrawingPoint(pos.x, first.y)
+                                DrawingPoint(pos.x, first.y, 1.0f)
                             } else {
-                                DrawingPoint(pos.x, pos.y)
+                                DrawingPoint(pos.x, pos.y, 1.0f)
                             }
                             if (inProgressPoints.size >= 2) {
                                 inProgressPoints[1] = endPt
@@ -504,7 +522,7 @@ fun DrawingCanvasOverlay(
                             }
                         }
                         effectiveTool.isShapeTool -> {
-                            val current = DrawingPoint(pos.x, pos.y)
+                            val current = DrawingPoint(pos.x, pos.y, 1.0f)
                             if (inProgressPoints.size >= 2) {
                                 inProgressPoints[1] = current
                             } else {
@@ -513,9 +531,17 @@ fun DrawingCanvasOverlay(
                         }
                         else -> {
                             val last = inProgressPoints.lastOrNull()
-                            val current = DrawingPoint(pos.x, pos.y)
+                            val pointPressure = resolvePointerPressure(
+                                change = change,
+                                prevPoint = last,
+                                prevTimeMs = lastSampleTimeMs,
+                                nowTimeMs = nowMs,
+                                enabled = controller.pressureSensitivityEnabled
+                            )
+                            val current = DrawingPoint(pos.x, pos.y, pointPressure)
                             if (last == null || last.distanceTo(current) >= 2.2f) {
                                 inProgressPoints.add(current)
+                                lastSampleTimeMs = nowMs
                             }
                         }
                     }
@@ -551,7 +577,8 @@ fun DrawingCanvasOverlay(
                                             alpha = controller.alpha,
                                             points = listOf(p0, p1),
                                             canvasWidth = canvasSize.width.toFloat().coerceAtLeast(1f),
-                                            canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f)
+                                            canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f),
+                                            pressureSensitive = false
                                         )
                                     )
                                 }
@@ -582,7 +609,7 @@ fun DrawingCanvasOverlay(
                                 } else {
                                     val finalPoints = if (rawPoints.size == 1) {
                                         val p = rawPoints.first()
-                                        listOf(p, DrawingPoint(p.x + 0.5f, p.y + 0.5f))
+                                        listOf(p, DrawingPoint(p.x + 0.5f, p.y + 0.5f, p.pressure))
                                     } else {
                                         rawPoints
                                     }
@@ -595,7 +622,8 @@ fun DrawingCanvasOverlay(
                                             alpha = controller.alpha,
                                             points = finalPoints,
                                             canvasWidth = canvasSize.width.toFloat().coerceAtLeast(1f),
-                                            canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f)
+                                            canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f),
+                                            pressureSensitive = controller.pressureSensitivityEnabled
                                         )
                                     )
                                 }
@@ -634,10 +662,14 @@ fun DrawingCanvasOverlay(
                             colorArgb = Color(0xFF00B0FF).toArgb(),
                             strokeWidth = stroke.strokeWidth + 6f,
                             alpha = 0.28f
-                        )
+                        ),
+                        pressureSensitivityEnabled = controller.pressureSensitivityEnabled && stroke.pressureSensitive
                     )
                 }
-                drawStrokeElement(stroke)
+                drawStrokeElement(
+                    stroke = stroke,
+                    pressureSensitivityEnabled = controller.pressureSensitivityEnabled && stroke.pressureSensitive
+                )
             }
 
             // 2. Draw active in-progress stroke / shape / lasso
@@ -652,9 +684,13 @@ fun DrawingCanvasOverlay(
                         colorArgb = controller.penColor.toArgb(),
                         strokeWidth = controller.strokeWidth,
                         alpha = controller.alpha,
-                        points = inProgressPoints.toList()
+                        points = inProgressPoints.toList(),
+                        pressureSensitive = controller.pressureSensitivityEnabled
                     )
-                    drawStrokeElement(previewStroke)
+                    drawStrokeElement(
+                        stroke = previewStroke,
+                        pressureSensitivityEnabled = controller.pressureSensitivityEnabled
+                    )
                 }
             }
 
@@ -1180,9 +1216,50 @@ private fun LassoActionChip(
 }
 
 /**
+ * Normalizes stylus or touch pressure from [PointerInputChange]:
+ * - [PointerType.Stylus]: directly reads high-precision hardware pressure in `0.05f..1.5f`
+ *   (falls back to `0.65f` if device reports `0.0f`).
+ * - [PointerType.Touch]: uses hardware touch pressure when varied, or falls back to
+ *   velocity-based natural taper when the touchscreen reports a constant `1.0f`.
+ */
+internal fun resolvePointerPressure(
+    change: PointerInputChange,
+    prevPoint: DrawingPoint?,
+    prevTimeMs: Long,
+    nowTimeMs: Long,
+    enabled: Boolean
+): Float {
+    if (!enabled) return 1.0f
+    val raw = change.pressure
+    if (change.type == PointerType.Stylus) {
+        val normalized = if (raw <= 0.001f) 0.65f else raw.coerceIn(0.05f, 1.5f)
+        val prevP = prevPoint?.pressure ?: normalized
+        return (prevP * 0.35f + normalized * 0.65f).coerceIn(0.05f, 1.5f)
+    }
+
+    // Touch or other pointer types
+    if (raw > 0.01f && abs(raw - 1.0f) > 0.015f) {
+        val clamped = raw.coerceIn(0.15f, 1.4f)
+        val prevP = prevPoint?.pressure ?: clamped
+        return (prevP * 0.45f + clamped * 0.55f).coerceIn(0.15f, 1.4f)
+    }
+
+    // Velocity-based natural taper when touch reports constant 1.0f
+    if (prevPoint == null) return 0.78f
+    val dist = kotlin.math.hypot(change.position.x - prevPoint.x, change.position.y - prevPoint.y)
+    val dt = (nowTimeMs - prevTimeMs).coerceAtLeast(4L).toFloat()
+    val speedPxPerMs = dist / dt
+    val velocityPressure = (1.06f - (speedPxPerMs * 0.14f)).coerceIn(0.55f, 1.12f)
+    return (prevPoint.pressure * 0.60f + velocityPressure * 0.40f).coerceIn(0.45f, 1.25f)
+}
+
+/**
  * Renders a single [DrawingStroke] (either freehand pen/highlighter or geometric shape) onto [DrawScope].
  */
-fun DrawScope.drawStrokeElement(stroke: DrawingStroke) {
+fun DrawScope.drawStrokeElement(
+    stroke: DrawingStroke,
+    pressureSensitivityEnabled: Boolean = stroke.pressureSensitive
+) {
     val pts = stroke.points
     if (pts.isEmpty()) return
 
@@ -1284,12 +1361,75 @@ fun DrawScope.drawStrokeElement(stroke: DrawingStroke) {
 
     // Freehand stroke rendering with smooth quadratic Bezier curves
     if (pts.size == 1) {
+        val p0 = pts[0]
+        val pFactor = if (pressureSensitivityEnabled) {
+            (0.35f + 0.95f * p0.pressure.coerceIn(0.05f, 1.5f)).coerceIn(0.30f, 1.80f)
+        } else {
+            1.0f
+        }
         drawCircle(
             color = paintColor,
-            radius = widthPx * 0.5f,
-            center = Offset(pts[0].x, pts[0].y)
+            radius = (widthPx * pFactor * 0.5f).coerceAtLeast(0.75f),
+            center = Offset(p0.x, p0.y)
         )
         return
+    }
+
+    val isPressurePen = pressureSensitivityEnabled &&
+        stroke.pressureSensitive &&
+        (stroke.tool == DrawingTool.FOUNTAIN_PEN || stroke.tool == DrawingTool.TECHNICAL_PEN)
+
+    if (isPressurePen) {
+        var prevAnchorX = pts[0].x
+        var prevAnchorY = pts[0].y
+        val segPath = Path()
+        for (i in 1 until pts.size) {
+            val prev = pts[i - 1]
+            val curr = pts[i]
+            val endX = if (i == pts.lastIndex) curr.x else (prev.x + curr.x) * 0.5f
+            val endY = if (i == pts.lastIndex) curr.y else (prev.y + curr.y) * 0.5f
+
+            val pPrev2 = pts[(i - 2).coerceAtLeast(0)].pressure.coerceIn(0.05f, 1.5f)
+            val pPrev = prev.pressure.coerceIn(0.05f, 1.5f)
+            val pCurr = curr.pressure.coerceIn(0.05f, 1.5f)
+            val smoothedPressure = pPrev2 * 0.25f + pPrev * 0.50f + pCurr * 0.25f
+
+            // Taper endpoints gently so pen entry/exit looks like a natural nib
+            val edgeTaper = when {
+                pts.size >= 5 && i == 1 -> 0.82f
+                pts.size >= 5 && i == pts.lastIndex -> 0.78f
+                else -> 1.0f
+            }
+            val widthI = (widthPx * (0.35f + 0.95f * smoothedPressure) * edgeTaper)
+                .coerceIn(max(0.75f, widthPx * 0.28f), widthPx * 1.85f)
+
+            segPath.reset()
+            segPath.moveTo(prevAnchorX, prevAnchorY)
+            segPath.quadraticTo(prev.x, prev.y, endX, endY)
+            drawPath(
+                path = segPath,
+                color = paintColor,
+                style = Stroke(
+                    width = widthI,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
+            prevAnchorX = endX
+            prevAnchorY = endY
+        }
+        return
+    }
+
+    // Highlighter or constant-width stroke
+    val effectiveColor = if (pressureSensitivityEnabled && stroke.pressureSensitive && stroke.tool == DrawingTool.HIGHLIGHTER) {
+        var sumP = 0f
+        for (pt in pts) sumP += pt.pressure.coerceIn(0.2f, 1.4f)
+        val avgP = sumP / pts.size.toFloat()
+        val modulatedAlpha = (stroke.alpha * (0.78f + 0.26f * avgP)).coerceIn(0.08f, 0.85f)
+        Color(stroke.colorArgb).copy(alpha = modulatedAlpha)
+    } else {
+        paintColor
     }
 
     val path = Path().apply {
@@ -1307,7 +1447,7 @@ fun DrawScope.drawStrokeElement(stroke: DrawingStroke) {
 
     drawPath(
         path = path,
-        color = paintColor,
+        color = effectiveColor,
         style = Stroke(
             width = widthPx,
             cap = cap,

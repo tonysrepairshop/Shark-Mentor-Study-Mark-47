@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -61,10 +62,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import androidx.compose.material.icons.Icons
@@ -128,6 +133,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -311,24 +319,108 @@ fun NoteDetailScreen(
         )
     }
 
-    val drawingController = remember(vmNoteId) {
-        DrawingController(
-            maxHistorySteps = 60,
-            onStrokesChanged = { updatedStrokes ->
-                val targetId = vmNoteId
-                drawingScope.launch(Dispatchers.IO) {
-                    DrawingSerializer.saveNoteDrawing(context, targetId, updatedStrokes)
-                }
-            }
-        )
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    val initialCleanRaw = remember(activeNoteId, initialContent) {
+        stripPdfPageTags(initialNote?.content ?: initialContent)
     }
 
-    LaunchedEffect(vmNoteId) {
-        if (vmNoteId.isNotBlank()) {
-            val loadedStrokes = withContext(Dispatchers.IO) {
-                DrawingSerializer.loadNoteDrawing(context, vmNoteId)
+    val pageFieldValues = remember(activeNoteId) {
+        val rawPages = NoteDetailViewModel.splitContentIntoPages(initialCleanRaw)
+        mutableStateListOf<TextFieldValue>().apply {
+            rawPages.forEach { pageRaw ->
+                val parsed = NoteRichTextHelper.parseTaggedText(pageRaw)
+                add(
+                    TextFieldValue(
+                        annotatedString = parsed,
+                        selection = TextRange(parsed.text.length)
+                    )
+                )
             }
-            drawingController.setInitialStrokes(loadedStrokes)
+            if (isEmpty()) {
+                add(TextFieldValue(annotatedString = AnnotatedString(""), selection = TextRange(0)))
+            }
+        }
+    }
+
+    var activePageIndex by remember(activeNoteId) { mutableIntStateOf(0) }
+    val safeActivePageIndex = activePageIndex.coerceIn(0, (pageFieldValues.size - 1).coerceAtLeast(0))
+    var pageChangeTick by remember { mutableIntStateOf(0) }
+    var pendingDeletePageIndex by remember { mutableStateOf<Int?>(null) }
+
+    val pageDrawingControllers = remember(vmNoteId) { mutableStateMapOf<Int, DrawingController>() }
+    val pageFocusRequesters = remember(vmNoteId) { mutableStateMapOf<Int, FocusRequester>() }
+
+    fun getOrCreatePageFocusRequester(pageIdx: Int): FocusRequester {
+        return pageFocusRequesters.getOrPut(pageIdx) { FocusRequester() }
+    }
+
+    fun getOrCreatePageDrawingController(pageIdx: Int): DrawingController {
+        return pageDrawingControllers.getOrPut(pageIdx) {
+            val template = pageDrawingControllers[safeActivePageIndex]
+            DrawingController(
+                maxHistorySteps = 60,
+                onStrokesChanged = { updatedStrokes ->
+                    val targetId = vmNoteId
+                    drawingScope.launch(Dispatchers.IO) {
+                        DrawingSerializer.saveNotePageDrawing(context, targetId, pageIdx, updatedStrokes)
+                    }
+                }
+            ).also { ctrl ->
+                ctrl.bindPreferencesContext(context)
+                if (template != null) {
+                    ctrl.activeTool = template.activeTool
+                    ctrl.penColor = template.penColor
+                    ctrl.strokeWidth = template.strokeWidth
+                    ctrl.alpha = template.alpha
+                    ctrl.eraserRadius = template.eraserRadius
+                    ctrl.pressureSensitivityEnabled = template.pressureSensitivityEnabled
+                }
+                if (vmNoteId.isNotBlank()) {
+                    drawingScope.launch(Dispatchers.IO) {
+                        val loaded = DrawingSerializer.loadNotePageDrawing(context, vmNoteId, pageIdx)
+                        withContext(Dispatchers.Main) {
+                            ctrl.setInitialStrokes(loaded)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val drawingController = getOrCreatePageDrawingController(safeActivePageIndex)
+
+    // Keep tool/color/stroke/pressure synchronized across all page controllers
+    LaunchedEffect(
+        drawingController.activeTool,
+        drawingController.penColor,
+        drawingController.strokeWidth,
+        drawingController.alpha,
+        drawingController.eraserRadius,
+        drawingController.pressureSensitivityEnabled,
+        pageDrawingControllers.size
+    ) {
+        pageDrawingControllers.values.forEach { ctrl ->
+            if (ctrl !== drawingController) {
+                ctrl.activeTool = drawingController.activeTool
+                ctrl.penColor = drawingController.penColor
+                ctrl.strokeWidth = drawingController.strokeWidth
+                ctrl.alpha = drawingController.alpha
+                ctrl.eraserRadius = drawingController.eraserRadius
+                ctrl.pressureSensitivityEnabled = drawingController.pressureSensitivityEnabled
+            }
+        }
+    }
+
+    LaunchedEffect(vmNoteId, pageFieldValues.size) {
+        if (vmNoteId.isNotBlank()) {
+            for (idx in 0 until pageFieldValues.size) {
+                val ctrl = getOrCreatePageDrawingController(idx)
+                val loadedStrokes = withContext(Dispatchers.IO) {
+                    DrawingSerializer.loadNotePageDrawing(context, vmNoteId, idx)
+                }
+                ctrl.setInitialStrokes(loadedStrokes)
+            }
         }
     }
 
@@ -339,8 +431,13 @@ fun NoteDetailScreen(
     val currentTintHex = remember(colorHex) {
         NoteStyleParser.getTintHex(colorHex)
     }
+    val currentTintTitle = remember(currentTintHex) {
+        com.example.sharkmentor.core.util.PaperTint.Options.find {
+            it.hex.equals(currentTintHex, ignoreCase = true)
+        }?.title ?: "Varsayılan"
+    }
     val effectiveBgColor = remember(currentTintHex, isDark, colorScheme.background) {
-        PaperTint.parseColor(currentTintHex, isDark) ?: colorScheme.background
+        com.example.sharkmentor.core.util.PaperTint.parseColor(currentTintHex, isDark) ?: colorScheme.background
     }
 
     val isLightPaper = remember(effectiveBgColor) {
@@ -391,20 +488,79 @@ fun NoteDetailScreen(
     var activePdfPageIndex by remember { mutableStateOf(0) }
     var isPdfPreviewExpanded by remember { mutableStateOf(true) }
 
-    val initialCleanRaw = remember(activeNoteId, initialContent) {
-        stripPdfPageTags(initialNote?.content ?: initialContent)
-    }
-    val initialParsed = remember(initialCleanRaw) {
-        NoteRichTextHelper.parseTaggedText(initialCleanRaw)
+    val noteFieldValue: TextFieldValue = pageFieldValues.getOrElse(safeActivePageIndex) {
+        TextFieldValue(annotatedString = AnnotatedString(""), selection = TextRange(0))
     }
 
-    var noteFieldValue by remember(activeNoteId) {
-        mutableStateOf(
-            TextFieldValue(
-                annotatedString = initialParsed,
-                selection = TextRange(initialParsed.text.length)
+    fun updateActivePageFieldValue(updated: TextFieldValue) {
+        val idx = activePageIndex.coerceIn(0, (pageFieldValues.size - 1).coerceAtLeast(0))
+        if (idx in pageFieldValues.indices) {
+            pageFieldValues[idx] = updated
+            pageChangeTick++
+        }
+    }
+
+    fun populatePagesFromCleanText(cleanText: String) {
+        val rawPages = NoteDetailViewModel.splitContentIntoPages(cleanText)
+        pageFieldValues.clear()
+        rawPages.forEach { pageRaw ->
+            val parsed = NoteRichTextHelper.parseTaggedText(pageRaw)
+            pageFieldValues.add(
+                TextFieldValue(
+                    annotatedString = parsed,
+                    selection = TextRange(parsed.text.length)
+                )
             )
-        )
+        }
+        if (pageFieldValues.isEmpty()) {
+            pageFieldValues.add(TextFieldValue(annotatedString = AnnotatedString(""), selection = TextRange(0)))
+        }
+        if (activePageIndex >= pageFieldValues.size) {
+            activePageIndex = (pageFieldValues.size - 1).coerceAtLeast(0)
+        }
+        pageChangeTick++
+    }
+
+    fun buildJoinedTaggedText(): String {
+        val taggedPages = pageFieldValues.map { tfv ->
+            NoteRichTextHelper.toTaggedString(tfv.annotatedString)
+        }
+        return NoteDetailViewModel.joinPagesToContent(taggedPages)
+    }
+
+    fun buildJoinedPlainText(): String {
+        return pageFieldValues.joinToString(separator = "\n\n") { it.text }
+    }
+
+    fun performDeleteNotePage(targetIdx: Int) {
+        if (pageFieldValues.size <= 1 || targetIdx !in pageFieldValues.indices) return
+        val oldTotalCount = pageFieldValues.size
+        pageFieldValues.removeAt(targetIdx)
+        for (i in targetIdx until (oldTotalCount - 1)) {
+            val nextCtrl = pageDrawingControllers[i + 1]
+            if (nextCtrl != null) {
+                val curCtrl = getOrCreatePageDrawingController(i)
+                curCtrl.setInitialStrokes(nextCtrl.strokes.toList())
+            }
+        }
+        pageDrawingControllers.remove(oldTotalCount - 1)
+        pageFocusRequesters.remove(oldTotalCount - 1)
+        if (activePageIndex >= pageFieldValues.size) {
+            activePageIndex = (pageFieldValues.size - 1).coerceAtLeast(0)
+        }
+        pageChangeTick++
+        val taggedText = buildJoinedTaggedText()
+        val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
+        viewModel.onContentChanged(fullContent)
+        viewModel.saveImmediately(overrideContent = fullContent)
+        drawingScope.launch(Dispatchers.IO) {
+            DrawingSerializer.deleteNotePageDrawingAndShift(
+                context = context,
+                noteId = vmNoteId,
+                deletedPageIndex = targetIdx,
+                oldTotalPageCount = oldTotalCount
+            )
+        }
     }
 
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
@@ -451,6 +607,7 @@ fun NoteDetailScreen(
             drawingController.selectTool(DrawingTool.NONE)
             activePenPanel = ActivePenPanel.NONE
         } else {
+            keyboardController?.hide()
             drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
             isToolbarCollapsed = false
             activeColorPanel = ActiveColorPanel.NONE
@@ -479,17 +636,13 @@ fun NoteDetailScreen(
                     ?.path
                     ?.takeIf { it.endsWith(".pdf", ignoreCase = true) && File(it).exists() }
             val cleanDisplayRaw = stripPdfPageTags(rawContent)
-            val parsed = NoteRichTextHelper.parseTaggedText(cleanDisplayRaw)
             val persistedContent = composeContentWithPdfPageTags(cleanDisplayRaw, extractedPaths, preservedPdfFileTag)
             viewModel.initializeNote(
                 initialNote = initialNote?.copy(content = persistedContent),
                 fallbackTitle = initialTitle,
                 fallbackContent = persistedContent
             )
-            noteFieldValue = TextFieldValue(
-                annotatedString = parsed,
-                selection = TextRange(parsed.text.length)
-            )
+            populatePagesFromCleanText(cleanDisplayRaw)
             isNoteLoaded = true
         } else {
             pdfPagePaths = initialPdfPagePaths.distinct()
@@ -500,10 +653,7 @@ fun NoteDetailScreen(
                 ?.path
                 ?.takeIf { it.endsWith(".pdf", ignoreCase = true) && File(it).exists() }
             viewModel.initializeEmptyNote()
-            noteFieldValue = TextFieldValue(
-                annotatedString = AnnotatedString(""),
-                selection = TextRange(0)
-            )
+            populatePagesFromCleanText("")
             isNoteLoaded = true
         }
     }
@@ -528,24 +678,20 @@ fun NoteDetailScreen(
         }
         if (!isNoteLoaded) {
             val cleanVmRaw = stripPdfPageTags(vmContent)
-            val parsed = NoteRichTextHelper.parseTaggedText(cleanVmRaw)
-            noteFieldValue = TextFieldValue(
-                annotatedString = parsed,
-                selection = TextRange(parsed.text.length)
-            )
+            populatePagesFromCleanText(cleanVmRaw)
             isNoteLoaded = true
         }
     }
 
-    LaunchedEffect(noteFieldValue.annotatedString) {
+    LaunchedEffect(noteFieldValue.annotatedString, pageFieldValues.size, pageChangeTick) {
         if (!isNoteLoaded) return@LaunchedEffect
         kotlinx.coroutines.delay(350L)
-        val taggedText = NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString)
+        val taggedText = buildJoinedTaggedText()
         val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
         viewModel.onContentChanged(fullContent)
     }
 
-    LaunchedEffect(noteFieldValue.selection) {
+    LaunchedEffect(noteFieldValue.selection, safeActivePageIndex) {
         if (noteFieldValue.selection.collapsed) {
             val styles = NoteRichTextHelper.getStylesAtCursor(noteFieldValue)
             isBoldActive = styles.isBold
@@ -580,12 +726,15 @@ fun NoteDetailScreen(
         noteTextColor
     }
 
-    val chars = noteFieldValue.text.length
-    val lineCount = remember(noteFieldValue.text) {
-        if (noteFieldValue.text.isEmpty()) 1 else noteFieldValue.text.count { it == '\n' } + 1
+    val allPlainText = remember(noteFieldValue.text, pageFieldValues.size, pageChangeTick) {
+        buildJoinedPlainText()
     }
-    val words = remember(noteFieldValue.text) {
-        val text = noteFieldValue.text
+    val chars = allPlainText.length
+    val lineCount = remember(allPlainText) {
+        if (allPlainText.isEmpty()) 1 else allPlainText.count { it == '\n' } + 1
+    }
+    val words = remember(allPlainText) {
+        val text = allPlainText
         if (text.isBlank()) 0
         else if (text.length > 20_000) {
             text.count { it == ' ' || it == '\n' } + 1
@@ -665,12 +814,8 @@ fun NoteDetailScreen(
                     if (vmTitle.isBlank()) {
                         viewModel.onTitleChanged(resolvedTitle)
                     }
-                    if (safeContent.isNotBlank() && noteFieldValue.text.isBlank()) {
-                        val parsed = NoteRichTextHelper.parseTaggedText(safeContent)
-                        noteFieldValue = TextFieldValue(
-                            annotatedString = parsed,
-                            selection = TextRange(parsed.text.length)
-                        )
+                    if (safeContent.isNotBlank() && buildJoinedPlainText().isBlank()) {
+                        populatePagesFromCleanText(safeContent)
                         viewModel.onContentChanged(
                             composeContentWithPdfPageTags(safeContent, pdfPagePaths, preservedPdfFileTag)
                         )
@@ -682,21 +827,27 @@ fun NoteDetailScreen(
 
     val onBoldToggled: () -> Unit = {
         if (!noteFieldValue.selection.collapsed) {
-            noteFieldValue = NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.BOLD)
+            updateActivePageFieldValue(
+                NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.BOLD)
+            )
         }
         isBoldActive = !isBoldActive
     }
 
     val onItalicToggled: () -> Unit = {
         if (!noteFieldValue.selection.collapsed) {
-            noteFieldValue = NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.ITALIC)
+            updateActivePageFieldValue(
+                NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.ITALIC)
+            )
         }
         isItalicActive = !isItalicActive
     }
 
     val onUnderlineToggled: () -> Unit = {
         if (!noteFieldValue.selection.collapsed) {
-            noteFieldValue = NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.UNDERLINE)
+            updateActivePageFieldValue(
+                NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.UNDERLINE)
+            )
         }
         isUnderlineActive = !isUnderlineActive
     }
@@ -704,7 +855,7 @@ fun NoteDetailScreen(
     val handleColorSelected: (Color) -> Unit = { color ->
         selectedTextColor = color
         if (!noteFieldValue.selection.collapsed) {
-            noteFieldValue = NoteRichTextHelper.applyColorToSelection(noteFieldValue, color)
+            updateActivePageFieldValue(NoteRichTextHelper.applyColorToSelection(noteFieldValue, color))
         }
         onColorSelected(color)
     }
@@ -713,7 +864,7 @@ fun NoteDetailScreen(
         val effectiveHighlight = highlightColor?.copy(alpha = highlightIntensity)
         selectedHighlightColor = effectiveHighlight
         if (!noteFieldValue.selection.collapsed) {
-            noteFieldValue = NoteRichTextHelper.applyHighlightToSelection(noteFieldValue, effectiveHighlight)
+            updateActivePageFieldValue(NoteRichTextHelper.applyHighlightToSelection(noteFieldValue, effectiveHighlight))
         }
     }
 
@@ -723,13 +874,13 @@ fun NoteDetailScreen(
             val updated = selectedHighlightColor!!.copy(alpha = newIntensity)
             selectedHighlightColor = updated
             if (!noteFieldValue.selection.collapsed) {
-                noteFieldValue = NoteRichTextHelper.applyHighlightToSelection(noteFieldValue, updated)
+                updateActivePageFieldValue(NoteRichTextHelper.applyHighlightToSelection(noteFieldValue, updated))
             }
         }
     }
 
     val handleBulletToggled: () -> Unit = {
-        noteFieldValue = NoteRichTextHelper.toggleLinePrefix(noteFieldValue, "• ")
+        updateActivePageFieldValue(NoteRichTextHelper.toggleLinePrefix(noteFieldValue, "• "))
         isBulletActive = !isBulletActive
         isNumberedActive = false
         isCheckboxActive = false
@@ -737,15 +888,16 @@ fun NoteDetailScreen(
     }
 
     val handleNumberedToggled: () -> Unit = {
-        noteFieldValue = NoteRichTextHelper.toggleLinePrefix(noteFieldValue, "1. ")
+        updateActivePageFieldValue(NoteRichTextHelper.toggleLinePrefix(noteFieldValue, "1. "))
         isNumberedActive = !isNumberedActive
         isBulletActive = false
         isCheckboxActive = false
     }
 
     val handleCheckboxToggled: () -> Unit = {
-        noteFieldValue = NoteRichTextHelper.toggleCheckboxAtOffset(noteFieldValue, noteFieldValue.selection.start)
-        val styles = NoteRichTextHelper.getStylesAtCursor(noteFieldValue)
+        val updated = NoteRichTextHelper.toggleCheckboxAtOffset(noteFieldValue, noteFieldValue.selection.start)
+        updateActivePageFieldValue(updated)
+        val styles = NoteRichTextHelper.getStylesAtCursor(updated)
         isCheckboxActive = styles.isCheckbox
         isCheckboxChecked = styles.isCheckboxChecked
         isBulletActive = false
@@ -753,9 +905,10 @@ fun NoteDetailScreen(
     }
 
     val saveCurrentNote: () -> Unit = {
-        val taggedText = NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString)
+        val taggedText = buildJoinedTaggedText()
         val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
-        val effectiveTitle = if (vmTitle.isBlank() && fullContent.isBlank() && drawingController.strokes.isNotEmpty()) {
+        val anyStrokes = pageDrawingControllers.values.any { it.strokes.isNotEmpty() }
+        val effectiveTitle = if (vmTitle.isBlank() && fullContent.isBlank() && anyStrokes) {
             "Çizimli Not"
         } else {
             vmTitle
@@ -764,11 +917,14 @@ fun NoteDetailScreen(
             overrideTitle = effectiveTitle,
             overrideContent = fullContent
         )
-        viewModel.saveNoteDrawingImmediately(
-            context = context,
-            targetNoteId = vmNoteId,
-            strokes = drawingController.strokes
-        )
+        pageDrawingControllers.forEach { (idx, ctrl) ->
+            viewModel.saveNotePageDrawingImmediately(
+                context = context,
+                targetNoteId = vmNoteId,
+                pageIndex = idx,
+                strokes = ctrl.strokes
+            )
+        }
     }
 
     BackHandler {
@@ -777,7 +933,7 @@ fun NoteDetailScreen(
             activePenPanel = ActivePenPanel.NONE
         } else {
             saveCurrentNote()
-            onSave(vmTitle, NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString), colorHex, isPinned)
+            onSave(vmTitle, buildJoinedTaggedText(), colorHex, isPinned)
             onDismiss()
         }
     }
@@ -808,9 +964,13 @@ fun NoteDetailScreen(
                         color = onSurfaceColor
                     )
                     Text(
-                        text = "S T U D Y",
+                        text = if (pageFieldValues.size > 1) {
+                            "SAYFA ${safeActivePageIndex + 1} / ${pageFieldValues.size}"
+                        } else {
+                            "S T U D Y"
+                        },
                         fontSize = 9.sp,
-                        letterSpacing = 3.sp,
+                        letterSpacing = if (pageFieldValues.size > 1) 1.5.sp else 3.sp,
                         color = colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                     )
                 }
@@ -819,7 +979,7 @@ fun NoteDetailScreen(
                 IconButton(
                     onClick = {
                         saveCurrentNote()
-                        onSave(vmTitle, NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString), colorHex, isPinned)
+                        onSave(vmTitle, buildJoinedTaggedText(), colorHex, isPinned)
                         onDismiss()
                     }
                 ) {
@@ -854,7 +1014,7 @@ fun NoteDetailScreen(
                 }
                 IconButton(
                     onClick = {
-                        onIsolatedNoteAiClick(vmTitle, noteFieldValue.text)
+                        onIsolatedNoteAiClick(vmTitle, buildJoinedPlainText())
                         showAiSheet = true
                     }
                 ) {
@@ -866,7 +1026,7 @@ fun NoteDetailScreen(
                 }
                 IconButton(
                     onClick = {
-                        val taggedText = NoteRichTextHelper.toTaggedString(noteFieldValue.annotatedString)
+                        val taggedText = buildJoinedTaggedText()
                         val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
                         viewModel.onContentChanged(fullContent)
                         viewModel.onPinnedChanged(!isPinned)
@@ -927,6 +1087,39 @@ fun NoteDetailScreen(
                         )
 
                         DropdownMenuItem(
+                            text = { Text("Yeni Sayfa Ekle (${currentPattern.title})") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                val newPageIdx = pageFieldValues.size
+                                pageFieldValues.add(
+                                    TextFieldValue(
+                                        annotatedString = AnnotatedString(""),
+                                        selection = TextRange(0)
+                                    )
+                                )
+                                getOrCreatePageDrawingController(newPageIdx)
+                                activePageIndex = newPageIdx
+                                pageChangeTick++
+                                val taggedText = buildJoinedTaggedText()
+                                val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
+                                viewModel.onContentChanged(fullContent)
+                                Toast.makeText(
+                                    context,
+                                    "Sayfa ${newPageIdx + 1} eklendi (${currentPattern.title} • $currentTintTitle)",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        )
+
+                        DropdownMenuItem(
                             text = { Text(if (drawingController.isDrawingActive) "Metin Moduna Geç" else "Kalem Araçları") },
                             leadingIcon = {
                                 Icon(
@@ -957,7 +1150,7 @@ fun NoteDetailScreen(
                                 val exportRes = PdfExporter.exportNoteToPdf(
                                     context = context,
                                     title = vmTitle,
-                                    rawContent = noteFieldValue.text
+                                    rawContent = buildJoinedPlainText()
                                 )
                                 exportRes.onSuccess { res ->
                                     Toast.makeText(context, "PDF kaydedildi: ${res.fileName}", Toast.LENGTH_SHORT).show()
@@ -1035,7 +1228,7 @@ fun NoteDetailScreen(
                                     action = Intent.ACTION_SEND
                                     putExtra(Intent.EXTRA_TITLE, vmTitle)
                                     putExtra(Intent.EXTRA_SUBJECT, vmTitle)
-                                    putExtra(Intent.EXTRA_TEXT, "${vmTitle}\n\n${noteFieldValue.text.trim()}")
+                                    putExtra(Intent.EXTRA_TEXT, "${vmTitle}\n\n${buildJoinedPlainText().trim()}")
                                     type = "text/plain"
                                 }
                                 val chooser = Intent.createChooser(sendIntent, "Notu Paylaş")
@@ -1691,98 +1884,404 @@ fun NoteDetailScreen(
                     }
                 }
 
-                item(key = "note_body_editor") {
+                itemsIndexed(
+                    items = pageFieldValues,
+                    key = { idx, _ -> "note_page_$idx" }
+                ) { pageIndex, pageTfv ->
+                    val pageCtrl = getOrCreatePageDrawingController(pageIndex)
+                    val pageFocusRequester = getOrCreatePageFocusRequester(pageIndex)
+                    val isPageActive = pageIndex == safeActivePageIndex
                     val bodyTextStyle = MaterialTheme.typography.bodyLarge.copy(
                         fontSize = 16.sp,
                         lineHeight = 24.sp,
                         color = noteTextColor
                     )
-                    val minBodyHeight = (editorViewportHeightDp - 110.dp).coerceAtLeast(420.dp)
+                    val minBodyHeight = if (pageFieldValues.size > 1) {
+                        (editorViewportHeightDp - 140.dp).coerceAtLeast(380.dp)
+                    } else {
+                        (editorViewportHeightDp - 110.dp).coerceAtLeast(420.dp)
+                    }
 
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .defaultMinSize(minHeight = minBodyHeight)
+                            .padding(
+                                horizontal = if (pageFieldValues.size > 1) 8.dp else 0.dp,
+                                vertical = if (pageFieldValues.size > 1) 6.dp else 0.dp
+                            )
                     ) {
-                        BasicTextField(
-                            value = noteFieldValue,
-                            onValueChange = { updatedValue ->
-                                val enterHandled = NoteRichTextHelper.handleEnterOnListItem(noteFieldValue, updatedValue)
-                                noteFieldValue = if (enterHandled != null) {
-                                    enterHandled
-                                } else {
-                                    NoteRichTextHelper.handleTextChange(
-                                        oldValue = noteFieldValue,
-                                        newValue = updatedValue,
-                                        isBoldActive = isBoldActive,
-                                        isItalicActive = isItalicActive,
-                                        isUnderlineActive = isUnderlineActive,
-                                        activeTextColor = selectedTextColor,
-                                        activeHighlightColor = selectedHighlightColor
+                        // Page Header Bar (always visible when multi-page or when cursor is on a checkbox line)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (isPageActive) {
+                                        effectivePaperAccent.copy(alpha = 0.14f)
+                                    } else {
+                                        noteTextColor.copy(alpha = 0.06f)
+                                    },
+                                    border = if (isPageActive && pageFieldValues.size > 1) {
+                                        androidx.compose.foundation.BorderStroke(
+                                            0.8.dp,
+                                            effectivePaperAccent.copy(alpha = 0.4f)
+                                        )
+                                    } else null
+                                ) {
+                                    Text(
+                                        text = "Sayfa ${pageIndex + 1} / ${pageFieldValues.size} • ${currentPattern.title} • $currentTintTitle",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = if (isPageActive) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isPageActive) effectivePaperAccent else noteMutedTextColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                     )
                                 }
-                            },
-                            onTextLayout = { textLayoutResult = it },
-                            textStyle = bodyTextStyle,
-                            cursorBrush = SolidColor(effectivePaperAccent),
+
+                                if (isPageActive && isCheckboxActive) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = effectivePaperAccent.copy(alpha = 0.12f),
+                                        modifier = Modifier.clickable { handleCheckboxToggled() }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                                contentDescription = "Kutucuğu Değiştir",
+                                                tint = effectivePaperAccent,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = if (isCheckboxChecked) "Tamamlandı" else "İşaretle",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = effectivePaperAccent
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (pageFieldValues.size > 1) {
+                                IconButton(
+                                    onClick = {
+                                        val hasContent = pageTfv.text.isNotBlank() || pageCtrl.strokes.isNotEmpty()
+                                        if (hasContent) {
+                                            pendingDeletePageIndex = pageIndex
+                                        } else {
+                                            performDeleteNotePage(pageIndex)
+                                        }
+                                    },
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Sayfayı Sil",
+                                        tint = noteMutedTextColor.copy(alpha = 0.75f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Page Paper Sheet strictly inheriting user's selected PaperPattern and PaperTint
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = minBodyHeight)
-                                .padding(horizontal = 12.dp)
-                                .pointerInput(noteFieldValue.text) {
-                                    detectTapGestures { tapOffset ->
-                                        val layout = textLayoutResult ?: return@detectTapGestures
-                                        val charOffset = layout.getOffsetForPosition(tapOffset)
-                                        val text = noteFieldValue.text
-                                        if (charOffset in 0..text.length) {
-                                            val lineStart = text.lastIndexOf('\n', (charOffset - 1).coerceAtLeast(0)).let {
-                                                if (it == -1) 0 else it + 1
+                                .then(
+                                    if (pageFieldValues.size > 1) {
+                                        Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .border(
+                                                width = if (isPageActive) 1.2.dp else 0.8.dp,
+                                                color = if (isPageActive) {
+                                                    effectivePaperAccent.copy(alpha = 0.38f)
+                                                } else {
+                                                    noteTextColor.copy(alpha = 0.14f)
+                                                },
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                                .background(effectiveBgColor)
+                                .drawBehind {
+                                    val patternColor = notePatternColor
+                                    val marginLineColor = noteMarginLineColor
+
+                                    when (currentPattern) {
+                                        PaperPattern.PLAIN -> {}
+                                        PaperPattern.RULED -> {
+                                            val lineSpacingPx = 28.dp.toPx()
+                                            val marginXPx = 32.dp.toPx()
+
+                                            drawLine(
+                                                color = marginLineColor,
+                                                start = Offset(marginXPx, 0f),
+                                                end = Offset(marginXPx, size.height),
+                                                strokeWidth = 1.dp.toPx()
+                                            )
+
+                                            var y = lineSpacingPx
+                                            while (y < size.height) {
+                                                drawLine(
+                                                    color = patternColor,
+                                                    start = Offset(0f, y),
+                                                    end = Offset(size.width, y),
+                                                    strokeWidth = 1.dp.toPx()
+                                                )
+                                                y += lineSpacingPx
                                             }
-                                            val lineEnd = text.indexOf('\n', lineStart).let { if (it == -1) text.length else it }
-                                            val currentLine = text.substring(lineStart, lineEnd)
-                                            val isCheckboxLine = currentLine.startsWith("[ ] ") || currentLine.startsWith("[✓] ") ||
-                                                currentLine.startsWith("[x] ") || currentLine.startsWith("[X] ") ||
-                                                currentLine.startsWith("☐ ") || currentLine.startsWith("☑ ")
-                                            val prefixLen = if (currentLine.startsWith("[")) 4 else 2
-                                            if (isCheckboxLine && charOffset <= lineStart + prefixLen + 1) {
-                                                noteFieldValue = NoteRichTextHelper.toggleCheckboxAtOffset(noteFieldValue, charOffset)
-                                                val styles = NoteRichTextHelper.getStylesAtCursor(noteFieldValue)
-                                                isCheckboxChecked = styles.isCheckboxChecked
-                                                isCheckboxActive = styles.isCheckbox
+                                        }
+                                        PaperPattern.GRID -> {
+                                            val gridSizePx = 24.dp.toPx()
+                                            var y = gridSizePx
+                                            while (y < size.height) {
+                                                drawLine(
+                                                    color = patternColor,
+                                                    start = Offset(0f, y),
+                                                    end = Offset(size.width, y),
+                                                    strokeWidth = 0.75.dp.toPx()
+                                                )
+                                                y += gridSizePx
+                                            }
+                                            var x = gridSizePx
+                                            while (x < size.width) {
+                                                drawLine(
+                                                    color = patternColor,
+                                                    start = Offset(x, 0f),
+                                                    end = Offset(x, size.height),
+                                                    strokeWidth = 0.75.dp.toPx()
+                                                )
+                                                x += gridSizePx
+                                            }
+                                        }
+                                        PaperPattern.DOTTED -> {
+                                            val dotSpacingPx = 22.dp.toPx()
+                                            val dotRadius = 1.25.dp.toPx()
+                                            var y = dotSpacingPx
+                                            while (y < size.height) {
+                                                var x = dotSpacingPx
+                                                while (x < size.width) {
+                                                    drawCircle(
+                                                        color = patternColor,
+                                                        radius = dotRadius,
+                                                        center = Offset(x, y)
+                                                    )
+                                                    x += dotSpacingPx
+                                                }
+                                                y += dotSpacingPx
                                             }
                                         }
                                     }
-                                },
-                            decorationBox = { innerTextField ->
-                                Box(modifier = Modifier.fillMaxWidth()) {
-                                    if (noteFieldValue.text.isEmpty()) {
-                                        Text(
-                                            text = "Notunuzu yazın...",
-                                            fontSize = 16.sp,
-                                            color = noteMutedTextColor
+                                }
+                                .clickable(
+                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                    indication = null,
+                                    enabled = !pageCtrl.isDrawingActive
+                                ) {
+                                    activePageIndex = pageIndex
+                                    runCatching { pageFocusRequester.requestFocus() }
+                                    keyboardController?.show()
+                                }
+                        ) {
+                            BasicTextField(
+                                value = pageTfv,
+                                onValueChange = { updatedValue ->
+                                    if (activePageIndex != pageIndex) {
+                                        activePageIndex = pageIndex
+                                    }
+                                    val enterHandled = NoteRichTextHelper.handleEnterOnListItem(pageTfv, updatedValue)
+                                    val nextTfv = if (enterHandled != null) {
+                                        enterHandled
+                                    } else {
+                                        NoteRichTextHelper.handleTextChange(
+                                            oldValue = pageTfv,
+                                            newValue = updatedValue,
+                                            isBoldActive = isBoldActive,
+                                            isItalicActive = isItalicActive,
+                                            isUnderlineActive = isUnderlineActive,
+                                            activeTextColor = selectedTextColor,
+                                            activeHighlightColor = selectedHighlightColor
                                         )
                                     }
-                                    innerTextField()
+                                    if (pageIndex in pageFieldValues.indices) {
+                                        pageFieldValues[pageIndex] = nextTfv
+                                        pageChangeTick++
+                                    }
+                                },
+                                onTextLayout = {
+                                    if (isPageActive) {
+                                        textLayoutResult = it
+                                    }
+                                },
+                                textStyle = bodyTextStyle,
+                                cursorBrush = SolidColor(effectivePaperAccent),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = minBodyHeight)
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    .focusRequester(pageFocusRequester)
+                                    .onFocusChanged { focusState ->
+                                        if (focusState.isFocused && activePageIndex != pageIndex) {
+                                            activePageIndex = pageIndex
+                                        }
+                                    },
+                                decorationBox = { innerTextField ->
+                                    Box(modifier = Modifier.fillMaxWidth()) {
+                                        if (pageTfv.text.isEmpty()) {
+                                            Text(
+                                                text = if (pageIndex == 0) {
+                                                    "Notunuzu yazın..."
+                                                } else {
+                                                    "${pageIndex + 1}. sayfaya notunuzu yazın..."
+                                                },
+                                                fontSize = 16.sp,
+                                                color = noteMutedTextColor
+                                            )
+                                        }
+                                        innerTextField()
+                                    }
+                                }
+                            )
+
+                            // Kalem & Çizim Stüdyosu Katmanı (sayfa bazlı)
+                            DrawingCanvasOverlay(
+                                controller = pageCtrl,
+                                modifier = Modifier.matchParentSize(),
+                                onTwoFingerScroll = { dy, _ -> noteListState.dispatchRawDelta(-dy) }
+                            )
+                        }
+                    }
+                }
+
+                item(key = "note_add_page_footer") {
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Prominent "+ Yeni Sayfa Ekle" Button strictly inheriting user's selected Page Layout
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = effectiveBgColor,
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = 1.2.dp,
+                            color = effectivePaperAccent.copy(alpha = 0.45f)
+                        ),
+                        shadowElevation = 2.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp)
+                            .clickable {
+                                val newPageIdx = pageFieldValues.size
+                                pageFieldValues.add(
+                                    TextFieldValue(
+                                        annotatedString = AnnotatedString(""),
+                                        selection = TextRange(0)
+                                    )
+                                )
+                                getOrCreatePageDrawingController(newPageIdx)
+                                activePageIndex = newPageIdx
+                                pageChangeTick++
+                                val taggedText = buildJoinedTaggedText()
+                                val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
+                                viewModel.onContentChanged(fullContent)
+                                drawingScope.launch {
+                                    kotlinx.coroutines.delay(80L)
+                                    runCatching {
+                                        val targetItem = (noteListState.layoutInfo.totalItemsCount - 2).coerceAtLeast(0)
+                                        noteListState.animateScrollToItem(targetItem)
+                                    }
+                                    if (!drawingController.isDrawingActive) {
+                                        runCatching {
+                                            getOrCreatePageFocusRequester(newPageIdx).requestFocus()
+                                            keyboardController?.show()
+                                        }
+                                    }
                                 }
                             }
-                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = effectivePaperAccent.copy(alpha = 0.15f),
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.Add,
+                                            contentDescription = "Yeni Sayfa Ekle",
+                                            tint = effectivePaperAccent,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                Column {
+                                    Text(
+                                        text = "+ Yeni Sayfa Ekle",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = noteTextColor
+                                    )
+                                    Text(
+                                        text = "${currentPattern.title} • $currentTintTitle düzeninde açılır",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = noteMutedTextColor
+                                    )
+                                }
+                            }
 
-                        // Kalem & Çizim Stüdyosu Katmanı (tam ekran kenardan kenara)
-                        DrawingCanvasOverlay(
-                            controller = drawingController,
-                            modifier = Modifier.matchParentSize(),
-                            onTwoFingerScroll = { dy, _ -> noteListState.dispatchRawDelta(-dy) }
-                        )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = effectivePaperAccent.copy(alpha = 0.12f)
+                            ) {
+                                Text(
+                                    text = "Sayfa ${pageFieldValues.size + 1}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = effectivePaperAccent,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.End
+                            .padding(horizontal = 14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Text(
+                            text = "Sayfa ${safeActivePageIndex + 1} / ${pageFieldValues.size}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = noteMutedTextColor
+                        )
                         Text(
                             text = "$words kelime | $chars karakter",
                             style = MaterialTheme.typography.bodySmall,
@@ -1940,6 +2439,7 @@ fun NoteDetailScreen(
                         activePenPanel = ActivePenPanel.NONE
                     },
                     onSelectPenMode = {
+                        keyboardController?.hide()
                         if (!drawingController.isDrawingActive) {
                             drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
                         }
@@ -2034,6 +2534,41 @@ fun NoteDetailScreen(
                 }
             }
         }
+    }
+
+    if (pendingDeletePageIndex != null) {
+        val targetDelIdx = pendingDeletePageIndex!!
+        AlertDialog(
+            onDismissRequest = { pendingDeletePageIndex = null },
+            title = {
+                Text(
+                    text = "${targetDelIdx + 1}. Sayfayı Sil",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text("Bu sayfadaki metin ve çizimler silinecek. Devam etmek istiyor musunuz?")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDeletePageIndex = null
+                        performDeleteNotePage(targetDelIdx)
+                    }
+                ) {
+                    Text(
+                        "Sayfayı Sil",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeletePageIndex = null }) {
+                    Text("İptal")
+                }
+            }
+        )
     }
 
     if (showCustomColorDialog) {
@@ -2312,11 +2847,7 @@ fun NoteDetailScreen(
                                     onClick = {
                                         val appended = viewModel.appendAiResultToNote()
                                         val cleanAppended = stripPdfPageTags(appended)
-                                        val parsed = NoteRichTextHelper.parseTaggedText(cleanAppended)
-                                        noteFieldValue = TextFieldValue(
-                                            annotatedString = parsed,
-                                            selection = TextRange(parsed.text.length)
-                                        )
+                                        populatePagesFromCleanText(cleanAppended)
                                         showAiSheet = false
                                     },
                                     colors = ButtonDefaults.buttonColors(
