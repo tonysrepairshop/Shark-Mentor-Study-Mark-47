@@ -67,16 +67,28 @@ class UserDataSyncListener(private val context: Context) {
                 Log.w(TAG, "Listen failed for schedules: ${e.message}")
                 return@addSnapshotListener
             }
+            if (snapshot == null) return@addSnapshotListener
+            if (snapshot.metadata.isFromCache && snapshot.documents.isEmpty()) return@addSnapshotListener
             scope.launch {
-                snapshot?.documents?.forEach { doc ->
+                val scheduleDao = db.institutionScheduleDao()
+                snapshot.documents.forEach { doc ->
                     try {
+                        if (doc.getSafeBoolean("isDeleted") == true) {
+                            scheduleDao.deleteById(doc.id)
+                            return@forEach
+                        }
+                        val existing = scheduleDao.getById(doc.id)
+                        if (existing != null && !existing.isSynced) {
+                            return@forEach
+                        }
+                        val subject = doc.getSafeString("subject")?.trim()?.takeIf { it.isNotBlank() } ?: return@forEach
                         val entity = InstitutionScheduleEntity(
                             id = doc.id,
-                            dayOfWeek = doc.getSafeInt("dayOfWeek") ?: 0,
-                            startTime = doc.getSafeString("startTime") ?: "",
-                            endTime = doc.getSafeString("endTime") ?: "",
-                            subject = doc.getSafeString("subject") ?: "",
-                            type = doc.getSafeString("type") ?: "",
+                            dayOfWeek = (doc.getSafeInt("dayOfWeek") ?: 1).coerceIn(1, 7),
+                            startTime = doc.getSafeString("startTime")?.trim()?.takeIf { it.isNotBlank() } ?: "09:00",
+                            endTime = doc.getSafeString("endTime")?.trim()?.takeIf { it.isNotBlank() } ?: "10:00",
+                            subject = subject,
+                            type = doc.getSafeString("type")?.trim()?.takeIf { it.isNotBlank() } ?: "DERSHANE",
                             teacherName = doc.getSafeString("teacherName") ?: "",
                             period = doc.getSafeInt("period") ?: doc.getSafeString("period")?.toIntOrNull() ?: 0,
                             isSynced = true,
@@ -84,7 +96,7 @@ class UserDataSyncListener(private val context: Context) {
                             lastModifiedMillis = doc.getSafeLong("lastModifiedMillis") ?: System.currentTimeMillis(),
                             cloudId = doc.id
                         )
-                        db.institutionScheduleDao().insertAll(listOf(entity))
+                        scheduleDao.insertAll(listOf(entity))
                     } catch (ex: Exception) {
                         Log.e(TAG, "Error parsing schedule doc ${doc.id}", ex)
                     }

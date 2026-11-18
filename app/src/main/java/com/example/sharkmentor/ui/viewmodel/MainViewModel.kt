@@ -53,10 +53,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Listen for institution/coach assignment for dynamic branding
+        com.example.sharkmentor.core.notification.SharkNotificationEngine.init(application)
         val currentUser = runCatching { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser }.getOrNull()
             ?: GoogleServicesHelper.getCurrentUser(GoogleServicesHelper.getFirebaseAuth(application), application)
         val uid = currentUser?.uid
         if (currentUser != null && uid != null) {
+            com.example.sharkmentor.core.notification.SocialNotificationMonitor.start(application)
             runCatching {
                 GoogleServicesHelper.getFirebaseFirestore(application)
                     ?.collection("students")?.document(uid)

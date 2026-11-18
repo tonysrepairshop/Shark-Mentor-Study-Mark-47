@@ -197,10 +197,11 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
                                             }
                                             val totalUnits = (doc.getLong("totalUnits")?.toInt()
                                                 ?: doc.getLong("totalTarget")?.toInt()
-                                                ?: 1).coerceAtLeast(1)
-                                            val completedUnits = (doc.getLong("completedUnits")?.toInt()
+                                                ?: 0).coerceAtLeast(0)
+                                            val rawCompleted = (doc.getLong("completedUnits")?.toInt()
                                                 ?: doc.getLong("currentUnits")?.toInt()
-                                                ?: 0).coerceIn(0, totalUnits)
+                                                ?: 0).coerceAtLeast(0)
+                                            val completedUnits = if (totalUnits > 0) rawCompleted.coerceIn(0, totalUnits) else rawCompleted
                                             val remoteUpdatedMs = doc.getTimestamp("updatedAt")?.toDate()?.time
                                                 ?: System.currentTimeMillis()
                                             val entity = ResourceEntity(
@@ -268,8 +269,9 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
         val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid ?: return false
         val db = GoogleServicesHelper.getFirebaseFirestore(getApplication()) ?: return false
         val docId = resource.cloudId?.takeIf { it.isNotBlank() } ?: "${uid}_${resource.id}"
-        val totalUnits = resource.totalUnits.coerceAtLeast(1)
-        val clamped = resource.completedUnits.coerceIn(0, totalUnits)
+        val totalUnits = resource.totalUnits.coerceAtLeast(0)
+        val clamped = if (totalUnits > 0) resource.completedUnits.coerceIn(0, totalUnits) else resource.completedUnits.coerceAtLeast(0)
+        val isCompleted = totalUnits > 0 && clamped >= totalUnits
 
         val resourceData = hashMapOf<String, Any?>(
             "id"                to docId,
@@ -279,8 +281,8 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             "unitType"          to resource.unitType,
             "currentUnits"      to clamped,
             "completedUnits"    to clamped,
-            "isCompleted"       to (clamped >= totalUnits),
-            "completed"         to (clamped >= totalUnits),
+            "isCompleted"       to isCompleted,
+            "completed"         to isCompleted,
             "totalUnits"        to totalUnits,
             "totalTarget"       to totalUnits,
             "colorHex"          to (resource.colorHex ?: "#0ea5e9"),
@@ -393,7 +395,8 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
                 ?: _resources.value.find { it.id == resourceId }
                 ?: return@launch
             val now = System.currentTimeMillis()
-            val nextUnits = (resource.completedUnits + step).coerceIn(0, resource.totalUnits)
+            val rawNext = (resource.completedUnits + step).coerceAtLeast(0)
+            val nextUnits = if (resource.totalUnits > 0) rawNext.coerceIn(0, resource.totalUnits) else rawNext
             val updated = resource.copy(
                 completedUnits = nextUnits,
                 isSynced = false,
@@ -413,7 +416,8 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
                 ?: _resources.value.find { it.id == resourceId }
                 ?: return@launch
             val now = System.currentTimeMillis()
-            val nextUnits = (resource.completedUnits - step).coerceIn(0, resource.totalUnits)
+            val rawNext = (resource.completedUnits - step).coerceAtLeast(0)
+            val nextUnits = if (resource.totalUnits > 0) rawNext.coerceIn(0, resource.totalUnits) else rawNext
             val updated = resource.copy(
                 completedUnits = nextUnits,
                 isSynced = false,
@@ -430,7 +434,8 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
     fun setResourceUnits(resource: ResourceEntity, newUnits: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             val now = System.currentTimeMillis()
-            val targetVal = newUnits.coerceIn(0, resource.totalUnits)
+            val rawTarget = newUnits.coerceAtLeast(0)
+            val targetVal = if (resource.totalUnits > 0) rawTarget.coerceIn(0, resource.totalUnits) else rawTarget
             val updated = resource.copy(
                 completedUnits = targetVal,
                 isSynced = false,

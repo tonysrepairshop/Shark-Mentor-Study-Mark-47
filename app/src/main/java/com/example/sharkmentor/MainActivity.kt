@@ -104,6 +104,7 @@ class MainActivity : ComponentActivity() {
                         AuthScreen(
                             onAuthSuccess = {
                                 registerFcmToken()
+                                com.example.sharkmentor.core.notification.SocialNotificationMonitor.start(this@MainActivity)
                                 isLoggedIn = true
                             },
                             onGuestContinue = {
@@ -165,6 +166,7 @@ class MainActivity : ComponentActivity() {
         try {
             if (GoogleServicesHelper.getCurrentUser(null, this) != null) {
                 registerFcmToken()
+                com.example.sharkmentor.core.notification.SocialNotificationMonitor.start(this)
             }
         } catch (e: Throwable) {
             Log.w("MainActivity", "Error checking current user: ${e.message}")

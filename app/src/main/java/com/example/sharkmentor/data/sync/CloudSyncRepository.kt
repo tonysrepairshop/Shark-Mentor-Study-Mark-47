@@ -328,7 +328,7 @@ class CloudSyncRepository(private val context: Context) {
         "currentUnits"      to resource.completedUnits,
         "completedUnits"    to resource.completedUnits,
         "totalUnits"        to resource.totalUnits,
-        "isCompleted"       to (resource.completedUnits >= resource.totalUnits),
+        "isCompleted"       to (resource.totalUnits > 0 && resource.completedUnits >= resource.totalUnits),
         "colorHex"          to (resource.colorHex ?: "#0ea5e9"),
         "origin"            to "APP",
         "isAssignedByCoach" to resource.isAssignedByCoach,
@@ -390,6 +390,7 @@ class CloudSyncRepository(private val context: Context) {
         val docPath = "users/$uid/institution_schedules"
         for (schedule in pending) {
             try {
+                val docId = schedule.cloudId?.takeIf { it.isNotBlank() } ?: schedule.id
                 val docData = mapOf(
                     "dayOfWeek" to schedule.dayOfWeek,
                     "startTime" to schedule.startTime,
@@ -398,15 +399,11 @@ class CloudSyncRepository(private val context: Context) {
                     "type" to schedule.type,
                     "teacherName" to schedule.teacherName,
                     "period" to schedule.period,
+                    "isDeleted" to schedule.isDeleted,
                     "lastModifiedMillis" to schedule.lastModifiedMillis
                 )
 
-                val docRef = if (schedule.cloudId != null) {
-                    fs.document("$docPath/${schedule.cloudId}")
-                } else {
-                    fs.collection(docPath).document()
-                }
-
+                val docRef = fs.collection(docPath).document(docId)
                 docRef.set(docData, SetOptions.merge()).await()
                 institutionScheduleDao.markSynced(schedule.id, docRef.id)
                 synced++

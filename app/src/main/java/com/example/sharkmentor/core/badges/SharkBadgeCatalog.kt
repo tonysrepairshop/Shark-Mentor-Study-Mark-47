@@ -151,6 +151,7 @@ object SharkBadgeCatalog {
     private const val KEY_BADGE_PROGRESS = "badge_progress_counts"
     private const val KEY_WEEKLY_BONUS_PREFIX = "weekly_bonus_secs_"
     private const val KEY_BLOCKED_UIDS = "blocked_user_ids"
+    private const val KEY_BLOCKED_USER_NAMES_JSON = "blocked_user_names_json"
 
     // ─── 12 Base Backward-Compatible Badge IDs ───────────────────────────────
     const val BADGE_ILK_SORU = "ilk_soru"
@@ -1642,6 +1643,42 @@ object SharkBadgeCatalog {
             .filter { it.isNotBlank() }
             .toSet()
 
+    fun getBlockedUsersMap(context: Context): Map<String, String> {
+        val raw = prefs(context).getString(KEY_BLOCKED_USER_NAMES_JSON, "").orEmpty()
+        val parsed = runCatching {
+            if (raw.isBlank()) {
+                emptyMap()
+            } else {
+                val obj = org.json.JSONObject(raw)
+                buildMap {
+                    val keys = obj.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next().trim()
+                        val v = obj.optString(k, "").trim()
+                        if (k.isNotBlank() && v.isNotBlank()) put(k, v)
+                    }
+                }
+            }
+        }.getOrDefault(emptyMap())
+        return getBlockedUserIds(context).associateWith { uid -> parsed[uid].orEmpty() }
+    }
+
+    fun saveBlockedUserName(context: Context, uid: String, name: String) {
+        val cleanUid = uid.trim()
+        val cleanName = name.trim()
+        if (cleanUid.isBlank()) return
+        val existing = runCatching {
+            val raw = prefs(context).getString(KEY_BLOCKED_USER_NAMES_JSON, "").orEmpty()
+            if (raw.isBlank()) org.json.JSONObject() else org.json.JSONObject(raw)
+        }.getOrElse { org.json.JSONObject() }
+        if (cleanName.isNotBlank()) {
+            existing.put(cleanUid, cleanName)
+        } else {
+            existing.remove(cleanUid)
+        }
+        prefs(context).edit().putString(KEY_BLOCKED_USER_NAMES_JSON, existing.toString()).apply()
+    }
+
     fun mergeBlockedUserIds(context: Context, remoteBlocked: Collection<String>): Set<String> {
         val merged = (getBlockedUserIds(context) + remoteBlocked.map { it.trim() }.filter { it.isNotBlank() }).toSet()
         prefs(context).edit().putStringSet(KEY_BLOCKED_UIDS, merged).apply()
@@ -1652,7 +1689,8 @@ object SharkBadgeCatalog {
         context: Context,
         myUid: String,
         targetUid: String,
-        blocked: Boolean
+        blocked: Boolean,
+        targetName: String = ""
     ): Set<String> {
         val cleanTarget = targetUid.trim()
         if (cleanTarget.isBlank() || cleanTarget == myUid) return getBlockedUserIds(context)
@@ -1660,6 +1698,11 @@ object SharkBadgeCatalog {
             if (blocked) add(cleanTarget) else remove(cleanTarget)
         }
         prefs(context).edit().putStringSet(KEY_BLOCKED_UIDS, updated).apply()
+        if (blocked && targetName.isNotBlank()) {
+            saveBlockedUserName(context, cleanTarget, targetName)
+        } else if (!blocked) {
+            saveBlockedUserName(context, cleanTarget, "")
+        }
 
         val db = GoogleServicesHelper.getFirebaseFirestore(context)
         if (db != null && myUid.isNotBlank() && myUid != "local_student" && myUid != "student_default") {
@@ -1679,15 +1722,16 @@ object SharkBadgeCatalog {
                     .document(cleanTarget)
                 if (blocked) {
                     val now = System.currentTimeMillis()
-                    blockDocRef.set(
-                        mapOf(
-                            "blockerUid" to myUid,
-                            "blockedUid" to cleanTarget,
-                            "createdAtMillis" to now,
-                            "createdAt" to FieldValue.serverTimestamp()
-                        ),
-                        SetOptions.merge()
-                    ).await()
+                    val blockPayload = hashMapOf<String, Any>(
+                        "blockerUid" to myUid,
+                        "blockedUid" to cleanTarget,
+                        "createdAtMillis" to now,
+                        "createdAt" to FieldValue.serverTimestamp()
+                    )
+                    if (targetName.isNotBlank()) {
+                        blockPayload["blockedName"] = targetName.trim()
+                    }
+                    blockDocRef.set(blockPayload, SetOptions.merge()).await()
                 } else {
                     blockDocRef.delete().await()
                 }

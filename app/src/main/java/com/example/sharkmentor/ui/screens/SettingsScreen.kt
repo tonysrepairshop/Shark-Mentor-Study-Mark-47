@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PersonOff
 import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -43,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.ai.UserAiPreferences
+import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.data.AppThemeMode
 import com.example.sharkmentor.core.data.ThemePalette
 import com.example.sharkmentor.core.data.ThemePreferences
@@ -71,7 +73,70 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
     var showTimeDialog by remember { mutableStateOf(false) }
+    var showBlockedUsersDialog by remember { mutableStateOf(false) }
+    var blockedUsersMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var isLoadingBlockedUsers by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showBlockedUsersDialog) {
+        if (!showBlockedUsersDialog) return@LaunchedEffect
+        blockedUsersMap = SharkBadgeCatalog.getBlockedUsersMap(context)
+        isLoadingBlockedUsers = true
+        withContext(Dispatchers.IO) {
+            val auth = GoogleServicesHelper.getFirebaseAuth(context)
+            val uid = GoogleServicesHelper.getCurrentUser(auth, context)?.uid
+            val db = GoogleServicesHelper.getFirebaseFirestore(context)
+            if (!uid.isNullOrBlank() && uid != "local_student" && uid != "student_default" && db != null) {
+                runCatching {
+                    val studentDoc = db.collection("students").document(uid).get().await()
+                    val remoteBlocked = (studentDoc.get("blockedUserIds") as? List<*>)
+                        ?.mapNotNull { it?.toString()?.trim() }
+                        ?.filter { it.isNotBlank() }
+                        .orEmpty()
+                    if (remoteBlocked.isNotEmpty()) {
+                        SharkBadgeCatalog.mergeBlockedUserIds(context, remoteBlocked)
+                    }
+                }
+                runCatching {
+                    val blocksSnap = db.collection("user_blocks").document(uid).collection("blocked").get().await()
+                    val remoteIds = blocksSnap.documents.map { it.id.trim() }.filter { it.isNotBlank() }
+                    if (remoteIds.isNotEmpty()) {
+                        SharkBadgeCatalog.mergeBlockedUserIds(context, remoteIds)
+                    }
+                    blocksSnap.documents.forEach { doc ->
+                        val blockedName = doc.getString("blockedName").orEmpty().trim()
+                        if (blockedName.isNotBlank()) {
+                            SharkBadgeCatalog.saveBlockedUserName(context, doc.id, blockedName)
+                        }
+                    }
+                }
+                val currentMap = SharkBadgeCatalog.getBlockedUsersMap(context)
+                currentMap.forEach { (blockedUid, existingName) ->
+                    if (existingName.isBlank()) {
+                        val resolved = runCatching {
+                            val st = db.collection("students").document(blockedUid).get().await()
+                            (st.getString("name")
+                                ?: st.getString("displayName")
+                                ?: st.getString("fullName")
+                                ?: "").trim()
+                        }.getOrDefault("").ifBlank {
+                            runCatching {
+                                val lg = db.collection("institutions").document("GLOBAL_INDIVIDUAL")
+                                    .collection("weeklyLeague").document(blockedUid).get().await()
+                                (lg.getString("displayName") ?: "").trim()
+                            }.getOrDefault("")
+                        }
+                        if (resolved.isNotBlank()) {
+                            SharkBadgeCatalog.saveBlockedUserName(context, blockedUid, resolved)
+                        }
+                    }
+                }
+            }
+        }
+        blockedUsersMap = SharkBadgeCatalog.getBlockedUsersMap(context)
+        isLoadingBlockedUsers = false
+    }
 
     val themePrefs = remember { ThemePreferences.instance }
     val themeMode by themePrefs.themeMode.collectAsStateWithLifecycle()
@@ -122,6 +187,112 @@ fun SettingsScreen(
         ReflectionTimeDialog(
             onDismiss = { showTimeDialog = false },
             onTimeSaved = { _, _ -> }
+        )
+    }
+
+    if (showBlockedUsersDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showBlockedUsersDialog = false },
+            title = {
+                Text(
+                    text = "Engellenen Kullanıcılar",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                when {
+                    isLoadingBlockedUsers && blockedUsersMap.isEmpty() -> {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                            Text("Engellenen kullanıcılar yükleniyor...", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    blockedUsersMap.isEmpty() -> {
+                        Text(
+                            text = "Engellediğiniz kullanıcı bulunmuyor.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    else -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 340.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            blockedUsersMap.entries.forEach { (blockedUid, storedName) ->
+                                val displayName = storedName.ifBlank { "Kullanıcı (${blockedUid.take(6)})" }
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = displayName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(end = 8.dp)
+                                        )
+                                        OutlinedButton(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    val myUid = GoogleServicesHelper.getCurrentUser(
+                                                        GoogleServicesHelper.getFirebaseAuth(context),
+                                                        context
+                                                    )?.uid ?: "local_student"
+                                                    SharkBadgeCatalog.setUserBlocked(
+                                                        context = context,
+                                                        myUid = myUid,
+                                                        targetUid = blockedUid,
+                                                        blocked = false
+                                                    )
+                                                    blockedUsersMap = SharkBadgeCatalog.getBlockedUsersMap(context)
+                                                    snackbarHostState.showSnackbar("$displayName engeli kaldırıldı.")
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            modifier = Modifier.height(32.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text(
+                                                text = "Engeli Kaldır",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBlockedUsersDialog = false }) {
+                    Text("Kapat")
+                }
+            }
         )
     }
 
@@ -242,6 +413,16 @@ fun SettingsScreen(
                 icon = Icons.Default.Block,
                 label = "Uygulama Engelleyici",
                 onClick = onOpenAppBlocker
+            )
+
+            HorizontalDivider()
+
+            Text("Sosyal & Güvenlik", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+
+            SettingRow(
+                icon = Icons.Default.PersonOff,
+                label = "Engellenen Kullanıcılar",
+                onClick = { showBlockedUsersDialog = true }
             )
 
             HorizontalDivider()

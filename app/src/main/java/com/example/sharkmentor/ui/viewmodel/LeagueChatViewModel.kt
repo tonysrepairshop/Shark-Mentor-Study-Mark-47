@@ -136,6 +136,12 @@ data class LeagueChatMessageUi(
     val text: String,
     val createdAtMillis: Long,
     val isMine: Boolean,
+    val replyToMessageId: String? = null,
+    val replyToSenderName: String? = null,
+    val replyToPreview: String? = null,
+    val isEdited: Boolean = false,
+    val editedAtMillis: Long = 0L,
+    val isDeleted: Boolean = false,
     val questionCard: QuestionCardUi? = null,
     val solutionReply: SolutionReplyUi? = null
 )
@@ -169,6 +175,8 @@ data class LeagueChatUiState(
     val dmThreads: List<DmThreadUi> = emptyList(),
     val dmStatusByPeerId: Map<String, String> = emptyMap(),
     val activeDmThread: DmThreadUi? = null,
+    val activeReplyTarget: LeagueChatMessageUi? = null,
+    val editingMessage: LeagueChatMessageUi? = null,
     val savedQuestionIds: Set<String> = emptySet(),
     val blockedUserIds: Set<String> = emptySet(),
     val selectedMemberProfile: LeagueEntry? = null,
@@ -356,6 +364,8 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             activeGroupName = groupName.ifBlank { "Grup $cleanCode" },
             activeFilter = ChatFilterTab.ALL,
             activeDmThread = null,
+            activeReplyTarget = null,
+            editingMessage = null,
             allMessages = emptyList(),
             blockedUserIds = SharkBadgeCatalog.getBlockedUserIds(appContext),
             isLoading = true,
@@ -390,6 +400,8 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             currentUid = uid,
             currentName = myName,
             activeDmThread = null,
+            activeReplyTarget = null,
+            editingMessage = null,
             allMessages = emptyList(),
             blockedUserIds = SharkBadgeCatalog.getBlockedUserIds(appContext),
             isLoading = false,
@@ -409,6 +421,8 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             currentName = myName,
             activeFilter = ChatFilterTab.ALL,
             activeDmThread = thread,
+            activeReplyTarget = null,
+            editingMessage = null,
             allMessages = emptyList(),
             blockedUserIds = SharkBadgeCatalog.getBlockedUserIds(appContext),
             isLoading = true,
@@ -556,7 +570,50 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun setReplyTarget(message: LeagueChatMessageUi) {
+        _uiState.value = _uiState.value.copy(
+            activeReplyTarget = message,
+            editingMessage = null
+        )
+    }
+
+    fun setEditingMessage(message: LeagueChatMessageUi) {
+        if (!message.isMine || message.type != "TEXT") return
+        _uiState.value = _uiState.value.copy(
+            editingMessage = message,
+            activeReplyTarget = null
+        )
+    }
+
+    fun clearReplyAndEdit() {
+        _uiState.value = _uiState.value.copy(
+            activeReplyTarget = null,
+            editingMessage = null
+        )
+    }
+
+    private fun buildReplyPreview(target: LeagueChatMessageUi): String {
+        val raw = when {
+            target.questionCard != null -> {
+                val note = target.questionCard.noteText.takeIf { it.isNotBlank() }?.let { " - $it" }.orEmpty()
+                "Soru: ${target.questionCard.subject} (${target.questionCard.topic})$note"
+            }
+            target.solutionReply != null -> {
+                "Çözüm: ${target.solutionReply.solutionText.ifBlank { "Çözüm görseli" }}"
+            }
+            else -> target.text
+        }
+        val clean = SyncWorker.sanitizeTurkishText(raw).replace('\n', ' ').trim()
+        return if (clean.length > 90) clean.take(87) + "..." else clean
+    }
+
     fun sendTextMessage(rawText: String) {
+        val editing = _uiState.value.editingMessage
+        if (editing != null) {
+            editTextMessage(editing, rawText)
+            return
+        }
+
         val text = SyncWorker.sanitizeTurkishText(rawText.trim())
         if (text.isBlank()) return
         val state = _uiState.value
@@ -572,6 +629,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val targetCollection = activeMessagesCollection() ?: return
+        val replyTarget = state.activeReplyTarget
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSending = true)
@@ -583,6 +641,11 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     put("groupId", state.activeGroupCode)
                     put("type", "TEXT")
                     put("text", text)
+                    if (replyTarget != null) {
+                        put("replyToMessageId", replyTarget.id)
+                        put("replyToSenderName", replyTarget.senderName)
+                        put("replyToPreview", buildReplyPreview(replyTarget))
+                    }
                 }
                 msgDoc.set(payload).await()
 
@@ -591,18 +654,148 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                         .set(
                             mapOf(
                                 "lastMessageText" to text,
+                                "lastSenderId" to uid,
+                                "lastMessageId" to msgDoc.id,
+                                "lastMessageType" to "TEXT",
                                 "updatedAtMillis" to now,
                                 "updatedAt" to FieldValue.serverTimestamp()
                             ),
                             SetOptions.merge()
                         )
                 }
-                _uiState.value = _uiState.value.copy(isSending = false)
+                _uiState.value = _uiState.value.copy(
+                    isSending = false,
+                    activeReplyTarget = null
+                )
             }.onFailure { e ->
                 Log.w("LeagueChatVM", "sendTextMessage error: ${e.message}")
                 _uiState.value = _uiState.value.copy(
                     isSending = false,
                     statusMessage = "Mesaj gönderilemedi."
+                )
+            }
+        }
+    }
+
+    fun editTextMessage(message: LeagueChatMessageUi, rawNewText: String) {
+        if (!message.isMine || message.type != "TEXT") return
+        val cleanText = SyncWorker.sanitizeTurkishText(rawNewText.trim())
+        if (cleanText.isBlank()) {
+            _uiState.value = _uiState.value.copy(statusMessage = "Boş mesaj kaydedilemez.")
+            return
+        }
+        if (cleanText == message.text) {
+            _uiState.value = _uiState.value.copy(editingMessage = null)
+            return
+        }
+
+        val state = _uiState.value
+        val database = db ?: return
+        val uid = resolveCurrentUid()
+        if (uid == "local_student" || uid == "student_default") return
+        val targetCollection = activeMessagesCollection() ?: return
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isSending = true)
+            runCatching {
+                val now = System.currentTimeMillis()
+                targetCollection.document(message.id)
+                    .set(
+                        mapOf(
+                            "text" to cleanText,
+                            "isEdited" to true,
+                            "editedAtMillis" to now
+                        ),
+                        SetOptions.merge()
+                    )
+                    .await()
+
+                val wasLast = rawMessages.lastOrNull()?.id == message.id
+                rawMessages = rawMessages.map { item ->
+                    if (item.id == message.id) {
+                        item.copy(text = cleanText, isEdited = true, editedAtMillis = now)
+                    } else {
+                        item
+                    }
+                }
+                if (state.mode == LeagueChatMode.DM_THREAD && state.activeDmThread != null && wasLast) {
+                    database.collection("dm_threads").document(state.activeDmThread.threadId)
+                        .set(
+                            mapOf(
+                                "lastMessageText" to cleanText,
+                                "updatedAtMillis" to now,
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            ),
+                            SetOptions.merge()
+                        )
+                }
+                _uiState.value = _uiState.value.copy(
+                    isSending = false,
+                    editingMessage = null,
+                    statusMessage = "Mesaj düzenlendi."
+                )
+                applyBlockedFilters()
+            }.onFailure { e ->
+                Log.w("LeagueChatVM", "editTextMessage error: ${e.message}")
+                _uiState.value = _uiState.value.copy(
+                    isSending = false,
+                    statusMessage = "Mesaj düzenlenemedi."
+                )
+            }
+        }
+    }
+
+    fun deleteMessage(message: LeagueChatMessageUi) {
+        if (!message.isMine) return
+        val state = _uiState.value
+        val database = db ?: return
+        val uid = resolveCurrentUid()
+        if (uid == "local_student" || uid == "student_default") return
+        val targetCollection = activeMessagesCollection() ?: return
+
+        viewModelScope.launch {
+            runCatching {
+                val now = System.currentTimeMillis()
+                targetCollection.document(message.id)
+                    .set(
+                        mapOf(
+                            "isDeleted" to true,
+                            "deletedAtMillis" to now
+                        ),
+                        SetOptions.merge()
+                    )
+                    .await()
+
+                val wasLast = rawMessages.lastOrNull()?.id == message.id
+                rawMessages = rawMessages.filterNot { it.id == message.id }
+                if (state.mode == LeagueChatMode.DM_THREAD && state.activeDmThread != null && wasLast) {
+                    val prevPreview = rawMessages.lastOrNull()?.let { prev ->
+                        when {
+                            prev.questionCard != null -> "Soru Paylaşımı: ${prev.questionCard.subject}"
+                            prev.solutionReply != null -> "Çözüm: ${prev.solutionReply.solutionText.ifBlank { "Çözüm görseli" }}"
+                            else -> prev.text
+                        }
+                    }.orEmpty()
+                    database.collection("dm_threads").document(state.activeDmThread.threadId)
+                        .set(
+                            mapOf(
+                                "lastMessageText" to prevPreview,
+                                "updatedAtMillis" to now,
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            ),
+                            SetOptions.merge()
+                        )
+                }
+                _uiState.value = _uiState.value.copy(
+                    editingMessage = if (_uiState.value.editingMessage?.id == message.id) null else _uiState.value.editingMessage,
+                    activeReplyTarget = if (_uiState.value.activeReplyTarget?.id == message.id) null else _uiState.value.activeReplyTarget,
+                    statusMessage = "Mesaj silindi."
+                )
+                applyBlockedFilters()
+            }.onFailure { e ->
+                Log.w("LeagueChatVM", "deleteMessage error: ${e.message}")
+                _uiState.value = _uiState.value.copy(
+                    statusMessage = "Mesaj silinemedi."
                 )
             }
         }
@@ -656,6 +849,9 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                         .set(
                             mapOf(
                                 "lastMessageText" to "Soru Paylaşımı: $cleanSubject ($cleanTopic)",
+                                "lastSenderId" to uid,
+                                "lastMessageId" to msgDoc.id,
+                                "lastMessageType" to "QUESTION",
                                 "updatedAtMillis" to now,
                                 "updatedAt" to FieldValue.serverTimestamp()
                             ),
@@ -734,6 +930,9 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                         .set(
                             mapOf(
                                 "lastMessageText" to "Çözüm gönderildi (+${tier.points} P bekliyor)",
+                                "lastSenderId" to uid,
+                                "lastMessageId" to msgDoc.id,
+                                "lastMessageType" to "SOLUTION",
                                 "updatedAtMillis" to now,
                                 "updatedAt" to FieldValue.serverTimestamp()
                             ),
@@ -1126,14 +1325,15 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
     fun blockUser(target: LeagueEntry, block: Boolean) {
         if (target.isCurrentUser || target.studentId.isBlank()) return
         val uid = resolveCurrentUid()
+        val targetName = target.rawName.ifBlank { target.displayName }
         viewModelScope.launch {
             val updated = SharkBadgeCatalog.setUserBlocked(
                 context = appContext,
                 myUid = uid,
                 targetUid = target.studentId,
-                blocked = block
+                blocked = block,
+                targetName = targetName
             )
-            val targetName = target.rawName.ifBlank { target.displayName }
             _uiState.value = _uiState.value.copy(
                 blockedUserIds = updated,
                 statusMessage = if (block) {
@@ -1353,6 +1553,8 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun parseMessageDoc(doc: DocumentSnapshot, currentUid: String): LeagueChatMessageUi? {
+        if (doc.getBoolean("isDeleted") == true) return null
+
         val senderId = doc.getString("senderId").orEmpty()
         val rawSenderName = SyncWorker.sanitizeTurkishText(
             doc.getString("senderName").orEmpty().ifBlank { "Öğrenci" }
@@ -1362,6 +1564,13 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         val createdAtMs = doc.getLong("createdAtMillis")
             ?: doc.getTimestamp("createdAt")?.toDate()?.time
             ?: System.currentTimeMillis()
+        val replyToMessageId = doc.getString("replyToMessageId")?.takeIf { it.isNotBlank() }
+        val replyToSenderName = doc.getString("replyToSenderName")?.takeIf { it.isNotBlank() }
+            ?.let { SyncWorker.sanitizeTurkishText(it) }
+        val replyToPreview = doc.getString("replyToPreview")?.takeIf { it.isNotBlank() }
+            ?.let { SyncWorker.sanitizeTurkishText(it) }
+        val isEdited = doc.getBoolean("isEdited") ?: false
+        val editedAtMillis = doc.getLong("editedAtMillis") ?: 0L
         val badges = (doc.get("senderBadges") as? List<*>)
             ?.mapNotNull { it?.toString()?.trim() }
             ?.filter { it.isNotBlank() }
@@ -1428,6 +1637,11 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             text = text,
             createdAtMillis = createdAtMs,
             isMine = (senderId == currentUid),
+            replyToMessageId = replyToMessageId,
+            replyToSenderName = replyToSenderName,
+            replyToPreview = replyToPreview,
+            isEdited = isEdited,
+            editedAtMillis = editedAtMillis,
             questionCard = questionCard,
             solutionReply = solutionReply
         )

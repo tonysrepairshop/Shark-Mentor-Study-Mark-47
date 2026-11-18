@@ -54,6 +54,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -77,6 +80,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BorderColor
 import androidx.compose.material.icons.filled.Check
@@ -163,6 +167,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -476,6 +481,7 @@ fun NoteDetailScreen(
     var showMoreMenu by remember { mutableStateOf(false) }
     var showPageStyleDialog by remember { mutableStateOf(false) }
     var showStatsDialog by remember { mutableStateOf(false) }
+    var isNavigationOverviewMode by rememberSaveable(activeNoteId) { mutableStateOf(false) }
 
     var pdfPreviewBitmap by remember(activeNoteId, initialNote?.id, incomingFileUri, initialPdfPreview) {
         mutableStateOf(initialPdfPreview)
@@ -928,13 +934,19 @@ fun NoteDetailScreen(
     }
 
     BackHandler {
-        if (drawingController.isDrawingActive) {
-            drawingController.selectTool(DrawingTool.NONE)
-            activePenPanel = ActivePenPanel.NONE
-        } else {
-            saveCurrentNote()
-            onSave(vmTitle, buildJoinedTaggedText(), colorHex, isPinned)
-            onDismiss()
+        when {
+            isNavigationOverviewMode -> {
+                isNavigationOverviewMode = false
+            }
+            drawingController.isDrawingActive -> {
+                drawingController.selectTool(DrawingTool.NONE)
+                activePenPanel = ActivePenPanel.NONE
+            }
+            else -> {
+                saveCurrentNote()
+                onSave(vmTitle, buildJoinedTaggedText(), colorHex, isPinned)
+                onDismiss()
+            }
         }
     }
 
@@ -991,27 +1003,6 @@ fun NoteDetailScreen(
                 }
             },
             actions = {
-                // Kalem Modu Toggle
-                val isPenActive = drawingController.isDrawingActive
-                IconButton(onClick = togglePenMode) {
-                    Surface(
-                        shape = CircleShape,
-                        color = if (isPenActive) primaryColor.copy(alpha = 0.20f) else Color.Transparent,
-                        border = if (isPenActive) {
-                            androidx.compose.foundation.BorderStroke(1.dp, primaryColor)
-                        } else null,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = if (isPenActive) "Metin Moduna Geç" else "Kalem Modu",
-                                tint = if (isPenActive) primaryColor else onSurfaceColor,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                }
                 IconButton(
                     onClick = {
                         onIsolatedNoteAiClick(vmTitle, buildJoinedPlainText())
@@ -1107,6 +1098,7 @@ fun NoteDetailScreen(
                                 )
                                 getOrCreatePageDrawingController(newPageIdx)
                                 activePageIndex = newPageIdx
+                                isNavigationOverviewMode = false
                                 pageChangeTick++
                                 val taggedText = buildJoinedTaggedText()
                                 val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
@@ -1120,10 +1112,10 @@ fun NoteDetailScreen(
                         )
 
                         DropdownMenuItem(
-                            text = { Text(if (drawingController.isDrawingActive) "Metin Moduna Geç" else "Kalem Araçları") },
+                            text = { Text(if (isNavigationOverviewMode) "Normal Görünüme Dön" else "Gezinti Modu") },
                             leadingIcon = {
                                 Icon(
-                                    imageVector = Icons.Default.Edit,
+                                    imageVector = Icons.Default.Apps,
                                     contentDescription = null,
                                     tint = primaryColor,
                                     modifier = Modifier.size(20.dp)
@@ -1131,7 +1123,8 @@ fun NoteDetailScreen(
                             },
                             onClick = {
                                 showMoreMenu = false
-                                togglePenMode()
+                                keyboardController?.hide()
+                                isNavigationOverviewMode = !isNavigationOverviewMode
                             }
                         )
 
@@ -1603,318 +1596,26 @@ fun NoteDetailScreen(
                 }
             }
 
-            LazyColumn(
-                state = noteListState,
-                modifier = Modifier.fillMaxSize(),
-                userScrollEnabled = !drawingController.isDrawingActive,
-                contentPadding = editorContentPadding
-            ) {
-                item(key = "note_title_header") {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp)
+            if (isNavigationOverviewMode) {
+                val pageStartIndex = 1 +
+                    (if (localPdfFilePath != null) 1 else 0) +
+                    (if (pdfPagePaths.isNotEmpty() || pdfPreviewBitmap != null) 1 else 0)
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(colorScheme.background.copy(alpha = 0.94f))
+                        .padding(editorContentPadding)
+                ) {
+                    Surface(
+                        color = surfaceColor,
+                        tonalElevation = 2.dp,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        BasicTextField(
-                            value = vmTitle,
-                            onValueChange = { viewModel.onTitleChanged(it) },
-                            textStyle = TextStyle(
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = effectiveTitleColor
-                            ),
-                            cursorBrush = SolidColor(effectivePaperAccent),
-                            modifier = Modifier.fillMaxWidth(),
-                            decorationBox = { innerTextField ->
-                                if (vmTitle.isEmpty()) {
-                                    Text(
-                                        text = "Başlık",
-                                        fontSize = 24.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = noteMutedTextColor
-                                    )
-                                }
-                                innerTextField()
-                            }
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-                        HorizontalDivider(color = noteTextColor.copy(alpha = 0.12f))
-                        Spacer(modifier = Modifier.height(12.dp))
-                    }
-                }
-
-                if (localPdfFilePath != null) {
-                    item(key = "pdf_reader_launcher_card") {
-                        val safePdfPath = localPdfFilePath ?: ""
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = surfaceColor,
-                            tonalElevation = 2.dp,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp)
-                                .padding(bottom = 12.dp)
-                                .border(
-                                    width = 1.dp,
-                                    color = primaryColor.copy(alpha = 0.3f),
-                                    shape = RoundedCornerShape(14.dp)
-                                )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = Color(0xFFEF4444).copy(alpha = 0.15f),
-                                        modifier = Modifier.size(34.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                imageVector = Icons.Default.PictureAsPdf,
-                                                contentDescription = null,
-                                                tint = Color(0xFFEF4444),
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = "PDF Belgesi",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = onSurfaceColor
-                                    )
-                                }
-                                TextButton(
-                                    onClick = {
-                                        context.startActivity(
-                                            PdfReaderActivity.createIntent(
-                                                context = context,
-                                                pdfFilePath = safePdfPath,
-                                                title = vmTitle.ifBlank { "PDF Belgesi" },
-                                                skipChooser = true
-                                            )
-                                        )
-                                    }
-                                ) {
-                                    Text(
-                                        text = "Okuyucuda Aç",
-                                        color = primaryColor,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (pdfPagePaths.isNotEmpty()) {
-                    item(key = "pdf_document_viewer") {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = surfaceColor,
-                            tonalElevation = 2.dp,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp)
-                                .padding(bottom = 14.dp)
-                                .border(
-                                    width = 1.dp,
-                                    color = onSurfaceColor.copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(14.dp)
-                                )
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Surface(
-                                            shape = CircleShape,
-                                            color = primaryColor.copy(alpha = 0.12f),
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Text(
-                                                    text = "PDF",
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = primaryColor
-                                                )
-                                            }
-                                        }
-                                        Column {
-                                            Text(
-                                                text = "PDF Belgesi",
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = onSurfaceColor
-                                            )
-                                            Text(
-                                                text = "Sayfa ${activePdfPageIndex + 1} / ${pdfPagePaths.size}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = textMutedColor
-                                            )
-                                        }
-                                    }
-
-                                    TextButton(
-                                        onClick = { isPdfPreviewExpanded = !isPdfPreviewExpanded }
-                                    ) {
-                                        Text(
-                                            text = if (isPdfPreviewExpanded) "Gizle" else "Önizle",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = primaryColor,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                }
-
-                                if (isPdfPreviewExpanded) {
-                                    Spacer(modifier = Modifier.height(10.dp))
-
-                                    val safePageIndex = activePdfPageIndex.coerceIn(0, pdfPagePaths.lastIndex)
-                                    val currentPath = pdfPagePaths[safePageIndex]
-
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(Color.White)
-                                            .border(0.5.dp, onSurfaceColor.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
-                                    ) {
-                                        AsyncImage(
-                                            model = File(currentPath),
-                                            contentDescription = "PDF Sayfa ${safePageIndex + 1}",
-                                            contentScale = ContentScale.FillWidth,
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.height(10.dp))
-
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        OutlinedButton(
-                                            onClick = {
-                                                if (activePdfPageIndex > 0) activePdfPageIndex--
-                                            },
-                                            enabled = activePdfPageIndex > 0,
-                                            shape = RoundedCornerShape(8.dp),
-                                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                        ) {
-                                            Text("Önceki", fontSize = 12.sp)
-                                        }
-
-                                        Text(
-                                            text = "${activePdfPageIndex + 1} / ${pdfPagePaths.size}",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = onSurfaceColor
-                                        )
-
-                                        OutlinedButton(
-                                            onClick = {
-                                                if (activePdfPageIndex < pdfPagePaths.lastIndex) activePdfPageIndex++
-                                            },
-                                            enabled = activePdfPageIndex < pdfPagePaths.lastIndex,
-                                            shape = RoundedCornerShape(8.dp),
-                                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                        ) {
-                                            Text("Sonraki", fontSize = 12.sp)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if (pdfPreviewBitmap != null) {
-                    item(key = "pdf_preview_single") {
-                        pdfPreviewBitmap?.let { previewBmp ->
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = surfaceColor,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp)
-                                    .padding(bottom = 12.dp)
-                                    .border(
-                                        width = 1.dp,
-                                        color = onSurfaceColor.copy(alpha = 0.15f),
-                                        shape = RoundedCornerShape(12.dp)
-                                    )
-                            ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    Text(
-                                        text = "1. Sayfa",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = primaryColor,
-                                        modifier = Modifier.padding(bottom = 6.dp)
-                                    )
-                                    Image(
-                                        bitmap = previewBmp.asImageBitmap(),
-                                        contentDescription = "PDF İlk Sayfa Önizleme",
-                                        contentScale = ContentScale.FillWidth,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                itemsIndexed(
-                    items = pageFieldValues,
-                    key = { idx, _ -> "note_page_$idx" }
-                ) { pageIndex, pageTfv ->
-                    val pageCtrl = getOrCreatePageDrawingController(pageIndex)
-                    val pageFocusRequester = getOrCreatePageFocusRequester(pageIndex)
-                    val isPageActive = pageIndex == safeActivePageIndex
-                    val bodyTextStyle = MaterialTheme.typography.bodyLarge.copy(
-                        fontSize = 16.sp,
-                        lineHeight = 24.sp,
-                        color = noteTextColor
-                    )
-                    val minBodyHeight = if (pageFieldValues.size > 1) {
-                        (editorViewportHeightDp - 140.dp).coerceAtLeast(380.dp)
-                    } else {
-                        (editorViewportHeightDp - 110.dp).coerceAtLeast(420.dp)
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(
-                                horizontal = if (pageFieldValues.size > 1) 8.dp else 0.dp,
-                                vertical = if (pageFieldValues.size > 1) 6.dp else 0.dp
-                            )
-                    ) {
-                        // Page Header Bar (always visible when multi-page or when cursor is on a checkbox line)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1922,371 +1623,887 @@ fun NoteDetailScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (isPageActive) {
-                                        effectivePaperAccent.copy(alpha = 0.14f)
-                                    } else {
-                                        noteTextColor.copy(alpha = 0.06f)
-                                    },
-                                    border = if (isPageActive && pageFieldValues.size > 1) {
-                                        androidx.compose.foundation.BorderStroke(
-                                            0.8.dp,
-                                            effectivePaperAccent.copy(alpha = 0.4f)
-                                        )
-                                    } else null
-                                ) {
-                                    Text(
-                                        text = "Sayfa ${pageIndex + 1} / ${pageFieldValues.size} • ${currentPattern.title} • $currentTintTitle",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = if (isPageActive) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isPageActive) effectivePaperAccent else noteMutedTextColor,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
+                                Icon(
+                                    imageVector = Icons.Default.Apps,
+                                    contentDescription = null,
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "Gezinti Modu • ${pageFieldValues.size} Sayfa",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = onSurfaceColor
+                                )
+                            }
+                            TextButton(
+                                onClick = { isNavigationOverviewMode = false },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("Normal Görünüm", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
 
-                                if (isPageActive && isCheckboxActive) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = effectivePaperAccent.copy(alpha = 0.12f),
-                                        modifier = Modifier.clickable { handleCheckboxToggled() }
+                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.12f))
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 148.dp),
+                        contentPadding = PaddingValues(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        gridItemsIndexed(
+                            items = pageFieldValues,
+                            key = { idx, _ -> "overview_page_$idx" }
+                        ) { pageIndex, pageTfv ->
+                            val isPageActive = pageIndex == safeActivePageIndex
+                            val pageCtrl = getOrCreatePageDrawingController(pageIndex)
+                            val strokeCount = pageCtrl.strokes.size
+
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = effectiveBgColor,
+                                tonalElevation = 3.dp,
+                                shadowElevation = 4.dp,
+                                border = androidx.compose.foundation.BorderStroke(
+                                    width = if (isPageActive) 2.dp else 1.dp,
+                                    color = if (isPageActive) effectivePaperAccent else noteTextColor.copy(alpha = 0.18f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(210.dp)
+                                    .clickable {
+                                        activePageIndex = pageIndex
+                                        isNavigationOverviewMode = false
+                                        drawingScope.launch {
+                                            kotlinx.coroutines.delay(70L)
+                                            runCatching {
+                                                noteListState.animateScrollToItem(pageStartIndex + pageIndex)
+                                            }
+                                        }
+                                    }
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(10.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(bottom = 26.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        if (pageIndex == 0 && vmTitle.isNotBlank()) {
+                                            Text(
+                                                text = vmTitle,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = effectiveTitleColor,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Text(
+                                            text = pageTfv.text.trim().ifBlank { "Boş sayfa" },
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontSize = 11.sp,
+                                                lineHeight = 15.sp
+                                            ),
+                                            color = if (pageTfv.text.isBlank()) noteMutedTextColor else noteTextColor,
+                                            maxLines = 7,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (strokeCount > 0) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = effectivePaperAccent.copy(alpha = 0.12f)
+                                            ) {
+                                                Text(
+                                                    text = "$strokeCount çizim",
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                                    color = effectivePaperAccent,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (pageFieldValues.size > 1) {
+                                        IconButton(
+                                            onClick = {
+                                                val hasContent = pageTfv.text.isNotBlank() || strokeCount > 0
+                                                if (hasContent) {
+                                                    pendingDeletePageIndex = pageIndex
+                                                } else {
+                                                    performDeleteNotePage(pageIndex)
+                                                }
+                                            },
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(22.dp)
                                         ) {
                                             Icon(
-                                                imageVector = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                                                contentDescription = "Kutucuğu Değiştir",
-                                                tint = effectivePaperAccent,
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Sayfayı Sil",
+                                                tint = noteMutedTextColor.copy(alpha = 0.8f),
                                                 modifier = Modifier.size(14.dp)
-                                            )
-                                            Text(
-                                                text = if (isCheckboxChecked) "Tamamlandı" else "İşaretle",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = effectivePaperAccent
                                             )
                                         }
                                     }
-                                }
-                            }
 
-                            if (pageFieldValues.size > 1) {
-                                IconButton(
-                                    onClick = {
-                                        val hasContent = pageTfv.text.isNotBlank() || pageCtrl.strokes.isNotEmpty()
-                                        if (hasContent) {
-                                            pendingDeletePageIndex = pageIndex
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isPageActive) {
+                                            effectivePaperAccent.copy(alpha = 0.16f)
                                         } else {
-                                            performDeleteNotePage(pageIndex)
-                                        }
-                                    },
-                                    modifier = Modifier.size(26.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = "Sayfayı Sil",
-                                        tint = noteMutedTextColor.copy(alpha = 0.75f),
-                                        modifier = Modifier.size(16.dp)
-                                    )
+                                            noteTextColor.copy(alpha = 0.08f)
+                                        },
+                                        modifier = Modifier.align(Alignment.BottomCenter)
+                                    ) {
+                                        Text(
+                                            text = "Sayfa ${pageIndex + 1}",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isPageActive) effectivePaperAccent else noteMutedTextColor,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
 
-                        // Page Paper Sheet strictly inheriting user's selected PaperPattern and PaperTint
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .defaultMinSize(minHeight = minBodyHeight)
-                                .then(
-                                    if (pageFieldValues.size > 1) {
-                                        Modifier
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .border(
-                                                width = if (isPageActive) 1.2.dp else 0.8.dp,
-                                                color = if (isPageActive) {
-                                                    effectivePaperAccent.copy(alpha = 0.38f)
-                                                } else {
-                                                    noteTextColor.copy(alpha = 0.14f)
-                                                },
-                                                shape = RoundedCornerShape(12.dp)
-                                            )
-                                    } else {
-                                        Modifier
-                                    }
-                                )
-                                .background(effectiveBgColor)
-                                .drawBehind {
-                                    val patternColor = notePatternColor
-                                    val marginLineColor = noteMarginLineColor
-
-                                    when (currentPattern) {
-                                        PaperPattern.PLAIN -> {}
-                                        PaperPattern.RULED -> {
-                                            val lineSpacingPx = 28.dp.toPx()
-                                            val marginXPx = 32.dp.toPx()
-
-                                            drawLine(
-                                                color = marginLineColor,
-                                                start = Offset(marginXPx, 0f),
-                                                end = Offset(marginXPx, size.height),
-                                                strokeWidth = 1.dp.toPx()
-                                            )
-
-                                            var y = lineSpacingPx
-                                            while (y < size.height) {
-                                                drawLine(
-                                                    color = patternColor,
-                                                    start = Offset(0f, y),
-                                                    end = Offset(size.width, y),
-                                                    strokeWidth = 1.dp.toPx()
-                                                )
-                                                y += lineSpacingPx
-                                            }
-                                        }
-                                        PaperPattern.GRID -> {
-                                            val gridSizePx = 24.dp.toPx()
-                                            var y = gridSizePx
-                                            while (y < size.height) {
-                                                drawLine(
-                                                    color = patternColor,
-                                                    start = Offset(0f, y),
-                                                    end = Offset(size.width, y),
-                                                    strokeWidth = 0.75.dp.toPx()
-                                                )
-                                                y += gridSizePx
-                                            }
-                                            var x = gridSizePx
-                                            while (x < size.width) {
-                                                drawLine(
-                                                    color = patternColor,
-                                                    start = Offset(x, 0f),
-                                                    end = Offset(x, size.height),
-                                                    strokeWidth = 0.75.dp.toPx()
-                                                )
-                                                x += gridSizePx
-                                            }
-                                        }
-                                        PaperPattern.DOTTED -> {
-                                            val dotSpacingPx = 22.dp.toPx()
-                                            val dotRadius = 1.25.dp.toPx()
-                                            var y = dotSpacingPx
-                                            while (y < size.height) {
-                                                var x = dotSpacingPx
-                                                while (x < size.width) {
-                                                    drawCircle(
-                                                        color = patternColor,
-                                                        radius = dotRadius,
-                                                        center = Offset(x, y)
-                                                    )
-                                                    x += dotSpacingPx
-                                                }
-                                                y += dotSpacingPx
-                                            }
-                                        }
-                                    }
-                                }
-                                .clickable(
-                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                    indication = null,
-                                    enabled = !pageCtrl.isDrawingActive
-                                ) {
-                                    activePageIndex = pageIndex
-                                    runCatching { pageFocusRequester.requestFocus() }
-                                    keyboardController?.show()
-                                }
-                        ) {
-                            BasicTextField(
-                                value = pageTfv,
-                                onValueChange = { updatedValue ->
-                                    if (activePageIndex != pageIndex) {
-                                        activePageIndex = pageIndex
-                                    }
-                                    val enterHandled = NoteRichTextHelper.handleEnterOnListItem(pageTfv, updatedValue)
-                                    val nextTfv = if (enterHandled != null) {
-                                        enterHandled
-                                    } else {
-                                        NoteRichTextHelper.handleTextChange(
-                                            oldValue = pageTfv,
-                                            newValue = updatedValue,
-                                            isBoldActive = isBoldActive,
-                                            isItalicActive = isItalicActive,
-                                            isUnderlineActive = isUnderlineActive,
-                                            activeTextColor = selectedTextColor,
-                                            activeHighlightColor = selectedHighlightColor
-                                        )
-                                    }
-                                    if (pageIndex in pageFieldValues.indices) {
-                                        pageFieldValues[pageIndex] = nextTfv
-                                        pageChangeTick++
-                                    }
-                                },
-                                onTextLayout = {
-                                    if (isPageActive) {
-                                        textLayoutResult = it
-                                    }
-                                },
-                                textStyle = bodyTextStyle,
-                                cursorBrush = SolidColor(effectivePaperAccent),
+                        item(key = "overview_add_page") {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = surfaceColor.copy(alpha = 0.72f),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    width = 1.2.dp,
+                                    color = primaryColor.copy(alpha = 0.4f)
+                                ),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .defaultMinSize(minHeight = minBodyHeight)
-                                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                                    .focusRequester(pageFocusRequester)
-                                    .onFocusChanged { focusState ->
-                                        if (focusState.isFocused && activePageIndex != pageIndex) {
-                                            activePageIndex = pageIndex
+                                    .height(210.dp)
+                                    .clickable {
+                                        val newPageIdx = pageFieldValues.size
+                                        pageFieldValues.add(
+                                            TextFieldValue(
+                                                annotatedString = AnnotatedString(""),
+                                                selection = TextRange(0)
+                                            )
+                                        )
+                                        getOrCreatePageDrawingController(newPageIdx)
+                                        activePageIndex = newPageIdx
+                                        isNavigationOverviewMode = false
+                                        pageChangeTick++
+                                        val taggedText = buildJoinedTaggedText()
+                                        val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
+                                        viewModel.onContentChanged(fullContent)
+                                        drawingScope.launch {
+                                            kotlinx.coroutines.delay(80L)
+                                            runCatching {
+                                                noteListState.animateScrollToItem(pageStartIndex + newPageIdx)
+                                            }
                                         }
-                                    },
-                                decorationBox = { innerTextField ->
-                                    Box(modifier = Modifier.fillMaxWidth()) {
-                                        if (pageTfv.text.isEmpty()) {
-                                            Text(
-                                                text = if (pageIndex == 0) {
-                                                    "Notunuzu yazın..."
-                                                } else {
-                                                    "${pageIndex + 1}. sayfaya notunuzu yazın..."
-                                                },
-                                                fontSize = 16.sp,
-                                                color = noteMutedTextColor
+                                    }
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = primaryColor.copy(alpha = 0.14f),
+                                        modifier = Modifier.size(38.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.Add,
+                                                contentDescription = "Yeni Sayfa Ekle",
+                                                tint = primaryColor,
+                                                modifier = Modifier.size(20.dp)
                                             )
                                         }
-                                        innerTextField()
                                     }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "Yeni Sayfa Ekle",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = primaryColor
+                                    )
                                 }
-                            )
-
-                            // Kalem & Çizim Stüdyosu Katmanı (sayfa bazlı)
-                            DrawingCanvasOverlay(
-                                controller = pageCtrl,
-                                modifier = Modifier.matchParentSize(),
-                                onTwoFingerScroll = { dy, _ -> noteListState.dispatchRawDelta(-dy) }
-                            )
+                            }
                         }
                     }
                 }
-
-                item(key = "note_add_page_footer") {
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // Prominent "+ Yeni Sayfa Ekle" Button strictly inheriting user's selected Page Layout
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = effectiveBgColor,
-                        border = androidx.compose.foundation.BorderStroke(
-                            width = 1.2.dp,
-                            color = effectivePaperAccent.copy(alpha = 0.45f)
-                        ),
-                        shadowElevation = 2.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp)
-                            .clickable {
-                                val newPageIdx = pageFieldValues.size
-                                pageFieldValues.add(
-                                    TextFieldValue(
-                                        annotatedString = AnnotatedString(""),
-                                        selection = TextRange(0)
-                                    )
-                                )
-                                getOrCreatePageDrawingController(newPageIdx)
-                                activePageIndex = newPageIdx
-                                pageChangeTick++
-                                val taggedText = buildJoinedTaggedText()
-                                val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
-                                viewModel.onContentChanged(fullContent)
-                                drawingScope.launch {
-                                    kotlinx.coroutines.delay(80L)
-                                    runCatching {
-                                        val targetItem = (noteListState.layoutInfo.totalItemsCount - 2).coerceAtLeast(0)
-                                        noteListState.animateScrollToItem(targetItem)
+            } else {
+                LazyColumn(
+                    state = noteListState,
+                    modifier = Modifier.fillMaxSize(),
+                    userScrollEnabled = !drawingController.isDrawingActive,
+                    contentPadding = editorContentPadding
+                ) {
+                    item(key = "note_title_header") {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp)
+                        ) {
+                            BasicTextField(
+                                value = vmTitle,
+                                onValueChange = { viewModel.onTitleChanged(it) },
+                                textStyle = TextStyle(
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = effectiveTitleColor
+                                ),
+                                cursorBrush = SolidColor(effectivePaperAccent),
+                                modifier = Modifier.fillMaxWidth(),
+                                decorationBox = { innerTextField ->
+                                    if (vmTitle.isEmpty()) {
+                                        Text(
+                                            text = "Başlık",
+                                            fontSize = 24.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = noteMutedTextColor
+                                        )
                                     }
-                                    if (!drawingController.isDrawingActive) {
-                                        runCatching {
-                                            getOrCreatePageFocusRequester(newPageIdx).requestFocus()
-                                            keyboardController?.show()
+                                    innerTextField()
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(color = noteTextColor.copy(alpha = 0.12f))
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+                    }
+
+                    if (localPdfFilePath != null) {
+                        item(key = "pdf_reader_launcher_card") {
+                            val safePdfPath = localPdfFilePath ?: ""
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = surfaceColor,
+                                tonalElevation = 2.dp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp)
+                                    .padding(bottom = 12.dp)
+                                    .border(
+                                        width = 1.dp,
+                                        color = primaryColor.copy(alpha = 0.3f),
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                                            modifier = Modifier.size(34.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.PictureAsPdf,
+                                                    contentDescription = null,
+                                                    tint = Color(0xFFEF4444),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "PDF Belgesi",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = onSurfaceColor
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            context.startActivity(
+                                                PdfReaderActivity.createIntent(
+                                                    context = context,
+                                                    pdfFilePath = safePdfPath,
+                                                    title = vmTitle.ifBlank { "PDF Belgesi" },
+                                                    skipChooser = true
+                                                )
+                                            )
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "Okuyucuda Aç",
+                                            color = primaryColor,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (pdfPagePaths.isNotEmpty()) {
+                        item(key = "pdf_document_viewer") {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = surfaceColor,
+                                tonalElevation = 2.dp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp)
+                                    .padding(bottom = 14.dp)
+                                    .border(
+                                        width = 1.dp,
+                                        color = onSurfaceColor.copy(alpha = 0.15f),
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = primaryColor.copy(alpha = 0.12f),
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = "PDF",
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = primaryColor
+                                                    )
+                                                }
+                                            }
+                                            Column {
+                                                Text(
+                                                    text = "PDF Belgesi",
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = onSurfaceColor
+                                                )
+                                                Text(
+                                                    text = "Sayfa ${activePdfPageIndex + 1} / ${pdfPagePaths.size}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = textMutedColor
+                                                )
+                                            }
+                                        }
+
+                                        TextButton(
+                                            onClick = { isPdfPreviewExpanded = !isPdfPreviewExpanded }
+                                        ) {
+                                            Text(
+                                                text = if (isPdfPreviewExpanded) "Gizle" else "Önizle",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = primaryColor,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+
+                                    if (isPdfPreviewExpanded) {
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        val safePageIndex = activePdfPageIndex.coerceIn(0, pdfPagePaths.lastIndex)
+                                        val currentPath = pdfPagePaths[safePageIndex]
+
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.White)
+                                                .border(0.5.dp, onSurfaceColor.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                        ) {
+                                            AsyncImage(
+                                                model = File(currentPath),
+                                                contentDescription = "PDF Sayfa ${safePageIndex + 1}",
+                                                contentScale = ContentScale.FillWidth,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    if (activePdfPageIndex > 0) activePdfPageIndex--
+                                                },
+                                                enabled = activePdfPageIndex > 0,
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("Önceki", fontSize = 12.sp)
+                                            }
+
+                                            Text(
+                                                text = "${activePdfPageIndex + 1} / ${pdfPagePaths.size}",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = onSurfaceColor
+                                            )
+
+                                            OutlinedButton(
+                                                onClick = {
+                                                    if (activePdfPageIndex < pdfPagePaths.lastIndex) activePdfPageIndex++
+                                                },
+                                                enabled = activePdfPageIndex < pdfPagePaths.lastIndex,
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("Sonraki", fontSize = 12.sp)
+                                            }
                                         }
                                     }
                                 }
                             }
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
+                        }
+                    } else if (pdfPreviewBitmap != null) {
+                        item(key = "pdf_preview_single") {
+                            pdfPreviewBitmap?.let { previewBmp ->
                                 Surface(
-                                    shape = CircleShape,
-                                    color = effectivePaperAccent.copy(alpha = 0.15f),
-                                    modifier = Modifier.size(32.dp)
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = surfaceColor,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp)
+                                        .padding(bottom = 12.dp)
+                                        .border(
+                                            width = 1.dp,
+                                            color = onSurfaceColor.copy(alpha = 0.15f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
                                 ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.Add,
-                                            contentDescription = "Yeni Sayfa Ekle",
-                                            tint = effectivePaperAccent,
-                                            modifier = Modifier.size(18.dp)
+                                    Column(modifier = Modifier.padding(10.dp)) {
+                                        Text(
+                                            text = "1. Sayfa",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = primaryColor,
+                                            modifier = Modifier.padding(bottom = 6.dp)
+                                        )
+                                        Image(
+                                            bitmap = previewBmp.asImageBitmap(),
+                                            contentDescription = "PDF İlk Sayfa Önizleme",
+                                            contentScale = ContentScale.FillWidth,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
                                         )
                                     }
                                 }
-                                Column {
-                                    Text(
-                                        text = "+ Yeni Sayfa Ekle",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = noteTextColor
-                                    )
-                                    Text(
-                                        text = "${currentPattern.title} • $currentTintTitle düzeninde açılır",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = noteMutedTextColor
-                                    )
+                            }
+                        }
+                    }
+
+                    itemsIndexed(
+                        items = pageFieldValues,
+                        key = { idx, _ -> "note_page_$idx" }
+                    ) { pageIndex, pageTfv ->
+                        val pageCtrl = getOrCreatePageDrawingController(pageIndex)
+                        val pageFocusRequester = getOrCreatePageFocusRequester(pageIndex)
+                        val isPageActive = pageIndex == safeActivePageIndex
+                        val bodyTextStyle = MaterialTheme.typography.bodyLarge.copy(
+                            fontSize = 16.sp,
+                            lineHeight = 24.sp,
+                            color = noteTextColor
+                        )
+                        val minBodyHeight = (editorViewportHeightDp - 110.dp).coerceAtLeast(420.dp)
+
+                        Column(
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (pageIndex > 0) {
+                                HorizontalDivider(
+                                    color = noteTextColor.copy(alpha = 0.14f),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+
+                            if ((isPageActive && isCheckboxActive) || pageFieldValues.size > 1) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (isPageActive && isCheckboxActive) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = effectivePaperAccent.copy(alpha = 0.12f),
+                                            modifier = Modifier.clickable { handleCheckboxToggled() }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                                    contentDescription = "Kutucuğu Değiştir",
+                                                    tint = effectivePaperAccent,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = if (isCheckboxChecked) "Tamamlandı" else "İşaretle",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = effectivePaperAccent
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Spacer(modifier = Modifier.width(1.dp))
+                                    }
+
+                                    if (pageFieldValues.size > 1) {
+                                        IconButton(
+                                            onClick = {
+                                                val hasContent = pageTfv.text.isNotBlank() || pageCtrl.strokes.isNotEmpty()
+                                                if (hasContent) {
+                                                    pendingDeletePageIndex = pageIndex
+                                                } else {
+                                                    performDeleteNotePage(pageIndex)
+                                                }
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Sayfayı Sil",
+                                                tint = noteMutedTextColor.copy(alpha = 0.75f),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
 
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = effectivePaperAccent.copy(alpha = 0.12f)
+                            // Normal-size full-width Paper Sheet strictly inheriting user's selected PaperPattern and PaperTint
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = minBodyHeight)
+                                    .background(effectiveBgColor)
+                                    .drawBehind {
+                                        val patternColor = notePatternColor
+                                        val marginLineColor = noteMarginLineColor
+
+                                        when (currentPattern) {
+                                            PaperPattern.PLAIN -> {}
+                                            PaperPattern.RULED -> {
+                                                val lineSpacingPx = 28.dp.toPx()
+                                                val marginXPx = 32.dp.toPx()
+
+                                                drawLine(
+                                                    color = marginLineColor,
+                                                    start = Offset(marginXPx, 0f),
+                                                    end = Offset(marginXPx, size.height),
+                                                    strokeWidth = 1.dp.toPx()
+                                                )
+
+                                                var y = lineSpacingPx
+                                                while (y < size.height) {
+                                                    drawLine(
+                                                        color = patternColor,
+                                                        start = Offset(0f, y),
+                                                        end = Offset(size.width, y),
+                                                        strokeWidth = 1.dp.toPx()
+                                                    )
+                                                    y += lineSpacingPx
+                                                }
+                                            }
+                                            PaperPattern.GRID -> {
+                                                val gridSizePx = 24.dp.toPx()
+                                                var y = gridSizePx
+                                                while (y < size.height) {
+                                                    drawLine(
+                                                        color = patternColor,
+                                                        start = Offset(0f, y),
+                                                        end = Offset(size.width, y),
+                                                        strokeWidth = 0.75.dp.toPx()
+                                                    )
+                                                    y += gridSizePx
+                                                }
+                                                var x = gridSizePx
+                                                while (x < size.width) {
+                                                    drawLine(
+                                                        color = patternColor,
+                                                        start = Offset(x, 0f),
+                                                        end = Offset(x, size.height),
+                                                        strokeWidth = 0.75.dp.toPx()
+                                                    )
+                                                    x += gridSizePx
+                                                }
+                                            }
+                                            PaperPattern.DOTTED -> {
+                                                val dotSpacingPx = 22.dp.toPx()
+                                                val dotRadius = 1.25.dp.toPx()
+                                                var y = dotSpacingPx
+                                                while (y < size.height) {
+                                                    var x = dotSpacingPx
+                                                    while (x < size.width) {
+                                                        drawCircle(
+                                                            color = patternColor,
+                                                            radius = dotRadius,
+                                                            center = Offset(x, y)
+                                                        )
+                                                        x += dotSpacingPx
+                                                    }
+                                                    y += dotSpacingPx
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .clickable(
+                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                        indication = null,
+                                        enabled = !pageCtrl.isDrawingActive
+                                    ) {
+                                        activePageIndex = pageIndex
+                                        runCatching { pageFocusRequester.requestFocus() }
+                                        keyboardController?.show()
+                                    }
                             ) {
+                                BasicTextField(
+                                    value = pageTfv,
+                                    onValueChange = { updatedValue ->
+                                        if (activePageIndex != pageIndex) {
+                                            activePageIndex = pageIndex
+                                        }
+                                        val enterHandled = NoteRichTextHelper.handleEnterOnListItem(pageTfv, updatedValue)
+                                        val nextTfv = if (enterHandled != null) {
+                                            enterHandled
+                                        } else {
+                                            NoteRichTextHelper.handleTextChange(
+                                                oldValue = pageTfv,
+                                                newValue = updatedValue,
+                                                isBoldActive = isBoldActive,
+                                                isItalicActive = isItalicActive,
+                                                isUnderlineActive = isUnderlineActive,
+                                                activeTextColor = selectedTextColor,
+                                                activeHighlightColor = selectedHighlightColor
+                                            )
+                                        }
+                                        if (pageIndex in pageFieldValues.indices) {
+                                            pageFieldValues[pageIndex] = nextTfv
+                                            pageChangeTick++
+                                        }
+                                    },
+                                    onTextLayout = {
+                                        if (isPageActive) {
+                                            textLayoutResult = it
+                                        }
+                                    },
+                                    textStyle = bodyTextStyle,
+                                    cursorBrush = SolidColor(effectivePaperAccent),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = minBodyHeight)
+                                        .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 42.dp)
+                                        .focusRequester(pageFocusRequester)
+                                        .onFocusChanged { focusState ->
+                                            if (focusState.isFocused && activePageIndex != pageIndex) {
+                                                activePageIndex = pageIndex
+                                            }
+                                        },
+                                    decorationBox = { innerTextField ->
+                                        Box(modifier = Modifier.fillMaxWidth()) {
+                                            if (pageTfv.text.isEmpty()) {
+                                                Text(
+                                                    text = if (pageIndex == 0) {
+                                                        "Notunuzu yazın..."
+                                                    } else {
+                                                        "${pageIndex + 1}. sayfaya notunuzu yazın..."
+                                                    },
+                                                    fontSize = 16.sp,
+                                                    color = noteMutedTextColor
+                                                )
+                                            }
+                                            innerTextField()
+                                        }
+                                    }
+                                )
+
+                                // Kalem & Çizim Stüdyosu Katmanı (sayfa bazlı)
+                                DrawingCanvasOverlay(
+                                    controller = pageCtrl,
+                                    modifier = Modifier.matchParentSize(),
+                                    onTwoFingerScroll = { dy, _ -> noteListState.dispatchRawDelta(-dy) }
+                                )
+
+                                // Sayfa altında tam ortada sayfa numarası
                                 Text(
-                                    text = "Sayfa ${pageFieldValues.size + 1}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = effectivePaperAccent,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                    text = if (pageFieldValues.size > 1) {
+                                        "Sayfa ${pageIndex + 1} / ${pageFieldValues.size}"
+                                    } else {
+                                        "Sayfa ${pageIndex + 1}"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = if (isPageActive) FontWeight.Bold else FontWeight.Medium,
+                                        letterSpacing = 0.5.sp
+                                    ),
+                                    color = if (isPageActive) {
+                                        effectivePaperAccent.copy(alpha = 0.85f)
+                                    } else {
+                                        noteMutedTextColor.copy(alpha = 0.80f)
+                                    },
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .padding(bottom = 10.dp)
                                 )
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    item(key = "note_add_page_footer") {
+                        Spacer(modifier = Modifier.height(14.dp))
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Sayfa ${safeActivePageIndex + 1} / ${pageFieldValues.size}",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = noteMutedTextColor
-                        )
-                        Text(
-                            text = "$words kelime | $chars karakter",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = noteMutedTextColor
-                        )
+                        // Prominent "+ Yeni Sayfa Ekle" Button strictly inheriting user's selected Page Layout
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = effectiveBgColor,
+                            border = androidx.compose.foundation.BorderStroke(
+                                width = 1.2.dp,
+                                color = effectivePaperAccent.copy(alpha = 0.45f)
+                            ),
+                            shadowElevation = 2.dp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp)
+                                .clickable {
+                                    val newPageIdx = pageFieldValues.size
+                                    pageFieldValues.add(
+                                        TextFieldValue(
+                                            annotatedString = AnnotatedString(""),
+                                            selection = TextRange(0)
+                                        )
+                                    )
+                                    getOrCreatePageDrawingController(newPageIdx)
+                                    activePageIndex = newPageIdx
+                                    pageChangeTick++
+                                    val taggedText = buildJoinedTaggedText()
+                                    val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
+                                    viewModel.onContentChanged(fullContent)
+                                    drawingScope.launch {
+                                        kotlinx.coroutines.delay(80L)
+                                        runCatching {
+                                            val targetItem = (noteListState.layoutInfo.totalItemsCount - 2).coerceAtLeast(0)
+                                            noteListState.animateScrollToItem(targetItem)
+                                        }
+                                        if (!drawingController.isDrawingActive) {
+                                            runCatching {
+                                                getOrCreatePageFocusRequester(newPageIdx).requestFocus()
+                                                keyboardController?.show()
+                                            }
+                                        }
+                                    }
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = effectivePaperAccent.copy(alpha = 0.15f),
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.Add,
+                                                contentDescription = "Yeni Sayfa Ekle",
+                                                tint = effectivePaperAccent,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                    Column {
+                                        Text(
+                                            text = "Yeni Sayfa Ekle",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = noteTextColor
+                                        )
+                                        Text(
+                                            text = "${currentPattern.title} • $currentTintTitle düzeninde açılır",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = noteMutedTextColor
+                                        )
+                                    }
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = effectivePaperAccent.copy(alpha = 0.12f)
+                                ) {
+                                    Text(
+                                        text = "Sayfa ${pageFieldValues.size + 1}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = effectivePaperAccent,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Sayfa ${safeActivePageIndex + 1} / ${pageFieldValues.size}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = noteMutedTextColor
+                            )
+                            Text(
+                                text = "$words kelime | $chars karakter",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = noteMutedTextColor
+                            )
+                        }
                     }
                 }
             }
@@ -3638,7 +3855,7 @@ fun RichTextFormattingToolbar(
                             ) { tint -> PenToolGlyph(tool = DrawingTool.LASSO, tint = tint) }
 
                             StudioToolButton(
-                                label = "El Reddi",
+                                label = "Kalem",
                                 isSelected = drawingController.stylusOnlyMode,
                                 accentColor = Color(0xFF10B981),
                                 onClick = { drawingController.toggleStylusOnlyMode() }

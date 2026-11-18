@@ -48,13 +48,13 @@ interface GoalsDao {
     @Update
     suspend fun updateResource(resource: ResourceEntity)
 
-    @Query("UPDATE resources SET completedUnits = MIN(totalUnits, completedUnits + :step), isSynced = 0, lastModifiedMillis = :timestamp WHERE id = :id")
+    @Query("UPDATE resources SET completedUnits = CASE WHEN totalUnits > 0 THEN MIN(totalUnits, completedUnits + :step) ELSE completedUnits + :step END, isSynced = 0, lastModifiedMillis = :timestamp WHERE id = :id")
     suspend fun incrementProgress(id: Long, step: Int = 1, timestamp: Long = System.currentTimeMillis())
 
     @Query("UPDATE resources SET completedUnits = MAX(0, completedUnits - :step), isSynced = 0, lastModifiedMillis = :timestamp WHERE id = :id")
     suspend fun decrementProgress(id: Long, step: Int = 1, timestamp: Long = System.currentTimeMillis())
 
-    @Query("UPDATE resources SET completedUnits = MAX(0, MIN(totalUnits, :progress)), isSynced = 0, lastModifiedMillis = :timestamp WHERE id = :id")
+    @Query("UPDATE resources SET completedUnits = CASE WHEN totalUnits > 0 THEN MAX(0, MIN(totalUnits, :progress)) ELSE MAX(0, :progress) END, isSynced = 0, lastModifiedMillis = :timestamp WHERE id = :id")
     suspend fun setProgress(id: Long, progress: Int, timestamp: Long = System.currentTimeMillis())
 
     @Query("UPDATE resources SET isDeleted = 1, isSynced = 0, lastModifiedMillis = :now WHERE id = :id")

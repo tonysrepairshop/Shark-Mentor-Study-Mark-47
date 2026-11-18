@@ -36,6 +36,7 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     private val scheduleDao = SharkMentorDatabase.getDatabase(application).institutionScheduleDao()
     private val prefs = UserPreferences.getInstance(application)
     private val scannerEngine = ScheduleScannerEngine()
+    private val institutionSyncListener = com.example.sharkmentor.data.sync.InstitutionScheduleSyncListener(scheduleDao)
 
     private val _weeklySchedule = MutableStateFlow<WeeklyScheduleData?>(null)
     val weeklySchedule: StateFlow<WeeklyScheduleData?> = _weeklySchedule.asStateFlow()
@@ -46,8 +47,14 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     )
 
     init {
+        institutionSyncListener.start()
         loadSchedules()
         listenToStudentSchedule()
+    }
+
+    override fun onCleared() {
+        institutionSyncListener.stop()
+        super.onCleared()
     }
 
     private fun listenToStudentSchedule() {
@@ -89,14 +96,14 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
                         val doc = db.collection("students").document(uid).get().await()
                         val coachId = doc.getString("coachId")
                         val isCorporate = doc.getBoolean("isCorporate") ?: false
-                        // If the coach assigned a customScheduleData, prefer the visual grid
                         val hasCustomSchedule = doc.get("customScheduleData") != null
                         if (!coachId.isNullOrBlank() || isCorporate) {
                             if (hasCustomSchedule) {
-                                // Coach assigned a timetable via AiScheduleStudioModal:
-                                // show the visual grid, not the read-only institution text
                                 isReadOnly = false
                                 hasCoachSchedule = true
+                                if (scheduleDao.getAllSchedules().none { it.id.startsWith("CUSTOM_SCHED_") }) {
+                                    com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(getApplication())
+                                }
                             } else {
                                 isReadOnly = true
                                 if (!coachId.isNullOrBlank()) {
@@ -104,6 +111,8 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
                                     instId = coachDoc.getString("institutionId")
                                 }
                             }
+                        } else if (doc.exists()) {
+                            isReadOnly = false
                         }
                     } catch (e: Exception) {
                         // Use default fallback
@@ -128,17 +137,35 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 scheduleDao.getAllSchedulesFlow().collect { schedules ->
+                    val currentWebText = (_uiState.value as? ScheduleUiState.Success)?.webScheduleText ?: webText
+                    val dynamicCoachSchedule = hasCoachSchedule || schedules.any { it.id.startsWith("CUSTOM_SCHED_") }
                     _uiState.value = ScheduleUiState.Success(
                         isReadOnlyMode = isReadOnly,
                         schedules = schedules,
-                        isCoachSchedule = hasCoachSchedule,
-                        webScheduleText = (if (_uiState.value is ScheduleUiState.Success) {
-                            (_uiState.value as ScheduleUiState.Success).webScheduleText
-                        } else webText)
+                        isCoachSchedule = dynamicCoachSchedule,
+                        webScheduleText = currentWebText
                     )
                 }
             } catch (e: Exception) {
                 _uiState.value = ScheduleUiState.Error(e.localizedMessage ?: "Bilinmeyen hata")
+            }
+        }
+    }
+
+    private suspend fun markRemoteSchedulesDeleted(items: List<InstitutionScheduleEntity>) {
+        val removable = items.filter { !it.id.startsWith("CUSTOM_SCHED_") }
+        if (removable.isEmpty()) return
+        val uid = com.example.sharkmentor.core.util.GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid ?: return
+        val db = com.example.sharkmentor.core.util.GoogleServicesHelper.getFirebaseFirestore(getApplication()) ?: return
+        val col = db.collection("users").document(uid).collection("institution_schedules")
+        val now = System.currentTimeMillis()
+        removable.forEach { item ->
+            val docId = item.cloudId?.takeIf { it.isNotBlank() } ?: item.id
+            runCatching {
+                col.document(docId).set(
+                    mapOf("isDeleted" to true, "lastModifiedMillis" to now),
+                    com.google.firebase.firestore.SetOptions.merge()
+                ).await()
             }
         }
     }
@@ -149,24 +176,30 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
             _uiState.value = ScheduleUiState.Loading
             val result = scannerEngine.scanSchedule(getApplication(), uri)
             result.onSuccess { scannedTasks ->
+                val oldNonCustom = scheduleDao.getAllSchedules().filter { !it.id.startsWith("CUSTOM_SCHED_") }
+                val now = System.currentTimeMillis()
                 val entities = scannedTasks.map { task ->
                     val times = task.scheduledTime.split("-").map { it.trim() }
                     val startTime = times.getOrNull(0) ?: "08:00"
                     val endTime = times.getOrNull(1) ?: "09:00"
+                    val stableId = UUID.randomUUID().toString()
 
                     InstitutionScheduleEntity(
-                        id = UUID.randomUUID().toString(),
+                        id = stableId,
                         dayOfWeek = task.dayOfWeek,
                         startTime = startTime,
                         endTime = endTime,
                         subject = task.subject,
                         type = if (prefs.isIndividual) "INDIVIDUAL" else "DERSHANE",
                         teacherName = task.teacherName,
-                        period = task.period
+                        period = task.period,
+                        lastModifiedMillis = now,
+                        cloudId = stableId
                     )
                 }
                 // Clear old individual schedules without touching coach-assigned custom schedules
                 scheduleDao.replaceIndividualSchedules(entities)
+                markRemoteSchedulesDeleted(oldNonCustom)
                 com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(getApplication())
 
             }.onFailure {
@@ -189,7 +222,11 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     fun deleteSchedule(id: String) {
         viewModelScope.launch {
             try {
+                val target = scheduleDao.getById(id)
                 scheduleDao.deleteById(id)
+                if (target != null) {
+                    markRemoteSchedulesDeleted(listOf(target))
+                }
             } catch (e: Exception) {
                 // Ignore or handle
             }
@@ -199,7 +236,9 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     fun deleteSchedulesByDay(day: Int) {
         viewModelScope.launch {
             try {
+                val dayItems = scheduleDao.getSchedulesForDay(day)
                 scheduleDao.deleteByDay(day)
+                markRemoteSchedulesDeleted(dayItems)
             } catch (e: Exception) {
                 // Ignore or handle
             }
@@ -209,7 +248,9 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     fun clearAllIndividualSchedules() {
         viewModelScope.launch {
             try {
+                val nonCustom = scheduleDao.getAllSchedules().filter { !it.id.startsWith("CUSTOM_SCHED_") }
                 scheduleDao.deleteNonCustomSchedules()
+                markRemoteSchedulesDeleted(nonCustom)
             } catch (e: Exception) {
                 // Ignore or handle
             }
