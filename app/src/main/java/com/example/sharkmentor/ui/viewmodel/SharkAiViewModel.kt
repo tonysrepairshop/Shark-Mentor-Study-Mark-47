@@ -142,6 +142,15 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         private val MULTI_SPACE_REGEX = Regex("\\s+")
         private val OPTION_PAREN_REGEX = Regex("""\b[a-eA-E]\)""")
         private val OPTION_WORD_REGEX = Regex("""\b[a-eA-E]\s*şıkkı""")
+        private val RESOURCE_MATCH_STOPWORDS = setOf(
+            "soru", "bankası", "bankasi", "deneme", "denemesi", "denemeleri",
+            "kitap", "kitabı", "kitabi", "yayınları", "yayinlari", "yayın", "yayin",
+            "fasikül", "fasikul", "fasikülleri", "konu", "anlatımı", "anlatimi",
+            "test", "sayfa", "tyt", "ayt", "yks", "lgs", "ve", "ile", "icin", "için", "serisi",
+            "matematik", "geometri", "fizik", "kimya", "biyoloji",
+            "türkçe", "turkce", "edebiyat", "tarih", "coğrafya", "cografya",
+            "felsefe", "din", "ingilizce", "genel", "ders"
+        )
     }
 
     private val gson = Gson()
@@ -653,16 +662,25 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                 } else "Aktif hedef yok"
 
                 val librarySummary = if (allResources.isNotEmpty()) {
-                    allResources.take(12).joinToString(" | ") { r ->
-                        "id=${r.id} \"${r.title}\" (Ders: ${r.subject}, İlerleme: ${r.completedUnits}/${r.totalUnits} ${r.unitType})"
+                    allResources.take(30).joinToString(" | ") { r ->
+                        val progressLabel = if (r.totalUnits > 0) {
+                            "${r.completedUnits}/${r.totalUnits} ${r.unitType}"
+                        } else {
+                            "${r.completedUnits} ${r.unitType} (Toplam belirtilmedi)"
+                        }
+                        "id=${r.id} \"${r.title}\" (Ders: ${r.subject}, İlerleme: $progressLabel)"
                     }
                 } else "Kütüphanede kayıtlı kitap yok"
 
                 val topicSummary = if (allTopics.isNotEmpty()) {
                     val bySubject = allTopics.groupBy { it.subject }
-                        .entries.take(8)
-                        .joinToString(", ") { "${it.key}: ${it.value.size} konu" }
-                    "Toplam ${allTopics.size} alt konu ($bySubject)"
+                        .entries.take(16)
+                        .joinToString(" | ") { (subj, items) ->
+                            val topSample = items.take(8).joinToString(", ") { "${it.topic} (${it.currentLevel}/${it.targetLevel})" }
+                            val suffix = if (items.size > 8) " +${items.size - 8}" else ""
+                            "$subj: [$topSample$suffix]"
+                        }
+                    "Toplam ${allTopics.size} alt konu -> $bySubject"
                 } else "Henüz konu eklenmedi"
 
                 val userStatsAndLibrarySnapshot = """
@@ -743,7 +761,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     $userStatsAndLibrarySnapshot
                     [AKTİF HAFIZA: $memorySnapshot]$attachmentContext
                     $projectionReport$scheduleConstraintPrompt$conversationHistoryPrompt
-                    Talimat: Öğrencinin mevcut kütüphane kitaplarına, hedeflerine ve geçmiş kararlarına sadık kal. Mevcut bir kitabın ilerlemesi söylendiğinde yeni kitap açma, UPDATE_RESOURCE_PROGRESS kullan.
+                    Talimat: Öğrencinin mevcut kütüphane kitaplarına, ders ve konu eşleşmelerine, hedeflerine ve geçmiş kararlarına sadık kal. Mevcut bir kitabın ilerlemesi söylendiğinde yeni kitap açma, UPDATE_RESOURCE_PROGRESS ile doğru `resourceId`, tam kitap adı ve dersini kullan. Kullanıcı toplam sayfa/test sayısını belirtmediyse asla `totalUnits` uydurma (`0` bırak).
                 """.trimIndent()
 
                 val effectivePrompt = if (attachmentUri != null && text.isBlank()) {
@@ -1439,22 +1457,28 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         val resourceId = (actionMap["resourceId"] as? Number)?.toLong()
                             ?: (actionMap["id"] as? Number)?.toLong() ?: 0L
                         val title = (actionMap["title"] as? String ?: actionMap["book"] as? String ?: "").trim()
-                        val subject = (actionMap["subject"] as? String ?: "Genel").trim()
+                        val rawSubject = (actionMap["subject"] as? String ?: "").trim()
+                        val resolvedSubject = inferSubjectFromResourceTitle(title, rawSubject)
                         val completedInput = (actionMap["completedUnits"] as? Number)?.toInt()
                             ?: (actionMap["progress"] as? Number)?.toInt()
                             ?: (actionMap["page"] as? Number)?.toInt()
                             ?: (actionMap["currentUnits"] as? Number)?.toInt()
                             ?: 0
-                        val totalInput = (actionMap["totalUnits"] as? Number)?.toInt()
-                        val unitTypeInput = (actionMap["unitType"] as? String)?.takeIf { it.isNotBlank() }
+                        val validTotalInput = (actionMap["totalUnits"] as? Number)?.toInt()?.takeIf { it > 0 }
+                        val unitTypeInput = (actionMap["unitType"] as? String)?.trim()?.takeIf { it.isNotBlank() }
                         val isIncremental = actionMap["isIncremental"] as? Boolean ?: false
 
                         withContext(Dispatchers.IO) {
                             val allResources = database.goalsDao().getAllResourcesRaw()
                             val existing = if (resourceId > 0L) {
-                                allResources.firstOrNull { it.id == resourceId } ?: findMatchingResource(allResources, title, subject)
+                                val byId = allResources.firstOrNull { it.id == resourceId }
+                                if (byId != null && (title.isBlank() || findMatchingResource(listOf(byId), title, resolvedSubject) != null)) {
+                                    byId
+                                } else {
+                                    findMatchingResource(allResources, title, resolvedSubject)
+                                }
                             } else {
-                                findMatchingResource(allResources, title, subject)
+                                findMatchingResource(allResources, title, resolvedSubject)
                             }
 
                             if (existing != null) {
@@ -1463,11 +1487,22 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                                 } else {
                                     completedInput.coerceAtLeast(0)
                                 }
-                                val newTotal = (totalInput ?: existing.totalUnits).coerceAtLeast(newCompleted.coerceAtLeast(1))
+                                val newTotal = when {
+                                    validTotalInput != null -> maxOf(validTotalInput, newCompleted)
+                                    existing.totalUnits > 0 -> maxOf(existing.totalUnits, newCompleted)
+                                    else -> 0
+                                }
+                                val clampedCompleted = if (newTotal > 0) newCompleted.coerceIn(0, newTotal) else newCompleted.coerceAtLeast(0)
                                 val newUnitType = unitTypeInput ?: existing.unitType
+                                val nextSubject = if ((existing.subject.isBlank() || existing.subject.equals("Genel", ignoreCase = true)) && resolvedSubject != "Genel") {
+                                    resolvedSubject
+                                } else {
+                                    existing.subject
+                                }
                                 val now = System.currentTimeMillis()
                                 val updated = existing.copy(
-                                    completedUnits = newCompleted.coerceIn(0, newTotal),
+                                    subject = nextSubject,
+                                    completedUnits = clampedCompleted,
                                     totalUnits = newTotal,
                                     unitType = newUnitType,
                                     updatedAtMillis = now,
@@ -1481,14 +1516,19 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                                     val firestore = GoogleServicesHelper.getFirebaseFirestore(getApplication())
                                     val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
                                     if (uid != null && firestore != null) {
-                                        val docId = updated.cloudId ?: updated.id.toString()
+                                        val docId = updated.cloudId?.takeIf { it.isNotBlank() } ?: "${uid}_${updated.id}"
                                         val resData = hashMapOf<String, Any>(
+                                            "id" to docId,
+                                            "localId" to updated.id,
                                             "title" to updated.title,
                                             "subject" to updated.subject,
                                             "totalUnits" to updated.totalUnits,
+                                            "totalTarget" to updated.totalUnits,
                                             "currentUnits" to updated.completedUnits,
                                             "completedUnits" to updated.completedUnits,
+                                            "isCompleted" to (updated.totalUnits > 0 && updated.completedUnits >= updated.totalUnits),
                                             "unitType" to updated.unitType,
+                                            "isDeleted" to false,
                                             "studentId" to uid,
                                             "userId" to uid,
                                             "updatedAt" to now
@@ -1498,27 +1538,70 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                                     }
                                 }
                                 SyncWorker.enqueueImmediateSync(getApplication())
+                                val progressDesc = if (updated.totalUnits > 0) {
+                                    "${updated.completedUnits}/${updated.totalUnits} ${updated.unitType}"
+                                } else {
+                                    "${updated.completedUnits} ${updated.unitType}"
+                                }
                                 memoryRepository.recordInsight(
                                     persona = persona,
                                     memoryType = "DECISION",
-                                    content = "Kaynak İlerlemesi Güncellendi: ${updated.title} (${updated.completedUnits}/${updated.totalUnits} ${updated.unitType})"
+                                    content = "Kaynak İlerlemesi Güncellendi: ${updated.title} ($progressDesc)"
                                 )
                             } else if (title.isNotBlank()) {
-                                // Only create if the book truly does not exist in the library yet
+                                // Only create if the book truly does not exist in the library yet; never fabricate totalUnits
                                 val institutionId = com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(getApplication()).institutionId ?: "INDIVIDUAL"
-                                val resolvedTotal = (totalInput ?: 250).coerceAtLeast(completedInput.coerceAtLeast(40))
-                                val resolvedUnitType = unitTypeInput ?: if (resolvedTotal >= 100 || completedInput >= 50) "Sayfa" else "Test"
+                                val nonNegCompleted = completedInput.coerceAtLeast(0)
+                                val resolvedTotal = validTotalInput?.let { maxOf(it, nonNegCompleted) } ?: 0
+                                val finalCompleted = if (resolvedTotal > 0) nonNegCompleted.coerceIn(0, resolvedTotal) else nonNegCompleted
+                                val resolvedUnitType = unitTypeInput ?: inferUnitTypeFromText("$title $lastUserPromptText")
+                                val now = System.currentTimeMillis()
                                 val resEntity = ResourceEntity(
                                     title = title,
-                                    subject = subject,
+                                    subject = resolvedSubject,
                                     totalUnits = resolvedTotal,
-                                    completedUnits = completedInput.coerceIn(0, resolvedTotal),
+                                    completedUnits = finalCompleted,
                                     unitType = resolvedUnitType,
                                     institutionId = institutionId,
+                                    updatedAtMillis = now,
+                                    lastModifiedMillis = now,
                                     isSynced = false
                                 )
-                                database.goalsDao().insertResource(resEntity)
+                                val insertedId = database.goalsDao().insertResource(resEntity)
+                                val finalId = if (insertedId > 0L) insertedId else resEntity.id
+                                runCatching {
+                                    val firestore = GoogleServicesHelper.getFirebaseFirestore(getApplication())
+                                    val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
+                                    if (uid != null && firestore != null && finalId > 0L) {
+                                        val docId = "${uid}_${finalId}"
+                                        val resData = hashMapOf<String, Any>(
+                                            "id" to docId,
+                                            "localId" to finalId,
+                                            "title" to title,
+                                            "subject" to resolvedSubject,
+                                            "totalUnits" to resolvedTotal,
+                                            "totalTarget" to resolvedTotal,
+                                            "currentUnits" to finalCompleted,
+                                            "completedUnits" to finalCompleted,
+                                            "isCompleted" to (resolvedTotal > 0 && finalCompleted >= resolvedTotal),
+                                            "unitType" to resolvedUnitType,
+                                            "isDeleted" to false,
+                                            "studentId" to uid,
+                                            "userId" to uid,
+                                            "createdAt" to now,
+                                            "updatedAt" to now
+                                        )
+                                        firestore.collection("students").document(uid).collection("resources").document(docId).set(resData, SetOptions.merge())
+                                        firestore.collection("resources").document(docId).set(resData, SetOptions.merge())
+                                    }
+                                }
                                 SyncWorker.enqueueImmediateSync(getApplication())
+                                val progressDesc = if (resolvedTotal > 0) "$finalCompleted/$resolvedTotal $resolvedUnitType" else "$finalCompleted $resolvedUnitType"
+                                memoryRepository.recordInsight(
+                                    persona = persona,
+                                    memoryType = "DECISION",
+                                    content = "Yeni Kaynak Eklendi: $title ($resolvedSubject - $progressDesc)"
+                                )
                             }
                         }
                         if (!cleanText.contains("#ACTION:NAV_RESOURCES")) {
@@ -1527,75 +1610,132 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     }
 
                     "INSERT_RESOURCE" -> {
-                        val title = (actionMap["title"] as? String ?: "Kaynak Kitap").trim()
-                        val subject = (actionMap["subject"] as? String ?: "Genel").trim()
-                        val totalUnits = (actionMap["totalUnits"] as? Number)?.toInt() ?: 40
-                        val completedUnits = (actionMap["completedUnits"] as? Number)?.toInt()
+                        val title = (actionMap["title"] as? String ?: actionMap["book"] as? String ?: "Kaynak Kitap").trim()
+                        val rawSubject = (actionMap["subject"] as? String ?: "").trim()
+                        val resolvedSubject = inferSubjectFromResourceTitle(title, rawSubject)
+                        val totalInput = (actionMap["totalUnits"] as? Number)?.toInt()?.takeIf { it > 0 }
+                        val completedUnits = ((actionMap["completedUnits"] as? Number)?.toInt()
                             ?: (actionMap["currentUnits"] as? Number)?.toInt()
                             ?: (actionMap["progress"] as? Number)?.toInt()
-                            ?: 0
-                        val unitType = actionMap["unitType"] as? String ?: "Test"
+                            ?: 0).coerceAtLeast(0)
+                        val explicitUnitType = (actionMap["unitType"] as? String)?.trim()?.takeIf { it.isNotBlank() }
+                        val unitType = explicitUnitType ?: inferUnitTypeFromText("$title $lastUserPromptText")
+
+                        var savedCompleted = completedUnits
+                        var savedTotal = totalInput ?: 0
 
                         withContext(Dispatchers.IO) {
                             val allResources = database.goalsDao().getAllResourcesRaw()
-                            val existing = findMatchingResource(allResources, title, subject)
+                            val existing = findMatchingResource(allResources, title, resolvedSubject)
                             val now = System.currentTimeMillis()
 
                             if (existing != null) {
                                 // Do NOT open a duplicate book! Update existing ResourceEntity
                                 val nextCompleted = if (completedUnits > 0) completedUnits else existing.completedUnits
-                                val nextTotal = maxOf(existing.totalUnits, totalUnits, nextCompleted)
+                                val nextTotal = when {
+                                    totalInput != null && existing.totalUnits > 0 -> maxOf(existing.totalUnits, totalInput, nextCompleted)
+                                    totalInput != null -> maxOf(totalInput, nextCompleted)
+                                    existing.totalUnits > 0 -> maxOf(existing.totalUnits, nextCompleted)
+                                    else -> 0
+                                }
+                                val finalCompleted = if (nextTotal > 0) nextCompleted.coerceIn(0, nextTotal) else nextCompleted
+                                savedCompleted = finalCompleted
+                                savedTotal = nextTotal
+                                val nextSubject = if ((existing.subject.isBlank() || existing.subject.equals("Genel", ignoreCase = true)) && resolvedSubject != "Genel") {
+                                    resolvedSubject
+                                } else {
+                                    existing.subject
+                                }
                                 val updated = existing.copy(
-                                    completedUnits = nextCompleted.coerceIn(0, nextTotal),
+                                    subject = nextSubject,
+                                    completedUnits = finalCompleted,
                                     totalUnits = nextTotal,
-                                    unitType = unitType.ifBlank { existing.unitType },
+                                    unitType = explicitUnitType ?: existing.unitType,
                                     updatedAtMillis = now,
                                     lastModifiedMillis = now,
                                     isSynced = false
                                 )
                                 database.goalsDao().updateResource(updated)
                                 database.goalsDao().setProgress(existing.id, updated.completedUnits, now)
-                                SyncWorker.enqueueImmediateSync(getApplication())
-                            } else {
-                                val institutionId = com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(getApplication()).institutionId ?: "INDIVIDUAL"
-                                val resolvedTotal = totalUnits.coerceAtLeast(completedUnits.coerceAtLeast(1))
-                                val resEntity = ResourceEntity(
-                                    title = title,
-                                    subject = subject,
-                                    totalUnits = resolvedTotal,
-                                    completedUnits = completedUnits.coerceIn(0, resolvedTotal),
-                                    unitType = unitType,
-                                    institutionId = institutionId,
-                                    isSynced = false
-                                )
-                                val insertedId = database.goalsDao().insertResource(resEntity)
-                                val finalId = if (insertedId > 0L) insertedId.toString() else resEntity.id.toString()
                                 runCatching {
                                     val firestore = GoogleServicesHelper.getFirebaseFirestore(getApplication())
                                     val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
                                     if (uid != null && firestore != null) {
+                                        val docId = updated.cloudId?.takeIf { it.isNotBlank() } ?: "${uid}_${updated.id}"
                                         val resData = hashMapOf<String, Any>(
-                                            "title" to title,
-                                            "subject" to subject,
-                                            "totalUnits" to resolvedTotal,
-                                            "currentUnits" to resEntity.completedUnits,
-                                            "completedUnits" to resEntity.completedUnits,
-                                            "unitType" to unitType,
+                                            "id" to docId,
+                                            "localId" to updated.id,
+                                            "title" to updated.title,
+                                            "subject" to updated.subject,
+                                            "totalUnits" to updated.totalUnits,
+                                            "totalTarget" to updated.totalUnits,
+                                            "currentUnits" to updated.completedUnits,
+                                            "completedUnits" to updated.completedUnits,
+                                            "isCompleted" to (updated.totalUnits > 0 && updated.completedUnits >= updated.totalUnits),
+                                            "unitType" to updated.unitType,
+                                            "isDeleted" to false,
                                             "studentId" to uid,
                                             "userId" to uid,
-                                            "createdAt" to now
+                                            "updatedAt" to now
                                         )
-                                        firestore.collection("students").document(uid).collection("resources").document(finalId).set(resData, SetOptions.merge())
-                                        firestore.collection("resources").document(finalId).set(resData, SetOptions.merge())
+                                        firestore.collection("students").document(uid).collection("resources").document(docId).set(resData, SetOptions.merge())
+                                        firestore.collection("resources").document(docId).set(resData, SetOptions.merge())
+                                    }
+                                }
+                                SyncWorker.enqueueImmediateSync(getApplication())
+                            } else {
+                                val institutionId = com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(getApplication()).institutionId ?: "INDIVIDUAL"
+                                val resolvedTotal = totalInput?.let { maxOf(it, completedUnits) } ?: 0
+                                val finalCompleted = if (resolvedTotal > 0) completedUnits.coerceIn(0, resolvedTotal) else completedUnits
+                                savedCompleted = finalCompleted
+                                savedTotal = resolvedTotal
+                                val resEntity = ResourceEntity(
+                                    title = title,
+                                    subject = resolvedSubject,
+                                    totalUnits = resolvedTotal,
+                                    completedUnits = finalCompleted,
+                                    unitType = unitType,
+                                    institutionId = institutionId,
+                                    updatedAtMillis = now,
+                                    lastModifiedMillis = now,
+                                    isSynced = false
+                                )
+                                val insertedId = database.goalsDao().insertResource(resEntity)
+                                val finalId = if (insertedId > 0L) insertedId else resEntity.id
+                                runCatching {
+                                    val firestore = GoogleServicesHelper.getFirebaseFirestore(getApplication())
+                                    val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
+                                    if (uid != null && firestore != null && finalId > 0L) {
+                                        val docId = "${uid}_${finalId}"
+                                        val resData = hashMapOf<String, Any>(
+                                            "id" to docId,
+                                            "localId" to finalId,
+                                            "title" to title,
+                                            "subject" to resolvedSubject,
+                                            "totalUnits" to resolvedTotal,
+                                            "totalTarget" to resolvedTotal,
+                                            "currentUnits" to finalCompleted,
+                                            "completedUnits" to finalCompleted,
+                                            "isCompleted" to (resolvedTotal > 0 && finalCompleted >= resolvedTotal),
+                                            "unitType" to unitType,
+                                            "isDeleted" to false,
+                                            "studentId" to uid,
+                                            "userId" to uid,
+                                            "createdAt" to now,
+                                            "updatedAt" to now
+                                        )
+                                        firestore.collection("students").document(uid).collection("resources").document(docId).set(resData, SetOptions.merge())
+                                        firestore.collection("resources").document(docId).set(resData, SetOptions.merge())
                                     }
                                 }
                                 SyncWorker.enqueueImmediateSync(getApplication())
                             }
                         }
+                        val progressDesc = if (savedTotal > 0) "$savedCompleted/$savedTotal $unitType" else "$savedCompleted $unitType"
                         memoryRepository.recordInsight(
                             persona = persona,
                             memoryType = "DECISION",
-                            content = "Kaynak Kaydedildi/Güncellendi: $title ($subject - $completedUnits/$totalUnits $unitType)"
+                            content = "Kaynak Kaydedildi/Güncellendi: $title ($resolvedSubject - $progressDesc)"
                         )
                         if (!cleanText.contains("#ACTION:NAV_RESOURCES")) {
                             cleanText += "\n\n#ACTION:NAV_RESOURCES"
@@ -1603,9 +1743,12 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     }
 
                     "INSERT_TOPICS_BATCH", "ADD_TOPICS_BATCH", "CREATE_TOPICS_BATCH", "BULK_TOPICS" -> {
-                        val preset = actionMap["preset"] as? String
-                        val exam = actionMap["exam"] as? String ?: "TYT"
-                        val defaultTargetLevel = (actionMap["targetLevel"] as? Number)?.toInt() ?: 5
+                        val preset = (actionMap["preset"] as? String)?.trim()?.takeIf { it.isNotBlank() }
+                        val exam = (actionMap["exam"] as? String ?: "").trim()
+                        val effectiveExamHint = exam.ifBlank {
+                            if (lastUserPromptText.contains("ayt", ignoreCase = true) && !lastUserPromptText.contains("tyt", ignoreCase = true)) "AYT" else "TYT"
+                        }
+                        val defaultTargetLevel = ((actionMap["targetLevel"] as? Number)?.toInt() ?: 5).coerceIn(1, 5)
                         val rawTopicsList = (actionMap["topics"] as? List<*>)
                             ?: (actionMap["items"] as? List<*>)
                             ?: emptyList<Any>()
@@ -1613,14 +1756,22 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
 
                         val collectedPairs = mutableListOf<Triple<String, String, Int>>()
 
-                        // 1. Expand preset / exam if requested (e.g. TYT_ALL, AYT_ALL, or user asked for "TYT tüm konular")
-                        val presetPairs = YksCurriculumCatalog.expandFromPresetOrPrompt(
-                            preset = preset,
-                            exam = exam,
-                            userPrompt = lastUserPromptText
-                        )
-                        presetPairs.forEach { (subj, top) ->
-                            collectedPairs.add(Triple(subj, top, defaultTargetLevel))
+                        // 1. Expand preset / exam ONLY when explicitly requested via preset, empty arrays, or bulk curriculum wording
+                        val promptLower = lastUserPromptText.lowercase(Locale("tr"))
+                        val promptAsksBulk = promptLower.contains("tüm konular") ||
+                            promptLower.contains("tum konular") ||
+                            promptLower.contains("bütün konular") ||
+                            promptLower.contains("müfredat") ||
+                            promptLower.contains("mufredat")
+                        if (preset != null || (rawTopicsList.isEmpty() && rawSubjectsList.isEmpty()) || promptAsksBulk) {
+                            val presetPairs = YksCurriculumCatalog.expandFromPresetOrPrompt(
+                                preset = preset,
+                                exam = exam.ifBlank { null },
+                                userPrompt = lastUserPromptText
+                            )
+                            presetPairs.forEach { (subj, top) ->
+                                collectedPairs.add(Triple(subj, top, defaultTargetLevel))
+                            }
                         }
 
                         // 2. Parse explicit `topics` array from AI (and expand any placeholder/empty subject entries!)
@@ -1630,7 +1781,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                                     val subj = (entry["subject"] as? String ?: entry["course"] as? String ?: exam).trim().ifBlank { "Genel" }
                                     val top = (entry["topic"] as? String ?: entry["title"] as? String ?: entry["name"] as? String ?: "").trim()
                                     val subTopicsArr = entry["topics"] as? List<*> ?: entry["subtopics"] as? List<*>
-                                    val lvl = (entry["targetLevel"] as? Number)?.toInt() ?: defaultTargetLevel
+                                    val lvl = ((entry["targetLevel"] as? Number)?.toInt() ?: defaultTargetLevel).coerceIn(1, 5)
 
                                     if (!subTopicsArr.isNullOrEmpty()) {
                                         subTopicsArr.forEach { st ->
@@ -1640,7 +1791,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                                             }
                                         }
                                     } else if (YksCurriculumCatalog.isPlaceholderOrBroadTopic(top)) {
-                                        val expanded = YksCurriculumCatalog.expandSubjectTopics(subj, exam)
+                                        val expanded = YksCurriculumCatalog.expandSubjectTopics(subj, effectiveExamHint)
                                         if (expanded.isNotEmpty()) {
                                             expanded.forEach { (s, t) -> collectedPairs.add(Triple(s, t, lvl)) }
                                         }
@@ -1654,10 +1805,10 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         // 3. Parse optional `subjects` array (`[{"subject": "TYT Matematik", "topics": ["..."]}]`)
                         rawSubjectsList.forEach { sEntry ->
                             val sMap = sEntry as? Map<*, *> ?: return@forEach
-                            val subj = (sMap["subject"] as? String ?: sMap["name"] as? String ?: exam).trim()
+                            val subj = (sMap["subject"] as? String ?: sMap["name"] as? String ?: exam).trim().ifBlank { "Genel" }
                             val subList = (sMap["topics"] as? List<*>) ?: emptyList<Any>()
                             if (subList.isEmpty()) {
-                                YksCurriculumCatalog.expandSubjectTopics(subj, exam).forEach { (s, t) ->
+                                YksCurriculumCatalog.expandSubjectTopics(subj, effectiveExamHint).forEach { (s, t) ->
                                     collectedPairs.add(Triple(s, t, defaultTargetLevel))
                                 }
                             } else {
@@ -1684,20 +1835,36 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                     }
 
                     "INSERT_TOPIC", "UPDATE_TOPIC_PROGRESS", "UPDATE_TOPIC" -> {
-                        val subject = (actionMap["subject"] as? String ?: "Genel").trim()
-                        val topic = (actionMap["topic"] as? String ?: "Konu").trim()
-                        val currentLevel = (actionMap["currentLevel"] as? Number)?.toInt()
-                            ?: (actionMap["level"] as? Number)?.toInt() ?: 1
-                        val targetLevel = (actionMap["targetLevel"] as? Number)?.toInt() ?: 5
+                        val rawSubject = (actionMap["subject"] as? String ?: "").trim()
+                        val rawTopic = (actionMap["topic"] as? String ?: actionMap["topicName"] as? String ?: actionMap["title"] as? String ?: "").trim()
+                        val rawCurrentLevel = (actionMap["currentLevel"] as? Number)?.toInt()
+                            ?: (actionMap["level"] as? Number)?.toInt()
+                            ?: (actionMap["masteryLevel"] as? Number)?.toInt()
+                        val hasExplicitLevel = rawCurrentLevel != null
+                        val isUpdateOnly = type == "UPDATE_TOPIC_PROGRESS" || type == "UPDATE_TOPIC"
+                        val currentLevel = rawCurrentLevel ?: if (isUpdateOnly) 1 else 0
+                        val targetLevel = ((actionMap["targetLevel"] as? Number)?.toInt()
+                            ?: (actionMap["targetMasteryScore"] as? Number)?.toInt()
+                            ?: 5).coerceIn(1, 5)
 
-                        // If AI emitted a broad placeholder (e.g. "Tüm Konular" / "Genel"), expand into full sub-topics!
-                        if (YksCurriculumCatalog.isPlaceholderOrBroadTopic(topic) || YksCurriculumCatalog.isPlaceholderOrBroadTopic(subject)) {
+                        // Expand broad placeholders on INSERT (or when prompt asks for all curriculum topics)
+                        val promptLower = lastUserPromptText.lowercase(Locale("tr"))
+                        val asksBulkFromPrompt = promptLower.contains("tüm konular") ||
+                            promptLower.contains("tum konular") ||
+                            promptLower.contains("bütün konular") ||
+                            promptLower.contains("müfredat") ||
+                            promptLower.contains("mufredat")
+                        if ((!isUpdateOnly && (YksCurriculumCatalog.isPlaceholderOrBroadTopic(rawTopic) || YksCurriculumCatalog.isPlaceholderOrBroadTopic(rawSubject))) || asksBulkFromPrompt) {
                             val expandedFromPrompt = YksCurriculumCatalog.expandFromPresetOrPrompt(
                                 preset = null,
-                                exam = subject,
-                                userPrompt = "$subject $topic $lastUserPromptText"
+                                exam = rawSubject.ifBlank { null },
+                                userPrompt = "$rawSubject $rawTopic $lastUserPromptText"
                             ).ifEmpty {
-                                YksCurriculumCatalog.expandSubjectTopics(subject)
+                                if (rawSubject.isNotBlank() && !YksCurriculumCatalog.isPlaceholderOrBroadTopic(rawSubject)) {
+                                    YksCurriculumCatalog.expandSubjectTopics(rawSubject)
+                                } else {
+                                    emptyList()
+                                }
                             }
                             if (expandedFromPrompt.isNotEmpty()) {
                                 val batchCount = batchInsertTopicGoalsDeduped(
@@ -1715,50 +1882,99 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                             }
                         }
 
+                        if (YksCurriculumCatalog.isPlaceholderOrBroadTopic(rawTopic)) {
+                            continue
+                        }
+
+                        val catalogMatch = YksCurriculumCatalog.findCurriculumMatch(rawSubject, rawTopic, lastUserPromptText)
+                        var resolvedSubject = catalogMatch?.first ?: YksCurriculumCatalog.canonicalizeSubject(rawSubject, rawTopic, lastUserPromptText)
+                        val resolvedTopic = catalogMatch?.second ?: rawTopic
+                        if (resolvedSubject.isBlank() || resolvedSubject.equals("Genel", ignoreCase = true) || resolvedSubject.equals("Ders", ignoreCase = true)) {
+                            val detected = detectSubjectFromContext("$rawSubject $resolvedTopic $lastUserPromptText".lowercase(Locale("tr")))
+                            resolvedSubject = if (detected != "Genel") {
+                                YksCurriculumCatalog.canonicalizeSubject(detected, resolvedTopic, lastUserPromptText)
+                            } else {
+                                "Genel"
+                            }
+                        }
+
+                        var savedSubject = resolvedSubject
+                        var savedTopic = resolvedTopic
+                        var savedLevel = currentLevel.coerceIn(0, targetLevel)
+                        var savedTarget = targetLevel
+
                         withContext(Dispatchers.IO) {
                             val existingTopics = database.goalsDao().getAllTopicsRaw()
-                            val existing = existingTopics.firstOrNull {
-                                it.subject.equals(subject, ignoreCase = true) &&
-                                    it.topic.equals(topic, ignoreCase = true)
-                            }
+                            val existing = findMatchingTopic(existingTopics, rawSubject, rawTopic)
+                                ?: findMatchingTopic(existingTopics, resolvedSubject, resolvedTopic)
                             val now = System.currentTimeMillis()
+                            val targetTopicId: Long
+
                             if (existing != null) {
+                                val nextTarget = targetLevel.coerceAtLeast(1)
+                                val nextLevel = if (hasExplicitLevel) currentLevel.coerceIn(0, nextTarget) else existing.currentLevel.coerceIn(0, nextTarget)
+                                val upgradedSubject = if (catalogMatch != null && (existing.subject.equals("Genel", ignoreCase = true) || YksCurriculumCatalog.coreSubjectName(existing.subject) != YksCurriculumCatalog.coreSubjectName(catalogMatch.first))) {
+                                    catalogMatch.first
+                                } else {
+                                    existing.subject
+                                }
                                 val updated = existing.copy(
-                                    currentLevel = currentLevel.coerceIn(0, targetLevel),
-                                    targetLevel = targetLevel.coerceAtLeast(1),
+                                    subject = upgradedSubject,
+                                    currentLevel = nextLevel,
+                                    targetLevel = nextTarget,
                                     isSynced = false,
                                     updatedAtMillis = now
                                 )
                                 database.goalsDao().updateTopicGoal(updated)
+                                targetTopicId = updated.id
+                                savedSubject = updated.subject
+                                savedTopic = updated.topic
+                                savedLevel = updated.currentLevel
+                                savedTarget = updated.targetLevel
                             } else {
+                                val existingSameCoreSubject = existingTopics.firstOrNull {
+                                    YksCurriculumCatalog.areSubjectsCompatible(it.subject, resolvedSubject) &&
+                                        !it.subject.equals("Genel", ignoreCase = true)
+                                }?.subject
+                                val folderSubject = if (catalogMatch != null) catalogMatch.first else (existingSameCoreSubject ?: resolvedSubject)
                                 val institutionId = com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(getApplication()).institutionId ?: "INDIVIDUAL"
                                 val topicEntity = TopicGoalEntity(
-                                    subject = subject,
-                                    topic = topic,
-                                    currentLevel = currentLevel.coerceIn(0, targetLevel),
+                                    subject = folderSubject,
+                                    topic = resolvedTopic,
+                                    currentLevel = savedLevel,
                                     targetLevel = targetLevel,
                                     institutionId = institutionId,
                                     isSynced = false,
                                     updatedAtMillis = now
                                 )
                                 val insertedId = database.goalsDao().insertTopicGoal(topicEntity)
-                                val finalId = if (insertedId > 0L) insertedId.toString() else topicEntity.id.toString()
-                                runCatching {
-                                    val firestore = GoogleServicesHelper.getFirebaseFirestore(getApplication())
-                                    val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
-                                    if (uid != null && firestore != null) {
-                                        val topicData = hashMapOf<String, Any>(
-                                            "subject" to subject,
-                                            "topic" to topic,
-                                            "currentLevel" to currentLevel.coerceIn(0, targetLevel),
-                                            "targetLevel" to targetLevel,
-                                            "studentId" to uid,
-                                            "userId" to uid,
-                                            "updatedAt" to now
-                                        )
-                                        firestore.collection("students").document(uid).collection("topics").document(finalId).set(topicData, SetOptions.merge())
-                                        firestore.collection("topics").document(finalId).set(topicData, SetOptions.merge())
-                                    }
+                                targetTopicId = if (insertedId > 0L) insertedId else topicEntity.id
+                                savedSubject = topicEntity.subject
+                                savedTopic = topicEntity.topic
+                                savedLevel = topicEntity.currentLevel
+                                savedTarget = topicEntity.targetLevel
+                            }
+
+                            runCatching {
+                                val firestore = GoogleServicesHelper.getFirebaseFirestore(getApplication())
+                                val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
+                                if (uid != null && firestore != null && targetTopicId > 0L) {
+                                    val docId = "${uid}_${targetTopicId}"
+                                    val topicData = hashMapOf<String, Any>(
+                                        "id" to docId,
+                                        "localId" to targetTopicId,
+                                        "subject" to savedSubject,
+                                        "topic" to savedTopic,
+                                        "topicName" to savedTopic,
+                                        "masteryLevel" to savedLevel,
+                                        "targetMasteryScore" to savedTarget,
+                                        "isDeleted" to false,
+                                        "studentId" to uid,
+                                        "userId" to uid,
+                                        "updatedAt" to now
+                                    )
+                                    firestore.collection("students").document(uid).collection("topics").document(docId).set(topicData, SetOptions.merge())
+                                    firestore.collection("topics").document(docId).set(topicData, SetOptions.merge())
                                 }
                             }
                             SyncWorker.enqueueImmediateSync(getApplication())
@@ -1766,7 +1982,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
                         memoryRepository.recordInsight(
                             persona = persona,
                             memoryType = "DECISION",
-                            content = "Konu Hedefi İşlendi: $subject - $topic (Seviye $currentLevel/$targetLevel)"
+                            content = "Konu Hedefi İşlendi: $savedSubject - $savedTopic (Seviye $savedLevel/$savedTarget)"
                         )
                         if (!cleanText.contains("#ACTION:NAV_TOPICS")) {
                             cleanText += "\n\n#ACTION:NAV_TOPICS"
@@ -1952,7 +2168,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         if (candidates.isEmpty()) return@withContext 0
         val existingTopics = database.goalsDao().getAllTopicsRaw()
         val existingKeySet = existingTopics.map {
-            "${it.subject.lowercase(Locale("tr")).trim()}::${it.topic.lowercase(Locale("tr")).trim()}"
+            "${normalizeForMatch(it.subject)}::${normalizeForMatch(it.topic)}"
         }.toMutableSet()
 
         val institutionId = com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(getApplication()).institutionId ?: "INDIVIDUAL"
@@ -1960,11 +2176,25 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
         val entitiesToInsert = mutableListOf<TopicGoalEntity>()
 
         for ((rawSubj, rawTop, targetLvl) in candidates) {
-            val subj = rawSubj.trim()
-            val top = rawTop.trim()
-            if (subj.isBlank() || top.isBlank() || YksCurriculumCatalog.isPlaceholderOrBroadTopic(top)) continue
-            val key = "${subj.lowercase(Locale("tr"))}::${top.lowercase(Locale("tr"))}"
-            if (existingKeySet.add(key)) {
+            val trimmedSubj = rawSubj.trim()
+            val trimmedTop = rawTop.trim()
+            if (trimmedTop.isBlank() || YksCurriculumCatalog.isPlaceholderOrBroadTopic(trimmedTop)) continue
+
+            val catalogMatch = YksCurriculumCatalog.findCurriculumMatch(trimmedSubj, trimmedTop, lastUserPromptText)
+            var subj = catalogMatch?.first ?: YksCurriculumCatalog.canonicalizeSubject(trimmedSubj, trimmedTop, lastUserPromptText)
+            val top = catalogMatch?.second ?: trimmedTop
+            if (subj.isBlank() || subj.equals("Genel", ignoreCase = true) || subj.equals("Ders", ignoreCase = true)) {
+                val detected = detectSubjectFromContext("$trimmedSubj $top $lastUserPromptText".lowercase(Locale("tr")))
+                if (detected != "Genel") {
+                    subj = YksCurriculumCatalog.canonicalizeSubject(detected, top, lastUserPromptText)
+                }
+            }
+            if (subj.isBlank() || YksCurriculumCatalog.isPlaceholderOrBroadTopic(top)) continue
+
+            val key = "${normalizeForMatch(subj)}::${normalizeForMatch(top)}"
+            val alreadyTracked = key in existingKeySet ||
+                findMatchingTopic(existingTopics + entitiesToInsert, subj, top) != null
+            if (!alreadyTracked && existingKeySet.add(key)) {
                 entitiesToInsert.add(
                     TopicGoalEntity(
                         subject = subj,
@@ -1993,6 +2223,111 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
             .trim()
     }
 
+    private fun inferSubjectFromResourceTitle(title: String, rawSubject: String): String {
+        val cleanedRaw = rawSubject.trim()
+            .removePrefix("Ders:")
+            .removePrefix("ders:")
+            .trim()
+        val isGenericRaw = cleanedRaw.isBlank() ||
+            cleanedRaw.equals("Genel", ignoreCase = true) ||
+            cleanedRaw.equals("Ders", ignoreCase = true) ||
+            cleanedRaw.equals("Tümü", ignoreCase = true) ||
+            cleanedRaw.equals("Diğer", ignoreCase = true) ||
+            cleanedRaw.equals("Soru Bankası", ignoreCase = true)
+
+        if (!isGenericRaw) {
+            return YksCurriculumCatalog.canonicalizeSubject(cleanedRaw, promptHint = title)
+        }
+
+        val lowerTitle = title.lowercase(Locale("tr"))
+        if (lowerTitle.isBlank()) return "Genel"
+
+        val baseSubject = when {
+            lowerTitle.contains("geometri") || Regex("""\bgeo\b""").containsMatchIn(lowerTitle) -> "Geometri"
+            lowerTitle.contains("matematik") || Regex("""\bmat\b""").containsMatchIn(lowerTitle) -> "Matematik"
+            lowerTitle.contains("fizik") -> "Fizik"
+            lowerTitle.contains("kimya") -> "Kimya"
+            lowerTitle.contains("biyoloji") -> "Biyoloji"
+            lowerTitle.contains("edebiyat") -> "Edebiyat"
+            lowerTitle.contains("türkçe") || lowerTitle.contains("turkce") || lowerTitle.contains("paragraf") || lowerTitle.contains("dil bilgisi") -> "Türkçe"
+            lowerTitle.contains("tarih") -> "Tarih"
+            lowerTitle.contains("coğrafya") || lowerTitle.contains("cografya") -> "Coğrafya"
+            lowerTitle.contains("felsefe") -> "Felsefe"
+            lowerTitle.contains("din kültürü") || lowerTitle.contains("din kulturu") -> "Din Kültürü"
+            lowerTitle.contains("ingilizce") || Regex("""\bydt\b""").containsMatchIn(lowerTitle) -> "İngilizce"
+            lowerTitle.contains("fen bilimleri") -> "Fen Bilimleri"
+            lowerTitle.contains("sosyal bilimler") -> "Sosyal Bilimler"
+            else -> null
+        }
+        if (baseSubject != null) {
+            return YksCurriculumCatalog.canonicalizeSubject(baseSubject, promptHint = title)
+        }
+        YksCurriculumCatalog.findCurriculumMatch("", title, title)?.first?.let { return it }
+        return "Genel"
+    }
+
+    private fun inferUnitTypeFromText(text: String, fallback: String = "Test"): String {
+        val lower = text.lowercase(Locale("tr"))
+        return when {
+            lower.contains("sayfa") || Regex("""\bsf\.?\b""").containsMatchIn(lower) -> "Sayfa"
+            lower.contains("test") -> "Test"
+            lower.contains("deneme") -> "Deneme"
+            lower.contains("bölüm") || lower.contains("bolum") -> "Bölüm"
+            Regex("""\bsoru\b""").containsMatchIn(lower) && !lower.contains("soru bankas") -> "Soru"
+            else -> fallback
+        }
+    }
+
+    private fun findMatchingTopic(
+        existingTopics: List<TopicGoalEntity>,
+        rawSubject: String,
+        rawTopic: String
+    ): TopicGoalEntity? {
+        if (existingTopics.isEmpty() || rawTopic.isBlank()) return null
+
+        existingTopics.firstOrNull {
+            it.subject.equals(rawSubject, ignoreCase = true) &&
+                it.topic.equals(rawTopic, ignoreCase = true)
+        }?.let { return it }
+
+        val compatible = existingTopics.filter {
+            YksCurriculumCatalog.areSubjectsCompatible(it.subject, rawSubject)
+        }
+        val normTopic = normalizeForMatch(rawTopic)
+        if (normTopic.isNotBlank()) {
+            compatible.firstOrNull { normalizeForMatch(it.topic) == normTopic }?.let { return it }
+        }
+
+        val catalogMatch = YksCurriculumCatalog.findCurriculumMatch(rawSubject, rawTopic, lastUserPromptText)
+        if (catalogMatch != null) {
+            val canonTopicNorm = normalizeForMatch(catalogMatch.second)
+            existingTopics.firstOrNull {
+                YksCurriculumCatalog.areSubjectsCompatible(it.subject, catalogMatch.first) &&
+                    normalizeForMatch(it.topic) == canonTopicNorm
+            }?.let { return it }
+        }
+
+        val queryTokens = YksCurriculumCatalog.normalizeTokens(rawTopic).filter { it.length >= 3 }
+        if (normTopic.length >= 4 && queryTokens.isNotEmpty()) {
+            val containmentMatches = compatible.filter { existing ->
+                val exNorm = normalizeForMatch(existing.topic)
+                exNorm.isNotBlank() && (exNorm.contains(normTopic) || (normTopic.contains(exNorm) && exNorm.length >= 4))
+            }
+            if (containmentMatches.size == 1) return containmentMatches.first()
+
+            val tokenMatch = compatible.mapNotNull { existing ->
+                val exTokens = YksCurriculumCatalog.normalizeTokens(existing.topic).filter { it.length >= 3 }
+                val overlap = queryTokens.count { qt ->
+                    exTokens.any { et -> et == qt || (qt.length >= 4 && et.startsWith(qt)) || (et.length >= 4 && qt.startsWith(et)) }
+                }
+                if (overlap > 0 && overlap >= queryTokens.size) existing to overlap else null
+            }
+            if (tokenMatch.size == 1) return tokenMatch.first().first
+        }
+
+        return null
+    }
+
     private fun findMatchingResource(
         resources: List<ResourceEntity>,
         queryTitle: String,
@@ -2000,34 +2335,97 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
     ): ResourceEntity? {
         if (resources.isEmpty()) return null
         val normQuery = normalizeForMatch(queryTitle)
+        val cleanSubject = querySubject.trim()
+        val titleInferredSubject = inferSubjectFromResourceTitle(queryTitle, "")
+        val effectiveSubject = when {
+            cleanSubject.isNotBlank() && !cleanSubject.equals("Genel", ignoreCase = true) && !cleanSubject.equals("Ders", ignoreCase = true) ->
+                cleanSubject
+            titleInferredSubject != "Genel" -> titleInferredSubject
+            else -> ""
+        }
+
+        val queryCombined = "$querySubject $queryTitle".lowercase(Locale("tr"))
+        val qHasTyt = Regex("""\btyt\b""").containsMatchIn(queryCombined)
+        val qHasAyt = Regex("""\bayt\b""").containsMatchIn(queryCombined)
+
+        val subjectCompatiblePool = resources.filter { res ->
+            val resEffectiveSubj = inferSubjectFromResourceTitle(res.title, res.subject)
+            val subjOk = effectiveSubject.isBlank() || YksCurriculumCatalog.areSubjectsCompatible(resEffectiveSubj, effectiveSubject)
+            val titleSubjOk = titleInferredSubject == "Genel" || YksCurriculumCatalog.areSubjectsCompatible(resEffectiveSubj, titleInferredSubject)
+            val resCombined = "${res.subject} ${res.title}".lowercase(Locale("tr"))
+            val resHasTyt = Regex("""\btyt\b""").containsMatchIn(resCombined)
+            val resHasAyt = Regex("""\bayt\b""").containsMatchIn(resCombined)
+            val examOk = when {
+                qHasTyt && !qHasAyt && resHasAyt && !resHasTyt -> false
+                qHasAyt && !qHasTyt && resHasTyt && !resHasAyt -> false
+                else -> true
+            }
+            subjOk && titleSubjOk && examOk
+        }
+
+        if (subjectCompatiblePool.isEmpty()) return null
+
         if (normQuery.isBlank()) {
-            return if (querySubject.isNotBlank() && querySubject != "Genel") {
-                resources.firstOrNull { it.subject.equals(querySubject, ignoreCase = true) }
-            } else null
+            return if (effectiveSubject.isNotBlank()) subjectCompatiblePool.singleOrNull() else null
         }
 
-        // 1. Exact or substring match
-        resources.firstOrNull { normalizeForMatch(it.title) == normQuery }?.let { return it }
-        resources.firstOrNull {
-            val normRes = normalizeForMatch(it.title)
-            normRes.contains(normQuery) || normQuery.contains(normRes)
-        }?.let { return it }
+        // 1. Exact title match within subject-compatible pool
+        subjectCompatiblePool.firstOrNull { normalizeForMatch(it.title) == normQuery }?.let { return it }
 
-        // 2. Token overlap match (e.g. "3D Matematik" matches "3D TYT Matematik Soru Bankası")
         val queryTokens = normQuery.split(" ").filter { it.length >= 2 }
-        if (queryTokens.isNotEmpty()) {
-            val best = resources.maxByOrNull { res ->
-                val resNorm = normalizeForMatch("${res.title} ${res.subject}")
-                queryTokens.count { token -> resNorm.contains(token) }
+        val distinctiveQueryTokens = queryTokens.filter { it !in RESOURCE_MATCH_STOPWORDS }
+
+        // 2. Substring/containment match only when query has meaningful tokens
+        if (normQuery.length >= 5 && (distinctiveQueryTokens.isNotEmpty() || queryTokens.size >= 2)) {
+            val containmentMatches = subjectCompatiblePool.filter { res ->
+                val normRes = normalizeForMatch(res.title)
+                normRes.contains(normQuery) || (normQuery.contains(normRes) && normRes.length >= 5)
             }
-            if (best != null) {
-                val resNorm = normalizeForMatch("${best.title} ${best.subject}")
-                val matchCount = queryTokens.count { token -> resNorm.contains(token) }
-                if (matchCount >= 1 && (matchCount >= queryTokens.size / 2 + 1 || queryTokens.size == 1)) {
-                    return best
+            if (containmentMatches.size == 1) return containmentMatches.first()
+            if (containmentMatches.size > 1) {
+                val scoredContainment = containmentMatches.map { res ->
+                    val resNorm = normalizeForMatch(res.title)
+                    res to distinctiveQueryTokens.count { tok -> resNorm.contains(tok) }
                 }
+                val topScore = scoredContainment.maxOf { it.second }
+                val winners = scoredContainment.filter { it.second == topScore && topScore > 0 }.map { it.first }
+                if (winners.size == 1) return winners.first()
             }
         }
+
+        // 3. Distinctive token overlap against res.title ONLY (never matching res.subject or generic words)
+        if (distinctiveQueryTokens.isNotEmpty()) {
+            val scored = subjectCompatiblePool.mapNotNull { res ->
+                val resTitleNorm = normalizeForMatch(res.title)
+                val resTokens = resTitleNorm.split(" ").filter { it.length >= 2 }
+                val distinctiveResTokens = resTokens.filter { it !in RESOURCE_MATCH_STOPWORDS }
+                val distMatches = distinctiveQueryTokens.count { dt ->
+                    distinctiveResTokens.any { rt ->
+                        rt == dt || (dt.length >= 4 && rt.startsWith(dt)) || (rt.length >= 4 && dt.startsWith(rt))
+                    }
+                }
+                val passesThreshold = if (distinctiveQueryTokens.size <= 2) {
+                    distMatches == distinctiveQueryTokens.size
+                } else {
+                    distMatches >= distinctiveQueryTokens.size - 1 && distMatches * 10 >= distinctiveQueryTokens.size * 6
+                }
+                if (!passesThreshold) return@mapNotNull null
+                val bonusAll = queryTokens.count { qt -> qt in resTokens }
+                res to (distMatches * 100 + bonusAll)
+            }
+            if (scored.isNotEmpty()) {
+                val topScore = scored.maxOf { it.second }
+                val winners = scored.filter { it.second == topScore }.map { it.first }
+                if (winners.size == 1) return winners.first()
+            }
+        } else {
+            val genericMatches = subjectCompatiblePool.filter { res ->
+                val resTokens = normalizeForMatch(res.title).split(" ").filter { it.length >= 2 }
+                queryTokens.all { qt -> qt in resTokens }
+            }
+            return genericMatches.singleOrNull()
+        }
+
         return null
     }
 
@@ -2246,12 +2644,12 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
             #ACTION:{"type":"CREATE_WEEKLY_PLAN","title":"Haftalık Çalışma Programı","summary":"Haftalık odak stratejisi","schedule":[{"dayOfWeek":1,"timeSlot":"09:00 - 10:30","subject":"Matematik","topic":"Türev","targetQuestions":40}]}#
             - Eğer öğrenci "TYT tüm konular", "AYT tüm konular" veya bir dersin tüm konularını/müfredatını eklemek istiyorsa ASLA ders başına tek boş klasör açma; INSERT_TOPICS_BATCH kullan:
             #ACTION:{"type":"INSERT_TOPICS_BATCH","exam":"TYT","preset":"TYT_ALL","topics":[{"subject":"TYT Türkçe","topic":"Sözcükte Anlam","targetLevel":5},{"subject":"TYT Matematik","topic":"Temel Kavramlar","targetLevel":5}]}#
-            - Eğer öğrenci tek bir konu hedefi eklemek veya seviyesini güncellemek istiyorsa:
-            #ACTION:{"type":"INSERT_TOPIC","subject":"Ders","topic":"Konu Adı","currentLevel":1,"targetLevel":5}#
-            - Eğer öğrenci mevcut kütüphanesindeki bir kitabı ("X kitabını 45. sayfaya/teste kadar çözdüm işaretle") güncellemek istiyorsa YENİ KİTAP EKLEME, mevcut kitabı UPDATE_RESOURCE_PROGRESS ile güncelle:
-            #ACTION:{"type":"UPDATE_RESOURCE_PROGRESS","resourceId":0,"title":"Kitap Adı","completedUnits":45,"unitType":"Sayfa","isIncremental":false}#
-            - Eğer öğrenci kütüphanede henüz olmayan YENİ bir kaynak/kitap eklemek istiyorsa:
-            #ACTION:{"type":"INSERT_RESOURCE","title":"Kitap Adı","subject":"Ders","totalUnits":40,"completedUnits":0,"unitType":"Test"}#
+            - Eğer öğrenci tek bir konu hedefi eklemek veya seviyesini güncellemek istiyorsa, doğru ders adını (TYT/AYT ayrımıyla, örn. Türev için AYT Matematik) ve konuyu seç:
+            #ACTION:{"type":"INSERT_TOPIC","subject":"Ders Adı","topic":"Konu Adı","currentLevel":1,"targetLevel":5}#
+            - Eğer öğrenci mevcut kütüphanesindeki bir kitabı ("X kitabını 45. sayfaya/teste kadar çözdüm işaretle") güncellemek istiyorsa YENİ KİTAP EKLEME, [MEVCUT KÜTÜPHANE KAYNAKLARI] listesindeki doğru `resourceId`, tam kitap adı ve dersiyle UPDATE_RESOURCE_PROGRESS kullan:
+            #ACTION:{"type":"UPDATE_RESOURCE_PROGRESS","resourceId":0,"title":"Kitap Adı","subject":"Ders Adı","completedUnits":45,"unitType":"Sayfa","isIncremental":false}#
+            - Eğer öğrenci kütüphanede henüz olmayan YENİ bir kaynak/kitap eklemek istiyorsa (öğrenci toplam sayfa/test sayısını belirtmediyse `totalUnits`: 0 yaz, ASLA tahmini sayı uydurma):
+            #ACTION:{"type":"INSERT_RESOURCE","title":"Kitap Adı","subject":"Ders Adı","totalUnits":0,"completedUnits":0,"unitType":"Test"}#
             - Eğer öğrenci tekil veya toplu hedef belirlemek ya da mevcut hedef ilerlemesini güncellemek istiyorsa:
             #ACTION:{"type":"INSERT_TARGET","title":"Hedef Başlığı","description":"Açıklama","type":"SHORT_TERM","period":"WEEKLY","targetQuestions":100,"priority":"HIGH"}#
             #ACTION:{"type":"INSERT_TARGETS_BATCH","targets":[{"title":"Hedef Başlığı","description":"Açıklama","type":"SHORT_TERM","period":"WEEKLY","targetQuestions":100,"priority":"HIGH"}]}#
@@ -2413,7 +2811,7 @@ open class SharkAiViewModel(application: Application) : AndroidViewModel(applica
             text.contains("coğrafya") || text.contains("harita") || text.contains("iklim") || text.contains("nüfus") || text.contains("yerşekilleri") -> "Coğrafya"
             text.contains("türkçe") || text.contains("edebiyat") || text.contains("paragraf") || text.contains("dil bilgisi") || text.contains("yazım") || text.contains("noktalama") || text.contains("şiir") || text.contains("divan") || text.contains("tanzimat") || text.contains("yazar") -> "Türkçe / Edebiyat"
             text.contains("felsefe") || text.contains("din") -> "Felsefe / Din"
-            else -> "Matematik"
+            else -> "Genel"
         }
     }
 

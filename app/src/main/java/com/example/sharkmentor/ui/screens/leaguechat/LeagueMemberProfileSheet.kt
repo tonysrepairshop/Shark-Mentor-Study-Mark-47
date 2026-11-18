@@ -306,7 +306,7 @@ fun LeagueMemberProfileSheet(
                                 tint = MaterialTheme.colorScheme.onErrorContainer
                             )
                             Text(
-                                text = "Bu öğrenciyi engelledin. Mesajları, soru paylaşımları ve davetleri gizleniyor.",
+                                text = "Bu öğrenciyi engelledin. Mesajları, soru paylaşımları ve dürtmeleri gizleniyor.",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = MaterialTheme.colorScheme.onErrorContainer
                             )
@@ -493,7 +493,7 @@ fun LeagueMemberProfileSheet(
             },
             text = {
                 Text(
-                    text = "Engellediğinizde bu kullanıcının mesajları, paylaştığı sorular ve çalışma davetleri gizlenir. Engeli istediğiniz zaman kaldırabilirsiniz.",
+                    text = "Engellediğinizde bu kullanıcının mesajları, paylaştığı sorular ve çalışma dürtmeleri gizlenir. Engeli istediğiniz zaman kaldırabilirsiniz.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

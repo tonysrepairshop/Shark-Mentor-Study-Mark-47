@@ -162,48 +162,27 @@ fun ScheduleScreen(
                     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                         if (state.isReadOnlyMode) {
                             Card(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
                             ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
+                                Column(modifier = Modifier.padding(14.dp)) {
                                     Text(
                                         "Kurumsal Öğrenci",
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
-                                    Spacer(Modifier.height(8.dp))
+                                    Spacer(Modifier.height(4.dp))
                                     Text(
-                                        "Programınız kurumunuz tarafından yönetilmektedir. Lütfen kendi programınızı yüklemeyin.",
-                                        style = MaterialTheme.typography.bodyMedium,
+                                        "Programınız kurumunuz tarafından yönetilmektedir.",
+                                        style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
                             }
                         }
-                        if (state.isReadOnlyMode) {
-                            if (state.webScheduleText.isNullOrBlank()) {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text(
-                                        "Kurumunuz henüz güncel bir ders programı yüklemedi.",
-                                        textAlign = TextAlign.Center,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            } else {
-                                Card(
-                                    modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                                ) {
-                                    Text(
-                                        text = state.webScheduleText,
-                                        modifier = Modifier.padding(16.dp),
-                                        style = MaterialTheme.typography.bodyLarge
-                                    )
-                                }
-                            }
-                        } else {
-                            // Coach-assigned schedule banner (no scan button needed)
+
+                        if (!state.isReadOnlyMode) {
                             if (state.isCoachSchedule) {
                                 Card(
                                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
@@ -227,6 +206,42 @@ fun ScheduleScreen(
                                     Text("Belge / Fotoğraf Tara", textAlign = TextAlign.Center)
                                 }
                                 Spacer(Modifier.height(16.dp))
+                            }
+                        }
+
+                        if (state.isReadOnlyMode && state.schedules.isEmpty()) {
+                            if (state.webScheduleText.isNullOrBlank()) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text(
+                                        "Kurumunuz henüz güncel bir ders programı yüklemedi.",
+                                        textAlign = TextAlign.Center,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                ) {
+                                    Text(
+                                        text = state.webScheduleText,
+                                        modifier = Modifier.padding(16.dp),
+                                        style = MaterialTheme.typography.bodyLarge
+                                    )
+                                }
+                            }
+                        } else {
+                            if (state.isReadOnlyMode && !state.webScheduleText.isNullOrBlank()) {
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                ) {
+                                    Text(
+                                        text = state.webScheduleText,
+                                        modifier = Modifier.padding(12.dp),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
                             }
 
                             if (viewMode == ScheduleViewMode.TABLE) {

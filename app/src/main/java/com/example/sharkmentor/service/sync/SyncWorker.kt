@@ -415,7 +415,8 @@ class SyncWorker(
             rawDays.forEachIndexed { defaultDayIdx, dayObj ->
                 val dayMap = dayObj as? Map<*, *> ?: return@forEachIndexed
                 val dayName = dayMap["day"] as? String ?: dayNames.getOrElse(defaultDayIdx) { "Pazartesi" }
-                val dayOfWeek = dayNames.indexOf(dayName).let { if (it == -1) defaultDayIdx + 1 else it + 1 }
+                val dayOfWeek = dayNames.indexOfFirst { it.equals(dayName.trim(), ignoreCase = true) }
+                    .let { if (it == -1) defaultDayIdx + 1 else it + 1 }
                 val slots = (dayMap["classes"] ?: dayMap["slots"] ?: dayMap["tasks"]) as? List<*> ?: emptyList<Any>()
 
                 slots.forEachIndexed { slotIdx, slotObj ->
@@ -450,7 +451,7 @@ class SyncWorker(
             // Replace ONLY CUSTOM_SCHED_* slots so user/institution schedules are preserved
             scheduleDao.replaceCustomSchedules(entitiesToInsert)
             Log.d(syncTag, "Synced ${entitiesToInsert.size} custom schedule slots for $uid.")
-        } else {
+        } else if (!studentDoc.metadata.isFromCache) {
             scheduleDao.deleteCustomSchedules()
         }
     }
@@ -528,15 +529,16 @@ class SyncWorker(
                     continue
                 }
 
-                // Web writes totalUnits + unitType directly; fall back to totalTarget for legacy docs
+                // Preserve totalUnits = 0 (unspecified) instead of inventing 100 or 1
                 val totalTarget = (doc.getSafeInt("totalUnits")
                     ?: doc.getSafeInt("totalTarget")
                     ?: doc.getSafeInt("totalCount")
-                    ?: 100).coerceAtLeast(1)
-                val completedCount = (doc.getSafeInt("completedUnits")
+                    ?: 0).coerceAtLeast(0)
+                val rawCompleted = (doc.getSafeInt("completedUnits")
                     ?: doc.getSafeInt("currentUnits")
                     ?: doc.getSafeInt("completedCount")
-                    ?: 0).coerceIn(0, totalTarget)
+                    ?: 0).coerceAtLeast(0)
+                val completedCount = if (totalTarget > 0) rawCompleted.coerceIn(0, totalTarget) else rawCompleted
                 val unitType = doc.getSafeString("unitType")?.takeIf { it.isNotBlank() }
                     ?: doc.getSafeString("unit")?.takeIf { it.isNotBlank() }
                     ?: run {
@@ -1276,7 +1278,7 @@ class SyncWorker(
         for (resource in pendingResources) {
             try {
                 val docId = resource.cloudId?.takeIf { it.isNotBlank() } ?: "${uid}_${resource.id}"
-                val isCompleted = resource.completedUnits >= resource.totalUnits
+                val isCompleted = resource.totalUnits > 0 && resource.completedUnits >= resource.totalUnits
                 val resourceData = hashMapOf<String, Any?>(
                     "id" to docId,
                     "localId" to resource.id,

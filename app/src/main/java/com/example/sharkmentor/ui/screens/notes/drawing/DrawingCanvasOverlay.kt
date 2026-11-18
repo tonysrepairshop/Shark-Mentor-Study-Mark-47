@@ -115,6 +115,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -1232,25 +1233,26 @@ internal fun resolvePointerPressure(
     if (!enabled) return 1.0f
     val raw = change.pressure
     if (change.type == PointerType.Stylus) {
-        val normalized = if (raw <= 0.001f) 0.65f else raw.coerceIn(0.05f, 1.5f)
-        val prevP = prevPoint?.pressure ?: normalized
-        return (prevP * 0.35f + normalized * 0.65f).coerceIn(0.05f, 1.5f)
+        val norm = if (raw <= 0.001f) 0.72f else raw.coerceIn(0.02f, 1.40f)
+        val curved = (norm.pow(0.70f) * 1.38f).coerceIn(0.04f, 1.88f)
+        val prevP = prevPoint?.pressure ?: curved
+        return (prevP * 0.16f + curved * 0.84f).coerceIn(0.04f, 1.88f)
     }
 
     // Touch or other pointer types
     if (raw > 0.01f && abs(raw - 1.0f) > 0.015f) {
-        val clamped = raw.coerceIn(0.15f, 1.4f)
-        val prevP = prevPoint?.pressure ?: clamped
-        return (prevP * 0.45f + clamped * 0.55f).coerceIn(0.15f, 1.4f)
+        val curved = (raw.coerceIn(0.05f, 1.40f).pow(0.75f) * 1.25f).coerceIn(0.08f, 1.65f)
+        val prevP = prevPoint?.pressure ?: curved
+        return (prevP * 0.25f + curved * 0.75f).coerceIn(0.08f, 1.65f)
     }
 
     // Velocity-based natural taper when touch reports constant 1.0f
-    if (prevPoint == null) return 0.78f
+    if (prevPoint == null) return 0.85f
     val dist = kotlin.math.hypot(change.position.x - prevPoint.x, change.position.y - prevPoint.y)
     val dt = (nowTimeMs - prevTimeMs).coerceAtLeast(4L).toFloat()
     val speedPxPerMs = dist / dt
-    val velocityPressure = (1.06f - (speedPxPerMs * 0.14f)).coerceIn(0.55f, 1.12f)
-    return (prevPoint.pressure * 0.60f + velocityPressure * 0.40f).coerceIn(0.45f, 1.25f)
+    val velocityPressure = (1.42f - (speedPxPerMs * 0.28f)).coerceIn(0.20f, 1.50f)
+    return (prevPoint.pressure * 0.35f + velocityPressure * 0.65f).coerceIn(0.18f, 1.55f)
 }
 
 /**
@@ -1363,13 +1365,13 @@ fun DrawScope.drawStrokeElement(
     if (pts.size == 1) {
         val p0 = pts[0]
         val pFactor = if (pressureSensitivityEnabled) {
-            (0.35f + 0.95f * p0.pressure.coerceIn(0.05f, 1.5f)).coerceIn(0.30f, 1.80f)
+            (0.16f + 1.50f * p0.pressure.coerceIn(0.04f, 1.88f)).coerceIn(0.16f, 2.40f)
         } else {
             1.0f
         }
         drawCircle(
             color = paintColor,
-            radius = (widthPx * pFactor * 0.5f).coerceAtLeast(0.75f),
+            radius = (widthPx * pFactor * 0.5f).coerceAtLeast(0.55f),
             center = Offset(p0.x, p0.y)
         )
         return
@@ -1389,19 +1391,19 @@ fun DrawScope.drawStrokeElement(
             val endX = if (i == pts.lastIndex) curr.x else (prev.x + curr.x) * 0.5f
             val endY = if (i == pts.lastIndex) curr.y else (prev.y + curr.y) * 0.5f
 
-            val pPrev2 = pts[(i - 2).coerceAtLeast(0)].pressure.coerceIn(0.05f, 1.5f)
-            val pPrev = prev.pressure.coerceIn(0.05f, 1.5f)
-            val pCurr = curr.pressure.coerceIn(0.05f, 1.5f)
-            val smoothedPressure = pPrev2 * 0.25f + pPrev * 0.50f + pCurr * 0.25f
+            val pPrev2 = pts[(i - 2).coerceAtLeast(0)].pressure.coerceIn(0.04f, 1.88f)
+            val pPrev = prev.pressure.coerceIn(0.04f, 1.88f)
+            val pCurr = curr.pressure.coerceIn(0.04f, 1.88f)
+            val smoothedPressure = pPrev2 * 0.20f + pPrev * 0.45f + pCurr * 0.35f
 
-            // Taper endpoints gently so pen entry/exit looks like a natural nib
+            // Taper endpoints gently so pen entry/exit looks like a responsive fountain nib
             val edgeTaper = when {
-                pts.size >= 5 && i == 1 -> 0.82f
-                pts.size >= 5 && i == pts.lastIndex -> 0.78f
+                pts.size >= 5 && i == 1 -> 0.78f
+                pts.size >= 5 && i == pts.lastIndex -> 0.74f
                 else -> 1.0f
             }
-            val widthI = (widthPx * (0.35f + 0.95f * smoothedPressure) * edgeTaper)
-                .coerceIn(max(0.75f, widthPx * 0.28f), widthPx * 1.85f)
+            val widthI = (widthPx * (0.14f + 1.52f * smoothedPressure) * edgeTaper)
+                .coerceIn(max(0.45f, widthPx * 0.14f), widthPx * 2.45f)
 
             segPath.reset()
             segPath.moveTo(prevAnchorX, prevAnchorY)

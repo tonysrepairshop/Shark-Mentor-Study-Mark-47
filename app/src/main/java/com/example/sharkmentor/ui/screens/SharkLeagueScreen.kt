@@ -85,6 +85,7 @@ private fun SharkTier.themeAwareAccentColor(): Color {
         SharkTier.CEKICBAS -> secondary
         SharkTier.KAPLAN -> tertiary
         SharkTier.BUYUK_BEYAZ -> primary
+        SharkTier.MEGALODON -> Color(0xFFDC2626)
     }
 }
 
@@ -449,7 +450,7 @@ private fun IncomingStudyInviteBanner(
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "${invite.fromName} sizi çalışmaya davet ediyor",
+                    text = "${invite.fromName} seni çalışmaya dürttü",
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
@@ -1634,12 +1635,12 @@ private fun LeaderboardRow(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.NotificationsActive,
-                                    contentDescription = "Çalışmaya Davet Et",
+                                    contentDescription = "Dürt",
                                     tint = if (canNudge) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(12.dp)
                                 )
                                 Text(
-                                    text = if (canNudge) "Davet Et" else entry.remainingNudgeCooldownLabel(nowMs),
+                                    text = if (canNudge) "Dürt" else entry.remainingNudgeCooldownLabel(nowMs),
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                     color = if (canNudge) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )

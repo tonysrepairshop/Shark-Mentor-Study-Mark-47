@@ -748,8 +748,8 @@ fun PdfReaderScreen(
     }
 
     // Shared active tool state synchronized across pages so switching page keeps the selected pen/highlighter
-    var showStudioToolbar by remember { mutableStateOf(false) }
-    var isStudioBarCollapsed by remember { mutableStateOf(false) }
+    var showStudioToolbar by remember { mutableStateOf(true) }
+    var isStudioBarCollapsed by remember { mutableStateOf(true) }
     var studioBarOffset by remember { mutableStateOf(Offset(16f, 24f)) }
     var globalActiveTool by remember { mutableStateOf(DrawingTool.NONE) }
     var globalPenColor by remember { mutableStateOf(Color(0xFF1E88E5)) }
@@ -1197,9 +1197,9 @@ fun PdfReaderScreen(
     }
 
     BackHandler {
-        if (activePageController.activeTool != DrawingTool.NONE) {
+        if (activePageController.activeTool != DrawingTool.NONE || !isStudioBarCollapsed) {
             activePageController.selectTool(DrawingTool.NONE)
-            showStudioToolbar = false
+            isStudioBarCollapsed = true
         } else if (zoomScale > 1.05f) {
             zoomScale = 1f
             panOffset = Offset.Zero
@@ -1282,78 +1282,6 @@ fun PdfReaderScreen(
                             maxLines = 1
                         )
                     }
-                }
-
-                // Quick Highlighter toggle
-                IconButton(
-                    onClick = {
-                        showStudioToolbar = true
-                        if (activePageController.activeTool == DrawingTool.HIGHLIGHTER) {
-                            activePageController.selectTool(DrawingTool.NONE)
-                        } else {
-                            activePageController.selectTool(DrawingTool.HIGHLIGHTER)
-                        }
-                    },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.BorderColor,
-                        contentDescription = "Fosforlu Vurgu",
-                        tint = if (activePageController.activeTool == DrawingTool.HIGHLIGHTER) {
-                            Color(0xFFFBC02D)
-                        } else {
-                            onSurfaceColor
-                        },
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // Quick Underline toggle
-                IconButton(
-                    onClick = {
-                        showStudioToolbar = true
-                        if (activePageController.activeTool == DrawingTool.UNDERLINE_MARKER) {
-                            activePageController.selectTool(DrawingTool.NONE)
-                        } else {
-                            activePageController.selectTool(DrawingTool.UNDERLINE_MARKER)
-                        }
-                    },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FormatUnderlined,
-                        contentDescription = "Alt Çizgi",
-                        tint = if (activePageController.activeTool == DrawingTool.UNDERLINE_MARKER) {
-                            primaryColor
-                        } else {
-                            onSurfaceColor
-                        },
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // Full Drawing & Pen Studio toggle
-                IconButton(
-                    onClick = {
-                        showStudioToolbar = !showStudioToolbar
-                        if (showStudioToolbar && activePageController.activeTool == DrawingTool.NONE) {
-                            activePageController.selectTool(DrawingTool.FOUNTAIN_PEN)
-                        } else if (!showStudioToolbar) {
-                            activePageController.selectTool(DrawingTool.NONE)
-                        }
-                    },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = "Kalem ve Çizim Stüdyosu",
-                        tint = if (showStudioToolbar || activePageController.isDrawingActive) {
-                            primaryColor
-                        } else {
-                            onSurfaceColor
-                        },
-                        modifier = Modifier.size(18.dp)
-                    )
                 }
 
                 // AI Note Assistant button
@@ -1690,7 +1618,7 @@ fun PdfReaderScreen(
                             controller = activePageController,
                             isCompactMode = true,
                             onCloseStudio = {
-                                showStudioToolbar = false
+                                isStudioBarCollapsed = true
                                 activePageController.selectTool(DrawingTool.NONE)
                             },
                             modifier = Modifier.fillMaxWidth()

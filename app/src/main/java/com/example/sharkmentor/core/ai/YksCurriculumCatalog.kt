@@ -335,4 +335,183 @@ object YksCurriculumCatalog {
         }
         return emptyList()
     }
+
+    private val NON_ALNUM_REGEX = Regex("[^a-z0-9çğıöşü\\s]")
+    private val MULTI_SPACE_REGEX = Regex("\\s+")
+    private val TOPIC_NOISE_TOKENS = setOf(
+        "ve", "ile", "veya", "konusu", "konuları", "konu", "uygulamaları",
+        "uygulamalari", "bilgisi", "hesabı", "hesabi", "genel", "temel"
+    )
+
+    fun normalizeTokens(input: String): List<String> {
+        return input.lowercase(Locale("tr"))
+            .replace(NON_ALNUM_REGEX, " ")
+            .replace(MULTI_SPACE_REGEX, " ")
+            .trim()
+            .split(" ")
+            .filter { it.isNotBlank() }
+    }
+
+    fun coreSubjectName(rawSubject: String): String {
+        val norm = rawSubject.lowercase(Locale("tr"))
+            .replace("tyt", " ")
+            .replace("ayt", " ")
+            .replace("yks", " ")
+            .replace("ders:", " ")
+            .replace(NON_ALNUM_REGEX, " ")
+            .replace(MULTI_SPACE_REGEX, " ")
+            .trim()
+        return when {
+            norm.contains("geometri") || norm == "geo" -> "geometri"
+            norm.contains("matematik") || norm == "mat" -> "matematik"
+            norm.contains("fizik") || norm == "fiz" -> "fizik"
+            norm.contains("kimya") || norm == "kim" -> "kimya"
+            norm.contains("biyoloji") || norm == "biyo" -> "biyoloji"
+            norm.contains("edebiyat") -> "edebiyat"
+            norm.contains("türkçe") || norm.contains("turkce") || norm == "tr" -> "türkçe"
+            norm.contains("tarih") -> "tarih"
+            norm.contains("coğrafya") || norm.contains("cografya") -> "coğrafya"
+            norm.contains("felsefe") -> "felsefe"
+            norm.contains("din") -> "din kültürü"
+            norm.contains("ingilizce") -> "ingilizce"
+            else -> norm
+        }
+    }
+
+    fun areSubjectsCompatible(subjA: String, subjB: String): Boolean {
+        val a = subjA.lowercase(Locale("tr")).trim()
+        val b = subjB.lowercase(Locale("tr")).trim()
+        if (a.isBlank() || b.isBlank() || a == "genel" || b == "genel" || a == "ders" || b == "ders") {
+            return true
+        }
+        val aHasTyt = Regex("""\btyt\b""").containsMatchIn(a)
+        val aHasAyt = Regex("""\bayt\b""").containsMatchIn(a)
+        val bHasTyt = Regex("""\btyt\b""").containsMatchIn(b)
+        val bHasAyt = Regex("""\bayt\b""").containsMatchIn(b)
+        if ((aHasTyt && bHasAyt && !bHasTyt) || (aHasAyt && bHasTyt && !bHasAyt)) {
+            return false
+        }
+        val coreA = coreSubjectName(a)
+        val coreB = coreSubjectName(b)
+        if (coreA == coreB) return true
+        // Handle "Türkçe / Edebiyat" combined folder compatibility
+        if ((coreA == "türkçe" && b.contains("türkçe")) || (coreB == "türkçe" && a.contains("türkçe"))) return true
+        if ((coreA == "edebiyat" && b.contains("edebiyat")) || (coreB == "edebiyat" && a.contains("edebiyat"))) return true
+        return false
+    }
+
+    /**
+     * Finds unambiguous `(canonicalSubject, canonicalTopic)` in the curriculum catalog for a raw `(subject, topic)`.
+     * Prevents mis-classifying AYT topics (e.g. Türev/İntegral) under TYT Matematik or across unrelated subjects.
+     */
+    fun findCurriculumMatch(
+        rawSubject: String,
+        rawTopic: String,
+        promptHint: String = ""
+    ): Pair<String, String>? {
+        val cleanTopic = rawTopic.trim()
+        if (cleanTopic.isBlank() || isPlaceholderOrBroadTopic(cleanTopic)) return null
+
+        val topicTokens = normalizeTokens(cleanTopic).filter { it !in TOPIC_NOISE_TOKENS && it.length >= 3 }
+        if (topicTokens.isEmpty()) return null
+        val topicNorm = normalizeTokens(cleanTopic).joinToString(" ")
+
+        val allEntries = (TYT_SUBJECT_TOPICS.entries + AYT_SUBJECT_TOPICS.entries).flatMap { (subj, topics) ->
+            topics.map { subj to it }
+        }
+
+        val scored = allEntries.mapNotNull { (catSubj, catTopic) ->
+            val catNorm = normalizeTokens(catTopic).joinToString(" ")
+            val catTokens = normalizeTokens(catTopic).filter { it !in TOPIC_NOISE_TOKENS && it.length >= 3 }
+            val exact = catNorm == topicNorm
+            val containment = catNorm.contains(topicNorm) || topicNorm.contains(catNorm)
+            val overlap = topicTokens.count { t -> catTokens.any { ct -> ct == t || ct.startsWith(t) || t.startsWith(ct) } }
+            val strongMatch = exact || (containment && topicTokens.isNotEmpty()) || (overlap >= 2) || (topicTokens.size == 1 && overlap == 1 && topicTokens[0].length >= 5)
+            if (!strongMatch) return@mapNotNull null
+
+            val coreMatches = rawSubject.isNotBlank() &&
+                !rawSubject.equals("Genel", ignoreCase = true) &&
+                !rawSubject.equals("Ders", ignoreCase = true) &&
+                coreSubjectName(catSubj) == coreSubjectName(rawSubject)
+
+            val rawLower = "$rawSubject $promptHint".lowercase(Locale("tr"))
+            val examBonus = when {
+                rawLower.contains("ayt") && catSubj.startsWith("AYT") -> 2
+                rawLower.contains("tyt") && catSubj.startsWith("TYT") -> 2
+                else -> 0
+            }
+            val score = (if (exact) 100 else 0) +
+                (if (containment) 40 else 0) +
+                (overlap * 10) +
+                (if (coreMatches) 30 else 0) +
+                examBonus
+            Triple(catSubj, catTopic, score)
+        }
+
+        if (scored.isEmpty()) return null
+
+        val rawCore = coreSubjectName(rawSubject)
+        val hasExplicitRawCore = rawSubject.isNotBlank() &&
+            !rawSubject.equals("Genel", ignoreCase = true) &&
+            !rawSubject.equals("Ders", ignoreCase = true)
+
+        // If a unique non-ambiguous catalog entry wins clearly, return it
+        val distinctCores = scored.map { coreSubjectName(it.first) }.distinct()
+        val best = scored.maxByOrNull { it.third } ?: return null
+
+        // Cross-subject fix only when topic uniquely identifies a different subject OR raw subject is generic
+        if (!hasExplicitRawCore || distinctCores.size == 1 || coreSubjectName(best.first) == rawCore) {
+            return best.first to best.second
+        }
+        return null
+    }
+
+    /**
+     * Resolves canonical subject display name when `rawSubject` is generic or abbreviated.
+     */
+    fun canonicalizeSubject(
+        rawSubject: String,
+        rawTopic: String = "",
+        promptHint: String = ""
+    ): String {
+        val trimmed = rawSubject.trim()
+        val match = findCurriculumMatch(trimmed, rawTopic, promptHint)
+        if (match != null) {
+            return match.first
+        }
+        if (trimmed.isBlank() || trimmed.equals("Genel", ignoreCase = true) || trimmed.equals("Ders", ignoreCase = true)) {
+            return trimmed.ifBlank { "Genel" }
+        }
+        val lower = trimmed.lowercase(Locale("tr"))
+        val combinedHint = "$lower ${promptHint.lowercase(Locale("tr"))}"
+        val hasTyt = Regex("""\btyt\b""").containsMatchIn(lower)
+        val hasAyt = Regex("""\bayt\b""").containsMatchIn(lower)
+        val prefix = when {
+            hasAyt -> "AYT "
+            hasTyt -> "TYT "
+            combinedHint.contains("ayt") -> "AYT "
+            combinedHint.contains("tyt") -> "TYT "
+            else -> ""
+        }
+        val coreTitle = when (coreSubjectName(trimmed)) {
+            "matematik" -> "Matematik"
+            "geometri" -> "Geometri"
+            "fizik" -> "Fizik"
+            "kimya" -> "Kimya"
+            "biyoloji" -> "Biyoloji"
+            "türkçe" -> "Türkçe"
+            "edebiyat" -> "Edebiyat"
+            "tarih" -> "Tarih"
+            "coğrafya" -> "Coğrafya"
+            "felsefe" -> "Felsefe"
+            "din kültürü" -> "Din Kültürü"
+            "ingilizce" -> "İngilizce"
+            else -> return trimmed
+        }
+        return if (prefix.isNotEmpty() && !coreTitle.equals("İngilizce", ignoreCase = true)) {
+            if (prefix == "AYT " && coreTitle == "Türkçe") "AYT Edebiyat" else "$prefix$coreTitle"
+        } else {
+            trimmed
+        }
+    }
 }

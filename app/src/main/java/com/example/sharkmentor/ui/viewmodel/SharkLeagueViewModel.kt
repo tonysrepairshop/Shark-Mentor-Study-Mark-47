@@ -9,8 +9,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.service.FocusTimerService
+import com.example.sharkmentor.core.timer.FocusSessionRecorder
 import com.example.sharkmentor.core.timer.TimerMode
 import com.example.sharkmentor.core.timer.TimerPhase
+import com.example.sharkmentor.core.timer.TimerState
 import com.example.sharkmentor.core.util.AvatarHelper
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.core.util.SessionManager
@@ -33,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,15 +45,16 @@ import kotlinx.coroutines.withContext
 
 // ─── Tier thresholds (seconds/week) ──────────────────────────────────────────
 
-private const val MAKO_THRESHOLD        = 10 * 3600L  // 10 saat
-private const val CEKICBAS_THRESHOLD    = 20 * 3600L  // 20 saat
-private const val KAPLAN_THRESHOLD      = 30 * 3600L  // 30 saat
-private const val BUYUK_BEYAZ_THRESHOLD = 45 * 3600L  // 45 saat
+private const val MAKO_THRESHOLD        = 28 * 3600L   // 28 saat (>4 sa/gün)
+private const val CEKICBAS_THRESHOLD    = 49 * 3600L   // 49 saat (7 sa/gün)
+private const val KAPLAN_THRESHOLD      = 70 * 3600L   // 70 saat (10 sa/gün)
+private const val BUYUK_BEYAZ_THRESHOLD = 84 * 3600L   // 84 saat (12 sa/gün)
+private const val MEGALODON_THRESHOLD   = 105 * 3600L  // 105 saat (>15 sa/gün)
 
 /** Weekly leaderboard bonus time cap: 9000 seconds = 150 minutes max per week. */
 const val MAX_WEEKLY_BONUS_SECONDS: Long = 9000L
 
-/** 15-minute anti-spam cooldown for sending a study invite to the same friend/group member. */
+/** 15-minute anti-spam cooldown for nudging the same friend/group member. */
 const val NUDGE_COOLDOWN_MS: Long = 15L * 60L * 1_000L
 
 const val GLOBAL_LEAGUE_BUCKET = "GLOBAL_INDIVIDUAL"
@@ -65,10 +69,12 @@ enum class SharkTier(val label: String, val emoji: String, val color: Long) {
     MAKO       ("Mako",        "", 0xFF38BDF8),
     CEKICBAS   ("Çekiçbaş",    "", 0xFF6366F1),
     KAPLAN     ("Kaplan",      "", 0xFFF59E0B),
-    BUYUK_BEYAZ("Büyük Beyaz", "", 0xFFE2E8F0)
+    BUYUK_BEYAZ("Büyük Beyaz", "", 0xFFE2E8F0),
+    MEGALODON  ("Megalodon",   "", 0xFFDC2626)
 }
 
 fun Long.toTier(): SharkTier = when {
+    this >= MEGALODON_THRESHOLD   -> SharkTier.MEGALODON
     this >= BUYUK_BEYAZ_THRESHOLD -> SharkTier.BUYUK_BEYAZ
     this >= KAPLAN_THRESHOLD      -> SharkTier.KAPLAN
     this >= CEKICBAS_THRESHOLD    -> SharkTier.CEKICBAS
@@ -76,13 +82,14 @@ fun Long.toTier(): SharkTier = when {
     else                          -> SharkTier.CAMGOZ
 }
 
-/** Next tier threshold in seconds; null if already Büyük Beyaz */
+/** Next tier threshold in seconds; null if already Megalodon */
 fun SharkTier.nextThreshold(): Long? = when (this) {
     SharkTier.CAMGOZ      -> MAKO_THRESHOLD
     SharkTier.MAKO        -> CEKICBAS_THRESHOLD
     SharkTier.CEKICBAS    -> KAPLAN_THRESHOLD
     SharkTier.KAPLAN      -> BUYUK_BEYAZ_THRESHOLD
-    SharkTier.BUYUK_BEYAZ -> null
+    SharkTier.BUYUK_BEYAZ -> MEGALODON_THRESHOLD
+    SharkTier.MEGALODON   -> null
 }
 
 fun SharkTier.previousThreshold(): Long = when (this) {
@@ -91,6 +98,7 @@ fun SharkTier.previousThreshold(): Long = when (this) {
     SharkTier.CEKICBAS    -> CEKICBAS_THRESHOLD
     SharkTier.KAPLAN      -> KAPLAN_THRESHOLD
     SharkTier.BUYUK_BEYAZ -> BUYUK_BEYAZ_THRESHOLD
+    SharkTier.MEGALODON   -> MEGALODON_THRESHOLD
 }
 
 enum class LeagueTab(val title: String) {
@@ -150,7 +158,7 @@ data class LeagueEntry(
 
     fun remainingNudgeCooldownLabel(nowMillis: Long = System.currentTimeMillis()): String {
         val remMs = (NUDGE_COOLDOWN_MS - (nowMillis - lastNudgeSentMillis)).coerceAtLeast(0L)
-        if (remMs <= 0L) return "Davet Et"
+        if (remMs <= 0L) return "Dürt"
         val remHours = remMs / (3600L * 1000L)
         val remMins = (remMs % (3600L * 1000L)) / (60L * 1000L)
         return if (remHours > 0L) "${remHours}s ${remMins}dk" else "${remMins.coerceAtLeast(1L)}dk"
@@ -214,8 +222,104 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
     private var observedUid: String? = null
     private val notifiedInviteIds = mutableSetOf<String>()
 
-    /** Union of all friend IDs + joined study group member IDs eligible for Study Invites. */
+    /** Base completed weekly seconds excluding the currently running timer session. */
+    @Volatile
+    private var baseCompletedWeeklySeconds: Long = 0L
+    private var lastLiveTickSyncMillis: Long = 0L
+
+    /** Union of all friend IDs + joined study group member IDs eligible for Study Nudges. */
     private var eligibleSocialMemberIds: Set<String> = emptySet()
+
+    init {
+        observeLiveFocusTimer()
+    }
+
+    private fun liveElapsedFocusSeconds(timerState: TimerState): Long {
+        val isActiveFocus = timerState.timerPhase == TimerPhase.FOCUSING ||
+            (timerState.timerPhase == TimerPhase.PAUSED && timerState.currentMode != TimerMode.BREAK)
+        return if (isActiveFocus) (timerState.timeElapsedMillis / 1000L).coerceAtLeast(0L) else 0L
+    }
+
+    private fun isCurrentlyFocusing(timerState: TimerState): Boolean =
+        timerState.timerPhase == TimerPhase.FOCUSING && timerState.currentMode != TimerMode.BREAK
+
+    private fun observeLiveFocusTimer() {
+        viewModelScope.launch {
+            var previousPhase = FocusTimerService.timerStateFlow.value.timerPhase
+            FocusTimerService.timerStateFlow.collect { timerState ->
+                val phaseChanged = previousPhase != timerState.timerPhase
+                if (previousPhase != TimerPhase.IDLE && timerState.timerPhase == TimerPhase.IDLE) {
+                    previousPhase = timerState.timerPhase
+                    lastLiveTickSyncMillis = 0L
+                    delay(450L)
+                    if (_uiState.value.myEntry != null) {
+                        loadLeague(preserveTab = true)
+                    }
+                    return@collect
+                }
+                previousPhase = timerState.timerPhase
+
+                val nowMs = System.currentTimeMillis()
+                val shouldUpdateLive = phaseChanged ||
+                    (isCurrentlyFocusing(timerState) && nowMs - lastLiveTickSyncMillis >= 4_500L)
+
+                if (shouldUpdateLive && _uiState.value.myEntry != null) {
+                    lastLiveTickSyncMillis = nowMs
+                    applyLiveTimerToState(timerState)
+                }
+            }
+        }
+    }
+
+    private fun applyLiveTimerToState(timerState: TimerState) {
+        val currentState = _uiState.value
+        val oldMe = currentState.myEntry ?: return
+        val liveWeeklySecs = baseCompletedWeeklySeconds + liveElapsedFocusSeconds(timerState)
+        val liveFocusing = isCurrentlyFocusing(timerState)
+        if (oldMe.weeklyFocusSeconds == liveWeeklySecs && oldMe.isStudyingNow == liveFocusing) return
+
+        val effectiveSecs = liveWeeklySecs.coerceAtLeast(0L) + oldMe.cappedBonusSeconds
+        val updatedMe = oldMe.copy(
+            weeklyFocusSeconds = liveWeeklySecs,
+            dailyAverageMinutes = ((liveWeeklySecs / 60L) / 7L).toInt(),
+            tier = effectiveSecs.toTier(),
+            isStudyingNow = liveFocusing
+        )
+
+        val updatedLeaderboard = currentState.leaderboard
+            .map { if (it.isCurrentUser) updatedMe else it }
+            .sortedByDescending { it.effectiveLeagueSeconds }
+            .mapIndexed { idx, entry ->
+                entry.copy(
+                    displayName = formatLeaderboardCallSign(
+                        name = entry.rawName,
+                        rank = idx + 1,
+                        isCurrentUser = entry.isCurrentUser,
+                        showFullForFriends = true
+                    )
+                )
+            }
+
+        val updatedSocial = currentState.friendsAndGroupMembers
+            .map { if (it.isCurrentUser) updatedMe else it }
+            .sortedByDescending { it.effectiveLeagueSeconds }
+            .mapIndexed { idx, entry ->
+                entry.copy(
+                    displayName = formatLeaderboardCallSign(
+                        name = entry.rawName,
+                        rank = idx + 1,
+                        isCurrentUser = entry.isCurrentUser,
+                        showFullForFriends = true
+                    )
+                )
+            }
+
+        _uiState.value = currentState.copy(
+            myEntry = updatedMe,
+            leaderboard = updatedLeaderboard,
+            friendsAndGroupMembers = updatedSocial
+        )
+    }
 
     fun selectTab(tab: LeagueTab) {
         _uiState.value = _uiState.value.copy(activeTab = tab, statusMessage = null, error = null)
@@ -447,7 +551,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         val msg = SyncWorker.sanitizeTurkishText(
                             doc.getString("message").orEmpty()
                         ).ifBlank {
-                            "$fromName seni birlikte çalışmaya davet ediyor. Odak seansını başlatabilirsin."
+                            "$fromName seni birlikte çalışmaya dürttü. Odak seansını başlatabilirsin."
                         }
                         IncomingStudyInvite(
                             id = doc.id,
@@ -535,7 +639,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             )
         } else {
             _uiState.value = _uiState.value.copy(
-                statusMessage = "Davet onaylandı; odak sayacın zaten aktif."
+                statusMessage = "Dürtme onaylandı; odak sayacın zaten aktif."
             )
         }
     }
@@ -571,15 +675,21 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val localBlocked = SharkBadgeCatalog.getBlockedUserIds(appContext)
 
                 val database = db
+                val currentTimerState = FocusTimerService.timerStateFlow.value
+                val liveExtraSecs = liveElapsedFocusSeconds(currentTimerState)
+                val liveStudyingNow = isCurrentlyFocusing(currentTimerState)
                 if (database == null || uid == "local_student" || uid == "student_default") {
+                    baseCompletedWeeklySeconds = localWeeklySeconds
+                    val liveWeeklySeconds = localWeeklySeconds + liveExtraSecs
                     val offlineName = resolveStudentDisplayName(uid, null, null)
                     val fallbackMe = buildMyLeagueEntry(
                         uid = uid,
                         name = offlineName,
                         friendCode = myFriendCode,
-                        weeklySeconds = localWeeklySeconds,
+                        weeklySeconds = liveWeeklySeconds,
                         weeklyBonusSeconds = localBonusSecs,
                         streakDays = localStreakDays,
+                        isStudyingNow = liveStudyingNow,
                         mentorPoints = localPoints,
                         showcaseBadges = localBadges,
                         badgeProgress = localProgress
@@ -602,14 +712,16 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
                 // Pre-populate own summary immediately if myEntry is null so header/profile state is ready
                 if (_uiState.value.myEntry == null) {
+                    baseCompletedWeeklySeconds = localWeeklySeconds
                     val initialName = SyncWorker.sanitizeTurkishText(userPrefs.studentName).takeIf { isMeaningfulName(it) } ?: "Öğrenci"
                     val quickMe = buildMyLeagueEntry(
                         uid = uid,
                         name = initialName,
                         friendCode = myFriendCode,
-                        weeklySeconds = localWeeklySeconds,
+                        weeklySeconds = localWeeklySeconds + liveExtraSecs,
                         weeklyBonusSeconds = localBonusSecs,
                         streakDays = localStreakDays,
+                        isStudyingNow = liveStudyingNow,
                         mentorPoints = localPoints,
                         showcaseBadges = localBadges,
                         badgeProgress = localProgress
@@ -645,7 +757,11 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     userPrefs.friendCode = remoteFriendCode
                 }
 
-                val weeklySeconds = maxOf(localWeeklySeconds, cloudWeeklySeconds)
+                val completedWeeklySeconds = maxOf(localWeeklySeconds, cloudWeeklySeconds)
+                baseCompletedWeeklySeconds = completedWeeklySeconds
+                val liveTimerState = FocusTimerService.timerStateFlow.value
+                val weeklySeconds = completedWeeklySeconds + liveElapsedFocusSeconds(liveTimerState)
+                val liveFocusing = isCurrentlyFocusing(liveTimerState)
                 val remoteStreak = studentDoc?.getLong("streakDays")?.toInt() ?: 0
                 val streakDays = maxOf(localStreakDays, remoteStreak)
 
@@ -756,6 +872,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     weeklySeconds = weeklySeconds,
                     weeklyBonusSeconds = mergedWeeklyBonusSecs,
                     streakDays = streakDays,
+                    isStudyingNow = liveFocusing,
                     avatarBase64 = myAvatarBase64,
                     avatarPresetId = myAvatarPresetId,
                     mentorPoints = mergedPoints,
@@ -856,6 +973,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val (localWeeklySeconds, localStreakDays) = withContext(Dispatchers.IO) {
                     computeLocalWeeklyStats()
                 }
+                baseCompletedWeeklySeconds = localWeeklySeconds
+                val liveTimerState = FocusTimerService.timerStateFlow.value
+                val liveFallbackSeconds = localWeeklySeconds + liveElapsedFocusSeconds(liveTimerState)
                 val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: "local_student"
                 val myFriendCode = userPrefs.getOrCreateFriendCode(uid)
                 val fallbackName = resolveStudentDisplayName(uid, null, null)
@@ -864,9 +984,10 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     uid = uid,
                     name = fallbackName,
                     friendCode = myFriendCode,
-                    weeklySeconds = localWeeklySeconds,
+                    weeklySeconds = liveFallbackSeconds,
                     weeklyBonusSeconds = fallbackBonus,
                     streakDays = localStreakDays,
+                    isStudyingNow = isCurrentlyFocusing(liveTimerState),
                     mentorPoints = SharkBadgeCatalog.getMentorPoints(appContext),
                     showcaseBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext),
                     badgeProgress = SharkBadgeCatalog.getBadgeProgressCounts(appContext)
@@ -1139,7 +1260,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // ─── Study Invite ("Çalışmaya Davet Et") — Friends & Groups ONLY, 15m Cooldown ──
+    // ─── Study Nudge ("Dürt") — Friends & Groups ONLY, 15m Cooldown ─────────
 
     fun sendNudge(target: LeagueEntry) {
         nudgeLeagueMember(target)
@@ -1149,7 +1270,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         if (target.isCurrentUser || target.studentId.isBlank()) return
         if (SharkBadgeCatalog.getBlockedUserIds(appContext).contains(target.studentId)) {
             _uiState.value = _uiState.value.copy(
-                statusMessage = "Engellediğin bir kullanıcıya çalışma daveti gönderemezsin."
+                statusMessage = "Engellediğin bir kullanıcıya dürtme gönderemezsin."
             )
             return
         }
@@ -1160,7 +1281,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
         if (!isSocialMember) {
             _uiState.value = _uiState.value.copy(
-                statusMessage = "Çalışma daveti yalnızca arkadaşlarına veya grup üyelerine gönderilebilir."
+                statusMessage = "Dürtme yalnızca arkadaşlarına veya grup üyelerine gönderilebilir."
             )
             return
         }
@@ -1171,7 +1292,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         if (now - lastLocalNudge < NUDGE_COOLDOWN_MS) {
             val waitLabel = target.copy(lastNudgeSentMillis = lastLocalNudge).remainingNudgeCooldownLabel(now)
             _uiState.value = _uiState.value.copy(
-                statusMessage = "${target.displayName} yakın zamanda davet edildi. $waitLabel sonra tekrar davet edebilirsin."
+                statusMessage = "${target.displayName} yakın zamanda dürtüldü. $waitLabel sonra tekrar dürtebilirsin."
             )
             return
         }
@@ -1182,7 +1303,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val database = db
                 if (database == null || uid.isNullOrBlank() || uid == "local_student" || uid == "student_default") {
                     _uiState.value = _uiState.value.copy(
-                        statusMessage = "Çalışma daveti göndermek için internet bağlantısı ve oturum gereklidir."
+                        statusMessage = "Dürtme göndermek için internet bağlantısı ve oturum gereklidir."
                     )
                     return@launch
                 }
@@ -1197,7 +1318,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     updateEntryNudgeTimestamp(target.studentId, remoteLastMs)
                     val waitLabel = target.copy(lastNudgeSentMillis = remoteLastMs).remainingNudgeCooldownLabel(now)
                     _uiState.value = _uiState.value.copy(
-                        statusMessage = "${target.displayName} yakın zamanda davet edildi ($waitLabel kaldı)."
+                        statusMessage = "${target.displayName} yakın zamanda dürtüldü ($waitLabel kaldı)."
                     )
                     return@launch
                 }
@@ -1225,7 +1346,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     "receiverName" to targetCleanName,
                     "groupId" to activeGroupId,
                     "type" to "STUDY_INVITE",
-                    "message" to "$myName seni birlikte çalışmaya davet ediyor. Masaya geçip odak seansını başlatabilirsin.",
+                    "message" to "$myName seni birlikte çalışmaya dürttü. Masaya geçip odak seansını başlatabilirsin.",
                     "createdAt" to FieldValue.serverTimestamp(),
                     "createdAtMillis" to now,
                     "seen" to false
@@ -1257,12 +1378,12 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 updateEntryNudgeTimestamp(target.studentId, now)
 
                 _uiState.value = _uiState.value.copy(
-                    statusMessage = "$targetCleanName çalışma davetiyle çağrıldı."
+                    statusMessage = "$targetCleanName çalışma için dürtüldü."
                 )
             } catch (e: Exception) {
                 Log.e("SharkLeagueVM", "nudgeLeagueMember error", e)
                 _uiState.value = _uiState.value.copy(
-                    statusMessage = "Çalışma daveti gönderilemedi: ${e.localizedMessage ?: "Bağlantıyı kontrol edin"}"
+                    statusMessage = "Dürtme gönderilemedi: ${e.localizedMessage ?: "Bağlantıyı kontrol edin"}"
                 )
             }
         }
@@ -1302,21 +1423,22 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         if (target.isCurrentUser || target.studentId.isBlank()) return
         viewModelScope.launch {
             val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: "local_student"
+            val targetName = target.rawName.ifBlank { target.displayName }
             val updatedBlocked = SharkBadgeCatalog.setUserBlocked(
                 context = appContext,
                 myUid = uid,
                 targetUid = target.studentId,
-                blocked = block
+                blocked = block,
+                targetName = targetName
             )
             val current = _uiState.value
-            val targetName = target.rawName.ifBlank { target.displayName }
             if (block) {
                 _uiState.value = current.copy(
                     blockedUserIds = updatedBlocked,
                     leaderboard = current.leaderboard.filter { it.isCurrentUser || !updatedBlocked.contains(it.studentId) },
                     friendsAndGroupMembers = current.friendsAndGroupMembers.filter { it.isCurrentUser || !updatedBlocked.contains(it.studentId) },
                     incomingStudyInvite = current.incomingStudyInvite?.takeUnless { it.fromUid == target.studentId },
-                    statusMessage = "$targetName engellendi. Mesajları ve davetleri gizlendi."
+                    statusMessage = "$targetName engellendi. Mesajları ve dürtmeleri gizlendi."
                 )
             } else {
                 _uiState.value = current.copy(
@@ -1471,6 +1593,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         weeklySeconds: Long,
         weeklyBonusSeconds: Long = 0L,
         streakDays: Int,
+        isStudyingNow: Boolean = false,
         avatarBase64: String = AvatarHelper.getSavedAvatarBase64(appContext),
         avatarPresetId: String = AvatarHelper.getSavedAvatarPresetId(appContext),
         mentorPoints: Int = SharkBadgeCatalog.getMentorPoints(appContext),
@@ -1493,6 +1616,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             streakDays = streakDays,
             tier = effectiveSecs.toTier(),
             isCurrentUser = true,
+            isStudyingNow = isStudyingNow,
             avatarBase64 = avatarBase64,
             avatarPresetId = effectivePresetId,
             mentorPoints = mentorPoints,
@@ -1505,8 +1629,14 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         return try {
             val now = System.currentTimeMillis()
             val weekStart = now - 7L * 24 * 3600 * 1000
+            val timerState = FocusTimerService.timerStateFlow.value
+            val activeSessionId = if (timerState.timerPhase != TimerPhase.IDLE) {
+                FocusSessionRecorder.getActiveSessionId()
+            } else null
             val sessions = roomDb.sessionDao().getSessionsSince(weekStart)
-            val weeklySeconds = sessions.sumOf { it.durationSeconds }
+            val weeklySeconds = sessions
+                .filter { activeSessionId.isNullOrBlank() || it.cloudId != activeSessionId }
+                .sumOf { it.durationSeconds }
 
             // Compute active streak days from local sessions
             val allRecent = roomDb.sessionDao().getSessionsSince(now - 30L * 24 * 3600 * 1000)
@@ -1540,6 +1670,10 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             val database = db ?: return 0L
             val now = System.currentTimeMillis()
             val weekStart = now - 7L * 24 * 3600 * 1000
+            val timerState = FocusTimerService.timerStateFlow.value
+            val activeSessionId = if (timerState.timerPhase != TimerPhase.IDLE) {
+                FocusSessionRecorder.getActiveSessionId()
+            } else null
             val studentDocRef = database.collection("students").document(uid)
 
             coroutineScope {
@@ -1564,15 +1698,17 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     }
                 }
 
-                val fromSessions = sessionsDeferred.await()?.documents?.sumOf { doc ->
-                    doc.getLong("durationSeconds") ?: 0L
-                } ?: 0L
+                val fromSessions = sessionsDeferred.await()?.documents
+                    ?.filter { activeSessionId.isNullOrBlank() || it.id != activeSessionId }
+                    ?.sumOf { doc -> doc.getLong("durationSeconds") ?: 0L }
+                    ?: 0L
                 if (fromSessions > 0L) {
                     fromSessions
                 } else {
-                    focusDeferred.await()?.documents?.sumOf { doc ->
-                        doc.getLong("durationSeconds") ?: 0L
-                    } ?: 0L
+                    focusDeferred.await()?.documents
+                        ?.filter { activeSessionId.isNullOrBlank() || it.id != activeSessionId }
+                        ?.sumOf { doc -> doc.getLong("durationSeconds") ?: 0L }
+                        ?: 0L
                 }
             }
         } catch (e: Exception) {

@@ -69,9 +69,11 @@ object MasteryScoreEngine {
 
             // 2. Resource Completion Factor (Weight: 30%)
             val resourceScore = if (subjectResources.isNotEmpty()) {
-                val totalUnits = subjectResources.sumOf { it.totalUnits }.coerceAtLeast(1)
+                val totalUnits = subjectResources.sumOf { it.totalUnits }
                 val completedUnits = subjectResources.sumOf { it.completedUnits }
-                (completedUnits.toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f) * 100f
+                if (totalUnits > 0) {
+                    (completedUnits.toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f) * 100f
+                } else 0f
             } else 0f
 
             // 3. Error Bank Health (Weight: 20%) -> Only give points if user actually has questions and resolved them

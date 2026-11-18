@@ -15,11 +15,12 @@ object SharkVisualKit {
 
     // Map League Tiers/Points to Shark Breeds
     @DrawableRes
-    fun getTierBadge(points: Int): Int = when { // points = minutes
-        points >= 2700 -> R.drawable.ic_shark_megalodon // Büyük Beyaz (45h)
-        points >= 1800 -> R.drawable.ic_shark_great_white // Kaplan (30h)
-        points >= 1200 -> R.drawable.ic_shark_hammerhead // Çekiçbaş (20h)
-        points >= 600  -> R.drawable.ic_shark_spiny // Mako (10h)
-        else           -> R.drawable.ic_shark_original // Camgöz
+    fun getTierBadge(points: Int): Int = when { // points = haftalık efektif dakika
+        points >= 6300 -> R.drawable.ic_shark_megalodon   // Megalodon (105 sa / >15 sa/gün)
+        points >= 5040 -> R.drawable.ic_shark_great_white // Büyük Beyaz (84 sa / 12 sa/gün)
+        points >= 4200 -> R.drawable.ic_shark_great_white // Kaplan (70 sa / 10 sa/gün)
+        points >= 2940 -> R.drawable.ic_shark_hammerhead  // Çekiçbaş (49 sa / 7 sa/gün)
+        points >= 1680 -> R.drawable.ic_shark_spiny       // Mako (28 sa / >4 sa/gün)
+        else           -> R.drawable.ic_shark_original    // Camgöz
     }
 }

@@ -16,6 +16,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,11 +37,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BorderColor
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -64,6 +69,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -81,6 +87,7 @@ import com.example.sharkmentor.ui.screens.notes.drawing.DrawingCanvasOverlay
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStroke
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
+import com.example.sharkmentor.ui.screens.notes.drawing.PenCustomColorDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
@@ -300,7 +307,7 @@ class QuestionAnnotatorState(
         if (pts.size == 1) {
             val pt = pts.first()
             val pFactor = if (stroke.pressureSensitive) {
-                (0.35f + 0.95f * pt.pressure.coerceIn(0.05f, 1.5f)).coerceIn(0.35f, 1.75f)
+                (0.16f + 1.50f * pt.pressure.coerceIn(0.04f, 1.88f)).coerceIn(0.16f, 2.40f)
             } else 1.0f
             val dotPaint = Paint(paint).apply {
                 style = Paint.Style.FILL
@@ -310,19 +317,18 @@ class QuestionAnnotatorState(
         }
 
         val hasVariablePressure = stroke.pressureSensitive &&
-            (stroke.tool == DrawingTool.FOUNTAIN_PEN || stroke.tool == DrawingTool.TECHNICAL_PEN) &&
-            pts.any { kotlin.math.abs(it.pressure - 1.0f) > 0.03f }
+            (stroke.tool == DrawingTool.FOUNTAIN_PEN || stroke.tool == DrawingTool.TECHNICAL_PEN)
 
         if (hasVariablePressure) {
-            var smoothedP = pts.first().pressure.coerceIn(0.05f, 1.5f)
+            var smoothedP = pts.first().pressure.coerceIn(0.04f, 1.88f)
             var prevX = pts.first().x * scaleX
             var prevY = pts.first().y * scaleY
             for (i in 1 until pts.size) {
                 val prev = pts[i - 1]
                 val curr = pts[i]
-                smoothedP = smoothedP * 0.6f + curr.pressure.coerceIn(0.05f, 1.5f) * 0.4f
-                val widthFactor = (0.35f + 0.95f * smoothedP).coerceIn(0.35f, 1.75f)
-                paint.strokeWidth = (baseWidth * widthFactor).coerceAtLeast(1.0f)
+                smoothedP = smoothedP * 0.30f + curr.pressure.coerceIn(0.04f, 1.88f) * 0.70f
+                val widthFactor = (0.14f + 1.52f * smoothedP).coerceIn(0.14f, 2.45f)
+                paint.strokeWidth = (baseWidth * widthFactor).coerceAtLeast(0.85f)
                 val midX = ((prev.x + curr.x) * 0.5f) * scaleX
                 val midY = ((prev.y + curr.y) * 0.5f) * scaleY
                 val segPath = AndroidPath().apply {
@@ -382,10 +388,30 @@ fun QuestionImageAnnotator(
 
     var isToolbarCollapsed by remember { mutableStateOf(false) }
     var showPressureSettings by remember { mutableStateOf(false) }
+    var showCustomColorDialog by remember { mutableStateOf(false) }
     var toolbarOffset by remember { mutableStateOf(Offset(12f, 12f)) }
+    var zoomScale by remember { mutableFloatStateOf(1f) }
+    var panOffset by remember { mutableStateOf(Offset.Zero) }
+
+    if (showCustomColorDialog) {
+        PenCustomColorDialog(
+            initialColor = controller.penColor,
+            onDismiss = { showCustomColorDialog = false },
+            onColorSelected = { chosen ->
+                controller.addCustomPenColor(chosen, context)
+                if (controller.activeTool == DrawingTool.NONE || controller.activeTool.isEraserTool) {
+                    controller.selectTool(DrawingTool.FOUNTAIN_PEN)
+                }
+                controller.updatePenColor(chosen)
+                showCustomColorDialog = false
+            }
+        )
+    }
 
     // Load question bitmap via Coil so we can both display it and composite annotations onto it
     LaunchedEffect(imageUrl) {
+        zoomScale = 1f
+        panOffset = Offset.Zero
         if (imageUrl.isBlank()) {
             annotatorState.sourceBitmap = null
             annotatorState.isLoadingImage = false
@@ -426,58 +452,163 @@ fun QuestionImageAnnotator(
         val viewportWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val viewportHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
 
+        val panZoomModifier = if (controller.activeTool == DrawingTool.NONE) {
+            Modifier
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            if (zoomScale > 1.15f) {
+                                zoomScale = 1f
+                                panOffset = Offset.Zero
+                            } else {
+                                zoomScale = 2.2f
+                            }
+                        }
+                    )
+                }
+                .pointerInput(zoomScale > 1.01f, viewportWidthPx, viewportHeightPx) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val nextScale = (zoomScale * zoom).coerceIn(1f, 4f)
+                        zoomScale = nextScale
+                        if (nextScale > 1.01f) {
+                            val maxX = (viewportWidthPx * (nextScale - 1f)) * 0.5f
+                            val maxY = (viewportHeightPx * (nextScale - 1f)) * 0.5f
+                            panOffset = Offset(
+                                x = (panOffset.x + pan.x).coerceIn(-maxX, maxX),
+                                y = (panOffset.y + pan.y).coerceIn(-maxY, maxY)
+                            )
+                        } else {
+                            panOffset = Offset.Zero
+                        }
+                    }
+                }
+        } else {
+            Modifier
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .onSizeChanged { size ->
-                    annotatorState.canvasWidthPx = size.width
-                    annotatorState.canvasHeightPx = size.height
-                }
+                .then(panZoomModifier)
         ) {
-            val bmp = annotatorState.sourceBitmap
-            if (bmp != null && !bmp.isRecycled) {
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Soru Görseli",
-                    contentScale = ContentScale.Fit,
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = zoomScale
+                        scaleY = zoomScale
+                        translationX = panOffset.x
+                        translationY = panOffset.y
+                    }
+                    .onSizeChanged { size ->
+                        annotatorState.canvasWidthPx = size.width
+                        annotatorState.canvasHeightPx = size.height
+                    }
+            ) {
+                val bmp = annotatorState.sourceBitmap
+                if (bmp != null && !bmp.isRecycled) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Soru Görseli",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else if (annotatorState.isLoadingImage) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(32.dp), strokeWidth = 2.5.dp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Soru görseli yükleniyor...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF475569)
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = annotatorState.imageLoadError
+                                ?: "Çözümünüzü bu alan üzerine kalemle çizebilirsiniz.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF64748B),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                // Interactive Pressure-Sensitive Drawing Canvas Overlay
+                DrawingCanvasOverlay(
+                    controller = controller,
                     modifier = Modifier.fillMaxSize()
                 )
-            } else if (annotatorState.isLoadingImage) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
+            }
+        }
+
+        // Quick Zoom Controls Pill (Top-End)
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = surfaceColor.copy(alpha = 0.92f),
+            tonalElevation = 4.dp,
+            shadowElevation = 6.dp,
+            border = BorderStroke(0.8.dp, onSurfaceColor.copy(alpha = 0.14f)),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                IconButton(
+                    onClick = {
+                        val next = (zoomScale - 0.35f).coerceAtLeast(1f)
+                        zoomScale = next
+                        if (next <= 1.01f) panOffset = Offset.Zero
+                    },
+                    enabled = zoomScale > 1.01f,
+                    modifier = Modifier.size(26.dp)
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(32.dp), strokeWidth = 2.5.dp)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Soru görseli yükleniyor...",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF475569)
+                    Icon(
+                        imageVector = Icons.Default.Remove,
+                        contentDescription = "Uzaklaştır",
+                        modifier = Modifier.size(15.dp)
                     )
                 }
-            } else {
-                Box(
+                Text(
+                    text = "%${(zoomScale * 100).roundToInt()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = onSurfaceColor,
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(24.dp),
-                    contentAlignment = Alignment.Center
+                        .clickable {
+                            zoomScale = if (zoomScale > 1.05f) 1f else 2f
+                            panOffset = Offset.Zero
+                        }
+                        .padding(horizontal = 4.dp)
+                )
+                IconButton(
+                    onClick = {
+                        zoomScale = (zoomScale + 0.35f).coerceAtMost(4f)
+                    },
+                    enabled = zoomScale < 3.99f,
+                    modifier = Modifier.size(26.dp)
                 ) {
-                    Text(
-                        text = annotatorState.imageLoadError
-                            ?: "Çözümünüzü bu alan üzerine kalemle çizebilirsiniz.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF64748B),
-                        textAlign = TextAlign.Center
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Yakınlaştır",
+                        modifier = Modifier.size(15.dp)
                     )
                 }
             }
-
-            // Interactive Pressure-Sensitive Drawing Canvas Overlay
-            DrawingCanvasOverlay(
-                controller = controller,
-                modifier = Modifier.fillMaxSize()
-            )
         }
 
         // Movable & Collapsible Floating Question Pen Toolbar
@@ -526,6 +657,9 @@ fun QuestionImageAnnotator(
                 }
             }
         } else {
+            val allSwatches = remember(controller.customPenColors) {
+                (QUESTION_ANNOTATOR_COLORS + controller.customPenColors).distinctBy { it.toArgb() }
+            }
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = surfaceColor.copy(alpha = 0.96f),
@@ -564,6 +698,40 @@ fun QuestionImageAnnotator(
                                     }
                                 }
                         )
+
+                        // Inspect / Pan & Pinch Zoom Mode
+                        val isInspectMode = controller.activeTool == DrawingTool.NONE
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isInspectMode) primaryColor.copy(alpha = 0.18f) else Color.Transparent,
+                            border = if (isInspectMode) BorderStroke(1.dp, primaryColor) else null,
+                            modifier = Modifier.clickable {
+                                if (isInspectMode) {
+                                    if (zoomScale <= 1.05f) zoomScale = 2f
+                                } else {
+                                    controller.selectTool(DrawingTool.NONE)
+                                }
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ZoomIn,
+                                    contentDescription = "İncele ve Yakınlaştır",
+                                    tint = if (isInspectMode) primaryColor else onSurfaceColor,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = "İncele",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isInspectMode) primaryColor else onSurfaceColor
+                                )
+                            }
+                        }
 
                         // Fountain Pen
                         val isPenSelected = controller.activeTool == DrawingTool.FOUNTAIN_PEN
@@ -645,9 +813,9 @@ fun QuestionImageAnnotator(
                             )
                         }
 
-                        // Color Swatches (Red, Blue, Green, Yellow, Purple, Black)
-                        QUESTION_ANNOTATOR_COLORS.forEach { swatch ->
-                            val isSelected = controller.penColor == swatch && !controller.activeTool.isEraserTool
+                        // Color Swatches + Custom Color Creator
+                        allSwatches.forEach { swatch ->
+                            val isSelected = controller.penColor.toArgb() == swatch.toArgb() && !controller.activeTool.isEraserTool
                             Box(
                                 modifier = Modifier
                                     .size(if (isSelected) 24.dp else 20.dp)
@@ -667,6 +835,24 @@ fun QuestionImageAnnotator(
                             )
                         }
 
+                        Surface(
+                            shape = CircleShape,
+                            color = primaryColor.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clickable { showCustomColorDialog = true }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "Renk Oluştur",
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+
                         // Undo / Redo / Clear
                         TextButton(
                             onClick = { controller.undo() },
@@ -674,7 +860,7 @@ fun QuestionImageAnnotator(
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
                             modifier = Modifier.height(26.dp)
                         ) {
-                            Text("↶ Geri", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("Geri", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
 
                         TextButton(
@@ -683,7 +869,7 @@ fun QuestionImageAnnotator(
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
                             modifier = Modifier.height(26.dp)
                         ) {
-                            Text("↷ İleri", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("İleri", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
 
                         IconButton(
@@ -750,7 +936,7 @@ fun QuestionImageAnnotator(
                                 )
                             )
                             Text(
-                                text = if (controller.pressureSensitivityEnabled) "Aktif" else "Kapalı",
+                                text = if (controller.pressureSensitivityEnabled) "Yüksek" else "Kapalı",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (controller.pressureSensitivityEnabled) primaryColor else onSurfaceColor.copy(alpha = 0.6f)
                             )

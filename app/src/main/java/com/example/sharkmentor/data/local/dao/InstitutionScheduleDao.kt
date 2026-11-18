@@ -73,6 +73,9 @@ interface InstitutionScheduleDao {
     @Query("DELETE FROM institution_schedule WHERE dayOfWeek = :day")
     suspend fun deleteByDay(day: Int)
 
+    @Query("SELECT * FROM institution_schedule WHERE id = :id LIMIT 1")
+    suspend fun getById(id: String): InstitutionScheduleEntity?
+
     @Query("SELECT * FROM institution_schedule WHERE isSynced = 0 AND isDeleted = 0")
     suspend fun getUnsyncedSchedules(): List<InstitutionScheduleEntity>
 

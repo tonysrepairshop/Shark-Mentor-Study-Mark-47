@@ -45,7 +45,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Edit
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
 fun GoalsScreen(
@@ -543,7 +542,10 @@ fun ResourceCard(
                     OutlinedTextField(
                         value = inputText,
                         onValueChange = { inputText = it },
-                        label = { Text("Tamamlanan ${resource.unitType} (Max: ${resource.totalUnits})") },
+                        label = {
+                            val maxSuffix = if (resource.totalUnits > 0) " (Max: ${resource.totalUnits})" else ""
+                            Text("Tamamlanan ${resource.unitType}$maxSuffix")
+                        },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         shape = RoundedCornerShape(12.dp),
@@ -663,20 +665,23 @@ fun ResourceCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Progress Bar
-            LinearProgressIndicator(
-                progress = { progressFraction },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp)),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-            )
+            if (resource.totalUnits > 0) {
+                // Progress Bar
+                LinearProgressIndicator(
+                    progress = { progressFraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                )
 
-            Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(14.dp))
+            }
 
             // Modern Stepper Row with Clickable Numeric Input
+            val canIncrement = resource.totalUnits <= 0 || resource.completedUnits < resource.totalUnits
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -693,7 +698,11 @@ fun ResourceCard(
                         .padding(horizontal = 6.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = "${resource.completedUnits} / ${resource.totalUnits} ${resource.unitType}",
+                        text = if (resource.totalUnits > 0) {
+                            "${resource.completedUnits} / ${resource.totalUnits} ${resource.unitType}"
+                        } else {
+                            "${resource.completedUnits} ${resource.unitType} çözüldü"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
@@ -741,15 +750,15 @@ fun ResourceCard(
 
                     IconButton(
                         onClick = onIncrement,
-                        enabled = resource.completedUnits < resource.totalUnits,
+                        enabled = canIncrement,
                         modifier = Modifier.size(32.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = "Artır",
-                            tint = if (resource.completedUnits < resource.totalUnits) 
-                                MaterialTheme.colorScheme.primary 
-                            else 
+                            tint = if (canIncrement)
+                                MaterialTheme.colorScheme.primary
+                            else
                                 MaterialTheme.colorScheme.outline
                         )
                     }
@@ -809,7 +818,7 @@ fun AddEditResourceDialog(
                 OutlinedTextField(
                     value = totalUnits,
                     onValueChange = { totalUnits = it },
-                    label = { Text("Toplam Miktar") },
+                    label = { Text("Toplam Miktar (Opsiyonel)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
                 OutlinedTextField(value = unitType, onValueChange = { unitType = it }, label = { Text("Birim (Test, Sayfa, vb.)") })
@@ -817,8 +826,8 @@ fun AddEditResourceDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onSave(title, subject, totalUnits.toIntOrNull() ?: 0, unitType) },
-                enabled = title.isNotBlank() && subject.isNotBlank() && (totalUnits.toIntOrNull() != null)
+                onClick = { onSave(title, subject, (totalUnits.toIntOrNull() ?: 0).coerceAtLeast(0), unitType) },
+                enabled = title.isNotBlank() && subject.isNotBlank() && (totalUnits.isBlank() || totalUnits.toIntOrNull() != null)
             ) {
                 Text("Ekle")
             }

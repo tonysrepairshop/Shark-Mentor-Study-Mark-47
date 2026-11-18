@@ -314,6 +314,8 @@ class DrawingController(
         private set
     var smartPalmRejectionEnabled by mutableStateOf(true)
     var pressureSensitivityEnabled by mutableStateOf(true)
+    var customPenColors by mutableStateOf<List<Color>>(emptyList())
+        private set
 
     init {
         appContext?.let { bindPreferencesContext(it) }
@@ -326,6 +328,33 @@ class DrawingController(
             val prefs = ctx.getSharedPreferences(PREFS_DRAWING_STUDIO, Context.MODE_PRIVATE)
             if (prefs.contains(KEY_PRESSURE_SENSITIVITY)) {
                 pressureSensitivityEnabled = prefs.getBoolean(KEY_PRESSURE_SENSITIVITY, true)
+            }
+            val rawColors = prefs.getString(KEY_CUSTOM_PEN_COLORS, null).orEmpty()
+            if (rawColors.isNotBlank()) {
+                val parsed = rawColors.split(",")
+                    .mapNotNull { token -> token.trim().toIntOrNull()?.let { Color(it) } }
+                    .distinctBy { it.toArgb() }
+                    .take(16)
+                if (parsed.isNotEmpty()) {
+                    customPenColors = parsed
+                }
+            }
+        }
+    }
+
+    fun addCustomPenColor(color: Color, context: Context? = null) {
+        val updated = (listOf(color) + customPenColors.filterNot { it.toArgb() == color.toArgb() })
+            .distinctBy { it.toArgb() }
+            .take(16)
+        customPenColors = updated
+        val ctx = context?.applicationContext ?: appContext
+        if (ctx != null) {
+            appContext = ctx
+            runCatching {
+                ctx.getSharedPreferences(PREFS_DRAWING_STUDIO, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_CUSTOM_PEN_COLORS, updated.joinToString(",") { it.toArgb().toString() })
+                    .apply()
             }
         }
     }
@@ -868,6 +897,7 @@ class DrawingController(
     companion object {
         private const val PREFS_DRAWING_STUDIO = "shark_drawing_studio_prefs"
         private const val KEY_PRESSURE_SENSITIVITY = "pressure_sensitivity_enabled"
+        private const val KEY_CUSTOM_PEN_COLORS = "custom_pen_colors_csv"
 
         private fun computePointsBounds(points: List<DrawingPoint>): DrawingBounds? {
             if (points.isEmpty()) return null

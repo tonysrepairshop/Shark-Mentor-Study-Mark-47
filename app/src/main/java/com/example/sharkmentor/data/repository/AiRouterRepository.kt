@@ -147,15 +147,37 @@ object AutoIntentClassifier {
         "müfredat",
         "mufredat",
         "konu hakimiyeti",
+        "konusunu",
+        "konularım",
+        "konularim",
+        "seviyeye",
+        "seviyemi",
         "kütüphane",
         "kutuphane",
+        "kaynak",
+        "soru bankası",
+        "soru bankasi",
+        "deneme kitabı",
+        "deneme kitabi",
         "kitabını",
         "kitabini",
+        "kitabım",
+        "kitabim",
+        "kitabı",
+        "kitabi",
         "kitapta",
         "sayfaya kadar",
+        "sayfadayım",
+        "sayfadayim",
+        "sayfasına",
+        "sayfasina",
         "teste kadar",
+        "testteyim",
+        "testine",
         "işaretle",
         "isaretle",
+        "güncelle",
+        "guncelle",
         "hedef ekle",
         "hedefi güncelle",
         "hedefimi"
@@ -172,12 +194,21 @@ object AutoIntentClassifier {
         "müfredat",
         "mufredat",
         "konu hakimiyeti",
+        "konu ekle",
         "sayfaya kadar",
+        "sayfadayım",
+        "sayfadayim",
         "teste kadar",
+        "testteyim",
         "işaretle",
         "isaretle",
         "kitap ekle",
         "kaynak ekle",
+        "kaynakları",
+        "soru bankası",
+        "soru bankasi",
+        "kütüphane",
+        "kutuphane",
         "hedef ekle",
         "hedefleri ekle",
         "hedefi güncelle"
@@ -199,12 +230,29 @@ object AutoIntentClassifier {
         }
 
         // Rule B (Planner / Autonomous Tool / Topic Mastery / Resource / Target Organizer)
-        if (PLANNER_KEYWORDS.any { normalized.contains(it) }) {
+        val isSolverSpecific = normalized.contains("soruyu çöz") ||
+            normalized.contains("soruyu coz") ||
+            normalized.contains("adım adım çöz") ||
+            normalized.contains("adim adim coz") ||
+            normalized.contains("cevabı ne") ||
+            normalized.contains("cevabi ne") ||
+            normalized.contains("kaçıncı") ||
+            normalized.contains("hangi şık")
+        if (!hasAttachment && !isSolverSpecific && PLANNER_KEYWORDS.any { normalized.contains(it) }) {
+            return SharkAiEngine.PLANNER_OR_ORGANIZER
+        }
+        if (hasAttachment && (
+                normalized.contains("plana ekle") ||
+                normalized.contains("müfredat") ||
+                normalized.contains("tüm konular") ||
+                normalized.contains("haftalık plan") ||
+                normalized.contains("klasörle")
+            )
+        ) {
             return SharkAiEngine.PLANNER_OR_ORGANIZER
         }
 
         // Rule C (Problem Solver / Scanner)
-        // Image attachment alone does NOT force SolverEngine; user decides via prompt or action chips
         if (SOLVER_KEYWORDS.any { normalized.contains(it) } ||
             MATH_SYMBOL_REGEX.containsMatchIn(normalized)
         ) {
@@ -305,9 +353,10 @@ $MANDATORY_PERSONA_RULES
 Sen SharkMentor Otonom Programlayıcı, Kütüphane ve Konu Hakimiyeti Motorusun.
 Öğrencinin haftalık çalışma planını hazırlar, takvime görev ekler, mevcut kaynak/kitap ilerlemesini günceller, yeni kaynak ekler ve TYT/AYT konularını eksiksiz olarak konu hakimiyetine işlersin.
 
-KURALLAR VE EYLEM YÖNETİMİ:
-1. Sohbet metninde öğrenciye hitaben 2-4 cümlelik samimi, motive edici ve net bir Türkçe açıklama/özet yaz.
-2. Yapılan veya önerilen işlemi sisteme işlemek için mesajının EN SONUNA ilgili JSON eylem bloğunu (#ACTION:{...}#) ekle:
+KRİTİK DOĞRULUK VE ATAMA KURALLARI (KESİNLİKLE UYULACAK):
+1. SAYFA / TEST SAYISI UYDURMA YASAĞI: Öğrenci kaynağın toplam sayfa veya test sayısını AÇIKÇA söylemediyse `INSERT_RESOURCE` ve `UPDATE_RESOURCE_PROGRESS` içinde `"totalUnits":0` yaz (ASLA kafandan 40, 48, 100, 250 gibi varsayılan toplam sayı uydurma!). Sadece öğrencinin belirttiği sayıyı yaz.
+2. DOĞRU DERS VE KONU EŞLEŞTİRME: Kaynak ve konu eklerken asla yanlış derse/sınava atama yapma. Mevcut kütüphane güncellemesinde bağlamdaki `[MEVCUT KÜTÜPHANE KAYNAKLARI]` listesinden doğru `resourceId`, tam `title` ve doğru `subject` bilgisini birebir al; bir dersin kitabını yanlışlıkla başka bir dersin kitabına işleme. Konularda AYT konularını (Türev, İntegral, Limit, Trigonometri, Logaritma, Diziler, Atışlar, Organik Kimya, Sistemler, Bitki Biyolojisi, Divan/Tanzimat) `AYT ...`, TYT konularını (Sözcükte Anlam, Problemler, EBOB-EKOK, Optik, Basınç, Mol, Mitoz) `TYT ...` dersine işle.
+3. Sohbet metninde öğrenciye hitaben 2-4 cümlelik net bir Türkçe açıklama/özet yaz ve mesajının EN SONUNA ilgili JSON eylem bloğunu (#ACTION:{...}#) ekle:
 
 HAFTALIK 7 GÜNLÜK PLAN OLUŞTURMA:
 #ACTION:{"type":"CREATE_WEEKLY_PLAN","title":"Haftalık Çalışma Programı","summary":"Strateji özeti","schedule":[{"dayOfWeek":1,"timeSlot":"09:00 - 10:30","subject":"Matematik","topic":"Türev","targetQuestions":40}]}#
@@ -315,18 +364,18 @@ HAFTALIK 7 GÜNLÜK PLAN OLUŞTURMA:
 TEKİL GÖREV EKLEME:
 #ACTION:{"type":"INSERT_PLAN_TASK","day":1,"time":"16:00 - 17:30","subject":"Fizik","topic":"Kuvvet ve Hareket","questions":30}#
 
-TOPLU KONU HAKİMİYETİ EKLEME (Örn: "TYT tüm konular", "AYT tüm konular" veya müfredat görseli/listesi istendiğinde ASLA tek boş klasör açma; preset veya topics dizisiyle tüm alt konuları gönder):
-#ACTION:{"type":"INSERT_TOPICS_BATCH","exam":"TYT","preset":"TYT_ALL","topics":[{"subject":"TYT Türkçe","topic":"Sözcükte Anlam","targetLevel":5},{"subject":"TYT Matematik","topic":"Temel Kavramlar","targetLevel":5}]}#
+TOPLU KONU HAKİMİYETİ EKLEME (Örn: "TYT tüm konular", "AYT tüm konular" veya müfredat listesi istendiğinde ASLA tek boş klasör açma; preset veya topics dizisiyle tüm alt konuları gönder):
+#ACTION:{"type":"INSERT_TOPICS_BATCH","exam":"TYT","preset":"TYT_ALL","topics":[{"subject":"TYT Türkçe","topic":"Sözcükte Anlam","targetLevel":5},{"subject":"TYT Matematik","topic":"Temel Kavramlar ve Sayılar","targetLevel":5}]}#
 
-TEKİL KONU HEDEFİ EKLEME / GÜNCELLEME:
-#ACTION:{"type":"INSERT_TOPIC","subject":"Biyoloji","topic":"Kalıtım ve Genetik","currentLevel":1,"targetLevel":5}#
-#ACTION:{"type":"UPDATE_TOPIC_PROGRESS","subject":"Biyoloji","topic":"Kalıtım ve Genetik","currentLevel":4}#
+TEKİL KONU HEDEFİ EKLEME / GÜNCELLEME (Önce mevcut konu listesini kontrol et, doğru ders ve doğru alt konuyu seç):
+#ACTION:{"type":"INSERT_TOPIC","subject":"TYT Biyoloji","topic":"Kalıtımın Genel İlkeleri ve Soy Ağaçları","currentLevel":1,"targetLevel":5}#
+#ACTION:{"type":"UPDATE_TOPIC_PROGRESS","subject":"AYT Matematik","topic":"Türev ve Uygulamaları","currentLevel":4}#
 
-MEVCUT KAYNAK / KİTAP İLERLEMESİ GÜNCELLEME (Öğrenci "X kitabını 45. sayfaya/teste kadar çözdüm işaretle" dediğinde YENİ KİTAP AÇMA, mevcut kitabı güncelle!):
-#ACTION:{"type":"UPDATE_RESOURCE_PROGRESS","resourceId":0,"title":"Kitap Adı","completedUnits":45,"unitType":"Sayfa","isIncremental":false}#
+MEVCUT KAYNAK / KİTAP İLERLEMESİ GÜNCELLEME (YENİ KİTAP AÇMA, listedeki resourceId/title/subject ile eşleşen mevcut kitabı güncelle; öğrenci toplam sayfa/test belirtmediyse totalUnits ekleme!):
+#ACTION:{"type":"UPDATE_RESOURCE_PROGRESS","resourceId":0,"title":"Kitap Adı","subject":"Ders","completedUnits":45,"unitType":"Sayfa","isIncremental":false}#
 
-YENİ KAYNAK / KİTAP EKLEME (Yalnızca kütüphanede henüz yoksa):
-#ACTION:{"type":"INSERT_RESOURCE","title":"3D AYT Matematik Soru Bankası","subject":"Matematik","totalUnits":48,"completedUnits":0,"unitType":"Test"}#
+YENİ KAYNAK / KİTAP EKLEME (Yalnızca kütüphanede henüz yoksa; toplam test/sayfa söylenmediyse mutlaka "totalUnits":0 yaz!):
+#ACTION:{"type":"INSERT_RESOURCE","title":"3D AYT Matematik Soru Bankası","subject":"AYT Matematik","totalUnits":0,"completedUnits":0,"unitType":"Test"}#
 
 TEKİL VEYA TOPLU HEDEF EKLEME:
 #ACTION:{"type":"INSERT_TARGET","title":"TYT Türkçe 35+ Net","description":"Haftalık deneme ve paragraf rutini","type":"SHORT_TERM","period":"WEEKLY","targetQuestions":150,"priority":"HIGH"}#

@@ -9,6 +9,9 @@ object SharkNotificationEngine {
     const val CHANNEL_TIMER_DESK = "shark_focus_desk"
     const val CHANNEL_SYNC_BACKGROUND = "shark_silent_sync"
     const val CHANNEL_ALERTS_COACH = "shark_alerts"
+    const val CHANNEL_CHAT_MESSAGES = "shark_chat_messages"
+    const val CHANNEL_LEAGUE_QUESTIONS = "shark_league_questions"
+    const val CHANNEL_STUDY_NUDGE = "shark_study_invites"
 
     fun init(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -46,6 +49,42 @@ object SharkNotificationEngine {
             enableVibration(true)
         }
 
-        manager.createNotificationChannels(listOf(deskChannel, syncChannel, alertsChannel))
+        val chatMessagesChannel = NotificationChannel(
+            CHANNEL_CHAT_MESSAGES,
+            "Sohbet ve Mesaj Bildirimleri",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Grup sohbetleri ve direkt mesajlar için 7/24 anlık bildirimler"
+            enableVibration(true)
+        }
+
+        val leagueQuestionsChannel = NotificationChannel(
+            CHANNEL_LEAGUE_QUESTIONS,
+            "Soru Paylaşım Bildirimleri",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Grubunda ve sohbetlerinde paylaşılan yeni sorular için 7/24 bildirimler"
+            enableVibration(true)
+        }
+
+        val studyNudgeChannel = NotificationChannel(
+            CHANNEL_STUDY_NUDGE,
+            "Çalışma Dürtmeleri",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Arkadaşlarından ve grup üyelerinden gelen canlı çalışma dürtmeleri"
+            enableVibration(true)
+        }
+
+        manager.createNotificationChannels(
+            listOf(
+                deskChannel,
+                syncChannel,
+                alertsChannel,
+                chatMessagesChannel,
+                leagueQuestionsChannel,
+                studyNudgeChannel
+            )
+        )
     }
 }

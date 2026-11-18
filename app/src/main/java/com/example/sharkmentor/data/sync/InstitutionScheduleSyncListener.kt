@@ -12,14 +12,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Attaches a Firestore real-time listener to
- *   users/{uid}/institution_schedule
- * and upserts all documents into the local Room table whenever Firestore
- * reports a change (including on first attach).
- *
- * Usage:
- *   val listener = InstitutionScheduleSyncListener(dao)
- *   listener.start()   // attach – call once, e.g. in ViewModel.init{}
- *   listener.stop()    // detach – call in ViewModel.onCleared()
+ *   users/{uid}/institution_schedules
+ * and reconciles all documents into the local Room table whenever Firestore
+ * reports a change without wiping unsynced or custom schedules on cache/empty snapshots.
  */
 class InstitutionScheduleSyncListener(
     private val dao: InstitutionScheduleDao
@@ -27,8 +22,11 @@ class InstitutionScheduleSyncListener(
     private val TAG = "InstitutionScheduleSync"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var registration: ListenerRegistration? = null
+    @Volatile
+    private var hasSeenServerSchedules = false
 
     fun start() {
+        stop()
         if (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser == null) {
             Log.w(TAG, "FirebaseAuth currentUser is null – skipping institution schedule sync (offline mode).")
             return
@@ -49,7 +47,7 @@ class InstitutionScheduleSyncListener(
             firestore
                 .collection("users")
                 .document(uid)
-                .collection("institution_schedule")
+                .collection("institution_schedules")
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
@@ -61,33 +59,88 @@ class InstitutionScheduleSyncListener(
                         return@addSnapshotListener
                     }
                     if (snapshot == null) return@addSnapshotListener
+                    if (snapshot.metadata.isFromCache && snapshot.documents.isEmpty()) {
+                        return@addSnapshotListener
+                    }
 
-                    val entities = snapshot.documents.mapNotNull { doc ->
+                    val deletedIds = mutableSetOf<String>()
+                    val activeEntities = mutableListOf<InstitutionScheduleEntity>()
+                    snapshot.documents.forEach { doc ->
                         try {
-                            InstitutionScheduleEntity(
-                                id = doc.id,
-                                dayOfWeek = (doc.getLong("dayOfWeek") ?: 1L).toInt().coerceIn(1, 7),
-                                startTime = doc.getString("startTime") ?: "09:00",
-                                endTime = doc.getString("endTime") ?: "10:00",
-                                subject = doc.getString("subject") ?: "Ders",
-                                type = doc.getString("type") ?: "DERSHANE",
-                                teacherName = doc.getString("teacherName") ?: "",
-                                period = (doc.getLong("period") ?: 0L).toInt(),
-                                isSynced = true,
-                                lastModifiedMillis = doc.getLong("lastModifiedMillis") ?: System.currentTimeMillis(),
-                                isDeleted = false,
-                                cloudId = doc.id
+                            if (doc.getBoolean("isDeleted") == true) {
+                                deletedIds.add(doc.id)
+                                return@forEach
+                            }
+                            val subject = doc.getString("subject")?.trim().orEmpty()
+                            if (subject.isBlank()) return@forEach
+
+                            val startTime = doc.getString("startTime")?.trim().takeIf { !it.isNullOrBlank() } ?: "09:00"
+                            val endTime = doc.getString("endTime")?.trim().takeIf { !it.isNullOrBlank() } ?: "10:00"
+                            val type = doc.getString("type")?.trim().takeIf { !it.isNullOrBlank() } ?: "DERSHANE"
+
+                            activeEntities.add(
+                                InstitutionScheduleEntity(
+                                    id = doc.id,
+                                    dayOfWeek = (doc.getLong("dayOfWeek") ?: 1L).toInt().coerceIn(1, 7),
+                                    startTime = startTime,
+                                    endTime = endTime,
+                                    subject = subject,
+                                    type = type,
+                                    teacherName = doc.getString("teacherName") ?: "",
+                                    period = (doc.getLong("period") ?: 0L).toInt(),
+                                    isSynced = true,
+                                    lastModifiedMillis = doc.getLong("lastModifiedMillis") ?: System.currentTimeMillis(),
+                                    isDeleted = false,
+                                    cloudId = doc.id
+                                )
                             )
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to parse document ${doc.id}: ${e.message}")
-                            null
                         }
+                    }
+
+                    val isServerSnapshot = !snapshot.metadata.isFromCache
+                    if (isServerSnapshot && activeEntities.isNotEmpty()) {
+                        hasSeenServerSchedules = true
                     }
 
                     scope.launch {
                         try {
-                            dao.replaceSyncedRemoteNonCustomSchedules(entities)
-                            Log.d(TAG, "Synced ${entities.size} institution schedule rows into Room.")
+                            deletedIds.forEach { dao.deleteById(it) }
+
+                            val localAll = dao.getAllSchedules()
+                            val unsyncedIds = localAll.filter { !it.isSynced }.map { it.id }.toSet()
+                            val unsyncedCloudIds = localAll.filter { !it.isSynced && !it.cloudId.isNullOrBlank() }
+                                .mapNotNull { it.cloudId }
+                                .toSet()
+
+                            val activeIds = activeEntities.map { it.id }.toSet()
+                            val toUpsert = activeEntities.filter { entity ->
+                                entity.id !in unsyncedIds && entity.id !in unsyncedCloudIds
+                            }
+
+                            if (toUpsert.isNotEmpty()) {
+                                // Remove stale synced duplicates mapped via different local id -> same cloudId
+                                localAll.filter { local ->
+                                    local.isSynced &&
+                                        !local.id.startsWith("CUSTOM_SCHED_") &&
+                                        local.cloudId != null &&
+                                        local.cloudId in activeIds &&
+                                        local.id != local.cloudId
+                                }.forEach { dao.deleteById(it.id) }
+
+                                dao.insertAll(toUpsert)
+                            }
+
+                            if (isServerSnapshot && (activeEntities.isNotEmpty() || hasSeenServerSchedules)) {
+                                localAll.filter { local ->
+                                    local.isSynced &&
+                                        !local.id.startsWith("CUSTOM_SCHED_") &&
+                                        local.id !in activeIds &&
+                                        (local.cloudId == null || local.cloudId !in activeIds)
+                                }.forEach { dao.deleteById(it.id) }
+                            }
+                            Log.d(TAG, "Reconciled ${toUpsert.size} institution schedule rows into Room.")
                         } catch (e: Exception) {
                             Log.e(TAG, "Room upsert failed: ${e.message}", e)
                         }

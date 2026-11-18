@@ -1,5 +1,6 @@
 package com.example.sharkmentor.ui.screens.notes.drawing
 
+import android.graphics.Color as AndroidColor
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -24,26 +25,33 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,6 +67,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -279,7 +288,7 @@ fun DrawingStudioBar(
 
                 // Stylus-Only / Palm Rejection Toggle
                 StudioToolButton(
-                    label = "El Reddi",
+                    label = "Kalem",
                     isSelected = controller.stylusOnlyMode,
                     accentColor = Color(0xFF10B981),
                     onClick = { controller.toggleStylusOnlyMode() }
@@ -526,6 +535,25 @@ fun PenStrokeSettingsPanel(
     val onSurfaceColor = colorScheme.onSurface
     val primaryColor = colorScheme.primary
     val activeTool = controller.activeTool
+    var showCustomColorDialog by remember { mutableStateOf(false) }
+    val allSwatches = remember(controller.customPenColors) {
+        (STUDIO_COLOR_PALETTE + controller.customPenColors).distinctBy { it.toArgb() }
+    }
+
+    if (showCustomColorDialog) {
+        PenCustomColorDialog(
+            initialColor = controller.penColor,
+            onDismiss = { showCustomColorDialog = false },
+            onColorSelected = { chosen ->
+                controller.addCustomPenColor(chosen, context)
+                controller.updatePenColor(chosen)
+                if (controller.hasSelection) {
+                    controller.recolorSelected(chosen)
+                }
+                showCustomColorDialog = false
+            }
+        )
+    }
 
     Column(
         modifier = modifier
@@ -557,31 +585,63 @@ fun PenStrokeSettingsPanel(
         }
 
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            STUDIO_COLOR_PALETTE.forEach { swatch ->
-                val isSelected = controller.penColor == swatch
-                Box(
-                    modifier = Modifier
-                        .size(if (isSelected) 28.dp else 24.dp)
-                        .clip(CircleShape)
-                        .background(swatch)
-                        .border(
-                            width = if (isSelected) 2.5.dp else 1.dp,
-                            color = if (isSelected) primaryColor else onSurfaceColor.copy(alpha = 0.25f),
-                            shape = CircleShape
-                        )
-                        .clickable {
-                            controller.updatePenColor(swatch)
-                            if (controller.hasSelection) {
-                                controller.recolorSelected(swatch)
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                allSwatches.forEach { swatch ->
+                    val isSelected = controller.penColor.toArgb() == swatch.toArgb()
+                    Box(
+                        modifier = Modifier
+                            .size(if (isSelected) 28.dp else 24.dp)
+                            .clip(CircleShape)
+                            .background(swatch)
+                            .border(
+                                width = if (isSelected) 2.5.dp else 1.dp,
+                                color = if (isSelected) primaryColor else onSurfaceColor.copy(alpha = 0.25f),
+                                shape = CircleShape
+                            )
+                            .clickable {
+                                controller.updatePenColor(swatch)
+                                if (controller.hasSelection) {
+                                    controller.recolorSelected(swatch)
+                                }
                             }
-                        }
-                )
+                    )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = primaryColor.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.4f)),
+                modifier = Modifier.clickable { showCustomColorDialog = true }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Renk Oluştur",
+                        tint = primaryColor,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Renk",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryColor
+                    )
+                }
             }
         }
 
@@ -667,7 +727,7 @@ fun PenStrokeSettingsPanel(
                         color = onSurfaceColor
                     )
                     Text(
-                        text = if (controller.pressureSensitivityEnabled) "Aktif (Kalem/Hız)" else "Sabit Çizgi",
+                        text = if (controller.pressureSensitivityEnabled) "Yüksek (Kalem/Hız)" else "Sabit Çizgi",
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                         color = onSurfaceColor.copy(alpha = 0.6f)
                     )
@@ -704,13 +764,13 @@ fun PenStrokeSettingsPanel(
                             val x = startX + (endX - startX) * t
                             val y = midY - sin(t * Math.PI.toFloat() * 2f) * amplitude
                             val pressureFactor = if (isPressureOn) {
-                                // Smooth taper: thin at ends, fuller in middle
+                                // Smooth expressive taper: fine nib ends, fuller center
                                 val bell = sin(t * Math.PI.toFloat()).coerceIn(0.05f, 1.0f)
-                                0.35f + 0.95f * bell
+                                0.16f + 1.52f * bell
                             } else {
                                 1.0f
                             }
-                            val segWidth = (basePreviewWidth * pressureFactor).coerceIn(1.2f, size.height * 0.85f)
+                            val segWidth = (basePreviewWidth * pressureFactor).coerceIn(1.0f, size.height * 0.90f)
                             drawLine(
                                 color = previewColor,
                                 start = Offset(prevX, prevY),
@@ -738,6 +798,182 @@ fun PenStrokeSettingsPanel(
             }
         }
     }
+}
+
+@Composable
+fun PenCustomColorDialog(
+    initialColor: Color,
+    onDismiss: () -> Unit,
+    onColorSelected: (Color) -> Unit
+) {
+    val initialHsv = remember(initialColor) {
+        FloatArray(3).apply {
+            AndroidColor.colorToHSV(initialColor.toArgb(), this)
+        }
+    }
+    var hue by remember(initialColor) { mutableFloatStateOf(initialHsv[0].coerceIn(0f, 360f)) }
+    var saturation by remember(initialColor) { mutableFloatStateOf(initialHsv[1].coerceIn(0f, 1f)) }
+    var brightness by remember(initialColor) { mutableFloatStateOf(initialHsv[2].coerceIn(0f, 1f)) }
+
+    fun toHexString(color: Color): String {
+        val rgb = color.toArgb() and 0xFFFFFF
+        return String.format("#%06X", rgb)
+    }
+
+    var previewColor by remember(initialColor) { mutableStateOf(initialColor.copy(alpha = 1f)) }
+    var hexInput by remember(initialColor) { mutableStateOf(toHexString(initialColor)) }
+
+    fun syncFromHsv(h: Float, s: Float, v: Float) {
+        val computed = Color(AndroidColor.HSVToColor(floatArrayOf(h.coerceIn(0f, 360f), s.coerceIn(0f, 1f), v.coerceIn(0f, 1f))))
+        previewColor = computed
+        hexInput = toHexString(computed)
+    }
+
+    val presets = listOf(
+        Color(0xFF0F172A), Color(0xFF1E88E5), Color(0xFFE53935), Color(0xFF10B981),
+        Color(0xFFF59E0B), Color(0xFF8B5CF6), Color(0xFFEC4899), Color(0xFF06B6D4)
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Özel Kalem Rengi Oluştur",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = previewColor,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = hexInput,
+                            fontWeight = FontWeight.Bold,
+                            color = if (previewColor.luminance() > 0.5f) Color(0xFF0F172A) else Color.White,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Renk Tonu", style = MaterialTheme.typography.labelSmall)
+                        Text("${hue.roundToInt()}°", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = hue,
+                        onValueChange = {
+                            hue = it
+                            syncFromHsv(hue, saturation, brightness)
+                        },
+                        valueRange = 0f..360f
+                    )
+                }
+
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Doygunluk", style = MaterialTheme.typography.labelSmall)
+                        Text("%${(saturation * 100).roundToInt()}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = saturation,
+                        onValueChange = {
+                            saturation = it
+                            syncFromHsv(hue, saturation, brightness)
+                        },
+                        valueRange = 0f..1f
+                    )
+                }
+
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Parlaklık", style = MaterialTheme.typography.labelSmall)
+                        Text("%${(brightness * 100).roundToInt()}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = brightness,
+                        onValueChange = {
+                            brightness = it
+                            syncFromHsv(hue, saturation, brightness)
+                        },
+                        valueRange = 0f..1f
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    presets.forEach { preset ->
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(CircleShape)
+                                .background(preset)
+                                .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f), CircleShape)
+                                .clickable {
+                                    val hsv = FloatArray(3)
+                                    AndroidColor.colorToHSV(preset.toArgb(), hsv)
+                                    hue = hsv[0]
+                                    saturation = hsv[1]
+                                    brightness = hsv[2]
+                                    previewColor = preset
+                                    hexInput = toHexString(preset)
+                                }
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = hexInput,
+                    onValueChange = { raw ->
+                        hexInput = raw
+                        val normalized = if (raw.startsWith("#")) raw.trim() else "#${raw.trim()}"
+                        if (normalized.length == 7 || normalized.length == 9) {
+                            val parsed = runCatching { Color(AndroidColor.parseColor(normalized)) }.getOrNull()
+                            if (parsed != null) {
+                                val hsv = FloatArray(3)
+                                AndroidColor.colorToHSV(parsed.toArgb(), hsv)
+                                hue = hsv[0]
+                                saturation = hsv[1]
+                                brightness = hsv[2]
+                                previewColor = parsed.copy(alpha = 1f)
+                            }
+                        }
+                    },
+                    label = { Text("HEX Kodu (#1E88E5)", fontSize = 12.sp) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onColorSelected(previewColor) }) {
+                Text("Rengi Ekle")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("İptal")
+            }
+        }
+    )
 }
 
 @Composable

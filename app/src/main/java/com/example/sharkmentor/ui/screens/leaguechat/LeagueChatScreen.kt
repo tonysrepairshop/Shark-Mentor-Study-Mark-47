@@ -9,9 +9,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.FileOutputStream
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,23 +41,31 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -66,11 +78,13 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,8 +94,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -90,6 +107,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -112,6 +130,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 sealed class LeagueChatDestination {
     data class GroupChat(val groupCode: String, val groupName: String) : LeagueChatDestination()
@@ -145,6 +164,15 @@ fun LeagueChatScreen(
     var zoomedImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     var zoomedLocalPath by remember { mutableStateOf<String?>(null) }
     var messageInput by rememberSaveable { mutableStateOf("") }
+    var activeActionMessageId by remember { mutableStateOf<String?>(null) }
+    var pendingDeleteMessage by remember { mutableStateOf<LeagueChatMessageUi?>(null) }
+
+    LaunchedEffect(uiState.editingMessage?.id) {
+        val editing = uiState.editingMessage
+        if (editing != null) {
+            messageInput = editing.text
+        }
+    }
 
     // Shared 1-second clock driving live 105-min question countdowns & tier chips
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -184,8 +212,15 @@ fun LeagueChatScreen(
     }
 
     BackHandler {
-        if (solvingQuestion != null) {
+        if (zoomedImageBitmap != null || !zoomedLocalPath.isNullOrBlank()) {
+            zoomedImageBitmap = null
+            zoomedLocalPath = null
+        } else if (solvingQuestion != null) {
             solvingQuestion = null
+        } else if (uiState.editingMessage != null || uiState.activeReplyTarget != null) {
+            val wasEditing = uiState.editingMessage != null
+            chatViewModel.clearReplyAndEdit()
+            if (wasEditing) messageInput = ""
         } else if (uiState.mode == LeagueChatMode.DM_THREAD && destination is LeagueChatDestination.DmInbox) {
             chatViewModel.openDmInbox(myDisplayNameHint)
         } else {
@@ -217,6 +252,19 @@ fun LeagueChatScreen(
             ChatFilterTab.RESOLVED -> uiState.allMessages.filter { msg ->
                 msg.questionCard?.status == "RESOLVED" ||
                     msg.solutionReply?.approvalStatus == "APPROVED"
+            }
+        }
+    }
+
+    val scrollToMessageById: (String) -> Unit = { targetId ->
+        val idx = displayedMessages.indexOfFirst { it.id == targetId }
+        if (idx >= 0) {
+            coroutineScope.launch { listState.animateScrollToItem(idx) }
+        } else {
+            chatViewModel.selectFilter(ChatFilterTab.ALL)
+            val fallbackIdx = uiState.allMessages.indexOfFirst { it.id == targetId }
+            if (fallbackIdx >= 0) {
+                coroutineScope.launch { listState.animateScrollToItem(fallbackIdx) }
             }
         }
     }
@@ -402,6 +450,13 @@ fun LeagueChatScreen(
                             messageText = messageInput,
                             onMessageTextChange = { messageInput = it },
                             isSending = uiState.isSending,
+                            replyTarget = uiState.activeReplyTarget,
+                            editingMessage = uiState.editingMessage,
+                            onCancelReplyOrEdit = {
+                                val wasEditing = uiState.editingMessage != null
+                                chatViewModel.clearReplyAndEdit()
+                                if (wasEditing) messageInput = ""
+                            },
                             onShareQuestionClick = { showQuestionPicker = true },
                             onSendClick = {
                                 val text = messageInput
@@ -462,18 +517,7 @@ fun LeagueChatScreen(
                         PinnedOpenQuestionsStrip(
                             questions = pinnedOpenQuestions,
                             nowMillis = nowMillis,
-                            onQuestionTap = { tapped ->
-                                val idx = displayedMessages.indexOfFirst { it.id == tapped.messageId }
-                                if (idx >= 0) {
-                                    coroutineScope.launch { listState.animateScrollToItem(idx) }
-                                } else {
-                                    chatViewModel.selectFilter(ChatFilterTab.ALL)
-                                    val fallbackIdx = uiState.allMessages.indexOfFirst { it.id == tapped.messageId }
-                                    if (fallbackIdx >= 0) {
-                                        coroutineScope.launch { listState.animateScrollToItem(fallbackIdx) }
-                                    }
-                                }
-                            }
+                            onQuestionTap = { tapped -> scrollToMessageById(tapped.messageId) }
                         )
                     }
 
@@ -529,6 +573,27 @@ fun LeagueChatScreen(
                                             fallbackBadges = message.senderShowcaseBadges
                                         )
                                     }
+                                    val isActionExpanded = (activeActionMessageId == message.id)
+                                    val openActionMenu: () -> Unit = { activeActionMessageId = message.id }
+                                    val dismissActionMenu: () -> Unit = {
+                                        if (activeActionMessageId == message.id) {
+                                            activeActionMessageId = null
+                                        }
+                                    }
+                                    val onReplyMessage: () -> Unit = {
+                                        activeActionMessageId = null
+                                        chatViewModel.setReplyTarget(message)
+                                    }
+                                    val onEditMessage: () -> Unit = {
+                                        activeActionMessageId = null
+                                        chatViewModel.setEditingMessage(message)
+                                        messageInput = message.text
+                                    }
+                                    val onDeleteMessage: () -> Unit = {
+                                        activeActionMessageId = null
+                                        pendingDeleteMessage = message
+                                    }
+
                                     when {
                                         message.questionCard != null -> {
                                             QuestionMessageCard(
@@ -536,6 +601,11 @@ fun LeagueChatScreen(
                                                 question = message.questionCard,
                                                 nowMillis = nowMillis,
                                                 isSavedToErrorBank = uiState.savedQuestionIds.contains(message.questionCard.messageId),
+                                                isActionMenuExpanded = isActionExpanded,
+                                                onOpenActionMenu = openActionMenu,
+                                                onDismissActionMenu = dismissActionMenu,
+                                                onReplyClick = onReplyMessage,
+                                                onDeleteClick = onDeleteMessage,
                                                 onSaveToErrorBank = { chatViewModel.saveQuestionToMyErrorBank(it) },
                                                 onSenderClick = openSenderProfile,
                                                 onImageClick = { bmp, localUri ->
@@ -558,6 +628,11 @@ fun LeagueChatScreen(
                                                 solution = message.solutionReply,
                                                 parentQuestion = parentQ,
                                                 isQuestionOwner = (parentQ?.senderId == uiState.currentUid),
+                                                isActionMenuExpanded = isActionExpanded,
+                                                onOpenActionMenu = openActionMenu,
+                                                onDismissActionMenu = dismissActionMenu,
+                                                onReplyClick = onReplyMessage,
+                                                onDeleteClick = onDeleteMessage,
                                                 onSenderClick = openSenderProfile,
                                                 onApprove = {
                                                     if (parentQ != null) {
@@ -578,6 +653,13 @@ fun LeagueChatScreen(
                                         else -> {
                                             ChatTextBubble(
                                                 message = message,
+                                                isActionMenuExpanded = isActionExpanded,
+                                                onOpenActionMenu = openActionMenu,
+                                                onDismissActionMenu = dismissActionMenu,
+                                                onReplyClick = onReplyMessage,
+                                                onEditClick = onEditMessage,
+                                                onDeleteClick = onDeleteMessage,
+                                                onQuotedMessageClick = scrollToMessageById,
                                                 onSenderClick = openSenderProfile
                                             )
                                         }
@@ -680,57 +762,49 @@ fun LeagueChatScreen(
     }
 
     if (zoomedImageBitmap != null || !zoomedLocalPath.isNullOrBlank()) {
-        Dialog(
-            onDismissRequest = {
+        ZoomableQuestionImageDialog(
+            bitmap = zoomedImageBitmap,
+            localPath = zoomedLocalPath,
+            onDismiss = {
                 zoomedImageBitmap = null
                 zoomedLocalPath = null
             }
-        ) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surface
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        IconButton(
-                            onClick = {
-                                zoomedImageBitmap = null
-                                zoomedLocalPath = null
-                            }
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = "Kapat")
-                        }
+        )
+    }
+
+    val deleteCandidate = pendingDeleteMessage
+    if (deleteCandidate != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteMessage = null },
+            title = { Text("Mesajı Sil", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    text = when {
+                        deleteCandidate.questionCard != null ->
+                            "Paylaşılan bu soruyu sohbetten kalıcı olarak kaldırmak istiyor musunuz?"
+                        deleteCandidate.solutionReply != null ->
+                            "Bu çözüm önerisini sohbetten silmek istiyor musunuz?"
+                        else ->
+                            "Bu mesajı sohbetten kalıcı olarak silmek istiyor musunuz?"
                     }
-                    val bmp = zoomedImageBitmap
-                    val path = zoomedLocalPath
-                    if (bmp != null) {
-                        Image(
-                            bitmap = bmp,
-                            contentDescription = "Soru Görseli",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 460.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                        )
-                    } else if (!path.isNullOrBlank()) {
-                        val model = remember(path) { File(path).takeIf { it.exists() } ?: path }
-                        AsyncImage(
-                            model = model,
-                            contentDescription = "Soru Görseli",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 460.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                        )
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteMessage = null }) {
+                    Text("İptal")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDeleteMessage = null
+                        chatViewModel.deleteMessage(deleteCandidate)
                     }
+                ) {
+                    Text("Sil", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                 }
             }
-        }
+        )
     }
 
     if (showWallpaperPicker) {
@@ -830,12 +904,18 @@ private fun PinnedOpenQuestionsStrip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QuestionMessageCard(
     message: LeagueChatMessageUi,
     question: QuestionCardUi,
     nowMillis: Long,
     isSavedToErrorBank: Boolean,
+    isActionMenuExpanded: Boolean,
+    onOpenActionMenu: () -> Unit,
+    onDismissActionMenu: () -> Unit,
+    onReplyClick: () -> Unit,
+    onDeleteClick: () -> Unit,
     onSaveToErrorBank: (QuestionCardUi) -> Unit,
     onSenderClick: () -> Unit,
     onImageClick: (ImageBitmap?, String?) -> Unit,
@@ -855,7 +935,12 @@ private fun QuestionMessageCard(
     }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onOpenActionMenu
+            ),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
         border = BorderStroke(
@@ -908,11 +993,38 @@ private fun QuestionMessageCard(
                         }
                     }
                 }
-                Text(
-                    text = timeLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = timeLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Box {
+                        IconButton(
+                            onClick = onOpenActionMenu,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Mesaj Seçenekleri",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        MessageActionDropdown(
+                            expanded = isActionMenuExpanded,
+                            isMine = message.isMine,
+                            canEdit = false,
+                            onDismiss = onDismissActionMenu,
+                            onReply = onReplyClick,
+                            onEdit = {},
+                            onDelete = onDeleteClick
+                        )
+                    }
+                }
             }
 
             // Subject, Topic & Status Pills
@@ -982,31 +1094,52 @@ private fun QuestionMessageCard(
                 )
             }
 
-            // Question Image
+            // Question Image with tap-to-enlarge badge
             if (decodedBitmap != null) {
-                Image(
-                    bitmap = decodedBitmap,
-                    contentDescription = "Paylaşılan Soru",
-                    contentScale = ContentScale.Fit,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 230.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
                         .clickable { onImageClick(decodedBitmap, null) }
-                )
+                ) {
+                    Image(
+                        bitmap = decodedBitmap,
+                        contentDescription = "Paylaşılan Soru",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 230.dp)
+                    )
+                    ZoomBadgeOverlay(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                    )
+                }
             } else if (hasLocalFile) {
                 val localFile = remember(question.localImageUri) { File(question.localImageUri) }
-                AsyncImage(
-                    model = ImageRequest.Builder(context).data(localFile).crossfade(true).build(),
-                    contentDescription = "Paylaşılan Soru",
-                    contentScale = ContentScale.Fit,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 230.dp)
                         .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
                         .clickable { onImageClick(null, question.localImageUri) }
-                )
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context).data(localFile).crossfade(true).build(),
+                        contentDescription = "Paylaşılan Soru",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 230.dp)
+                    )
+                    ZoomBadgeOverlay(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                    )
+                }
             }
 
             // 105-Minute Countdown & Reward Tier Banner
@@ -1120,12 +1253,18 @@ private fun QuestionMessageCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SolutionReplyCard(
     message: LeagueChatMessageUi,
     solution: SolutionReplyUi,
     parentQuestion: QuestionCardUi?,
     isQuestionOwner: Boolean,
+    isActionMenuExpanded: Boolean,
+    onOpenActionMenu: () -> Unit,
+    onDismissActionMenu: () -> Unit,
+    onReplyClick: () -> Unit,
+    onDeleteClick: () -> Unit,
     onSenderClick: () -> Unit,
     onApprove: () -> Unit,
     onReject: () -> Unit,
@@ -1148,7 +1287,11 @@ private fun SolutionReplyCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 18.dp),
+            .padding(start = 18.dp)
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onOpenActionMenu
+            ),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.94f)
@@ -1185,13 +1328,37 @@ private fun SolutionReplyCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                if (parentQuestion != null) {
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = parentQuestion.subject,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (parentQuestion != null) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = parentQuestion.subject,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Box {
+                        IconButton(
+                            onClick = onOpenActionMenu,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Mesaj Seçenekleri",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        MessageActionDropdown(
+                            expanded = isActionMenuExpanded,
+                            isMine = message.isMine,
+                            canEdit = false,
+                            onDismiss = onDismissActionMenu,
+                            onReply = onReplyClick,
+                            onEdit = {},
+                            onDelete = onDeleteClick
+                        )
+                    }
                 }
             }
 
@@ -1204,16 +1371,26 @@ private fun SolutionReplyCard(
             }
 
             if (decodedBitmap != null) {
-                Image(
-                    bitmap = decodedBitmap,
-                    contentDescription = "Çözüm Görseli",
-                    contentScale = ContentScale.Fit,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 200.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .clickable { onImageClick(decodedBitmap) }
-                )
+                ) {
+                    Image(
+                        bitmap = decodedBitmap,
+                        contentDescription = "Çözüm Görseli",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 200.dp)
+                    )
+                    ZoomBadgeOverlay(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                    )
+                }
             }
 
             // Escrow Status Pill
@@ -1277,14 +1454,28 @@ private fun SolutionReplyCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatTextBubble(
     message: LeagueChatMessageUi,
+    isActionMenuExpanded: Boolean,
+    onOpenActionMenu: () -> Unit,
+    onDismissActionMenu: () -> Unit,
+    onReplyClick: () -> Unit,
+    onEditClick: () -> Unit,
+    onDeleteClick: () -> Unit,
+    onQuotedMessageClick: (String) -> Unit,
     onSenderClick: () -> Unit
 ) {
     val timeLabel = remember(message.createdAtMillis) {
         SimpleDateFormat("HH:mm", Locale("tr")).format(Date(message.createdAtMillis))
     }
+    val bubbleShape = RoundedCornerShape(
+        topStart = 16.dp,
+        topEnd = 16.dp,
+        bottomStart = if (message.isMine) 16.dp else 4.dp,
+        bottomEnd = if (message.isMine) 4.dp else 16.dp
+    )
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1302,67 +1493,111 @@ private fun ChatTextBubble(
             Spacer(Modifier.width(8.dp))
         }
 
-        Surface(
-            modifier = Modifier.widthIn(max = 290.dp),
-            shape = RoundedCornerShape(
-                topStart = 16.dp,
-                topEnd = 16.dp,
-                bottomStart = if (message.isMine) 16.dp else 4.dp,
-                bottomEnd = if (message.isMine) 4.dp else 16.dp
-            ),
-            color = if (message.isMine) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.94f)
-            } else {
-                MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
-            },
-            border = BorderStroke(
-                1.dp,
-                if (message.isMine) {
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+        Box {
+            Surface(
+                modifier = Modifier
+                    .widthIn(max = 290.dp)
+                    .clip(bubbleShape)
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = onOpenActionMenu
+                    ),
+                shape = bubbleShape,
+                color = if (message.isMine) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.94f)
                 } else {
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-                }
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                    MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+                },
+                border = BorderStroke(
+                    1.dp,
+                    if (message.isMine) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    }
+                )
             ) {
-                if (!message.isMine) {
-                    Column(
-                        modifier = Modifier.clickable { onSenderClick() },
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                    ) {
-                        Text(
-                            text = message.senderName,
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        if (message.senderShowcaseBadges.isNotEmpty()) {
-                            SharkBadgeShowcaseRow(
-                                badgeIds = message.senderShowcaseBadges,
-                                compact = true,
-                                badgeProgress = message.senderBadgeProgress
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (!message.isMine) {
+                        Column(
+                            modifier = Modifier.clickable { onSenderClick() },
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                text = message.senderName,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary
                             )
+                            if (message.senderShowcaseBadges.isNotEmpty()) {
+                                SharkBadgeShowcaseRow(
+                                    badgeIds = message.senderShowcaseBadges,
+                                    compact = true,
+                                    badgeProgress = message.senderBadgeProgress
+                                )
+                            }
                         }
                     }
-                }
-                Text(
-                    text = message.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (message.isMine) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
+
+                    val quoteTargetId = message.replyToMessageId
+                    if (!quoteTargetId.isNullOrBlank()) {
+                        QuotedReplyBlock(
+                            senderName = message.replyToSenderName.orEmpty().ifBlank { "Mesaj" },
+                            preview = message.replyToPreview.orEmpty().ifBlank { "Alıntılanan mesaj" },
+                            isMineBubble = message.isMine,
+                            onClick = { onQuotedMessageClick(quoteTargetId) }
+                        )
                     }
-                )
-                Text(
-                    text = timeLabel,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.End)
-                )
+
+                    Text(
+                        text = message.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (message.isMine) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
+                    )
+                    Row(
+                        modifier = Modifier.align(Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (message.isEdited) {
+                            Text(
+                                text = "düzenlendi",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                            )
+                        }
+                        Text(
+                            text = timeLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Mesaj Seçenekleri",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                            modifier = Modifier
+                                .size(14.dp)
+                                .clickable { onOpenActionMenu() }
+                        )
+                    }
+                }
             }
+
+            MessageActionDropdown(
+                expanded = isActionMenuExpanded,
+                isMine = message.isMine,
+                canEdit = (message.type == "TEXT"),
+                onDismiss = onDismissActionMenu,
+                onReply = onReplyClick,
+                onEdit = onEditClick,
+                onDelete = onDeleteClick
+            )
         }
     }
 }
@@ -1372,6 +1607,9 @@ private fun ChatComposerBar(
     messageText: String,
     onMessageTextChange: (String) -> Unit,
     isSending: Boolean,
+    replyTarget: LeagueChatMessageUi? = null,
+    editingMessage: LeagueChatMessageUi? = null,
+    onCancelReplyOrEdit: () -> Unit = {},
     onShareQuestionClick: () -> Unit,
     onSendClick: () -> Unit
 ) {
@@ -1389,6 +1627,69 @@ private fun ChatComposerBar(
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            if (editingMessage != null || replyTarget != null) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(30.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (editingMessage != null) {
+                                    "Mesaj düzenleniyor"
+                                } else {
+                                    "Yanıtlanıyor: ${replyTarget?.senderName.orEmpty()}"
+                                },
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val previewLine = editingMessage?.text ?: when {
+                                replyTarget?.questionCard != null ->
+                                    "Soru: ${replyTarget.questionCard.subject} (${replyTarget.questionCard.topic})"
+                                replyTarget?.solutionReply != null ->
+                                    "Çözüm: ${replyTarget.solutionReply.solutionText.ifBlank { "Çözüm görseli" }}"
+                                else -> replyTarget?.text.orEmpty()
+                            }
+                            Text(
+                                text = previewLine,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(
+                            onClick = onCancelReplyOrEdit,
+                            modifier = Modifier.size(26.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "İptal",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1408,7 +1709,7 @@ private fun ChatComposerBar(
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
-                        text = "+ Soru Paylaş",
+                        text = "Soru Paylaş",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -1417,7 +1718,9 @@ private fun ChatComposerBar(
                 OutlinedTextField(
                     value = messageText,
                     onValueChange = onMessageTextChange,
-                    placeholder = { Text("Mesaj yaz...") },
+                    placeholder = {
+                        Text(if (editingMessage != null) "Mesajı düzenle..." else "Mesaj yaz...")
+                    },
                     maxLines = 3,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.weight(1f)
@@ -1443,8 +1746,12 @@ private fun ChatComposerBar(
                             )
                         } else {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Gönder",
+                                imageVector = if (editingMessage != null) {
+                                    Icons.Default.Check
+                                } else {
+                                    Icons.AutoMirrored.Filled.Send
+                                },
+                                contentDescription = if (editingMessage != null) "Kaydet" else "Gönder",
                                 tint = if (messageText.isNotBlank()) {
                                     MaterialTheme.colorScheme.onPrimary
                                 } else {
@@ -1836,7 +2143,319 @@ private fun EmptyChatPlaceholder(
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("+ Hata Kumbarası'ndan Soru Paylaş")
+                    Text("Hata Kumbarası'ndan Soru Paylaş")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageActionDropdown(
+    expanded: Boolean,
+    isMine: Boolean,
+    canEdit: Boolean,
+    onDismiss: () -> Unit,
+    onReply: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss
+    ) {
+        DropdownMenuItem(
+            text = { Text("Yanıtla") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Reply,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            onClick = {
+                onDismiss()
+                onReply()
+            }
+        )
+        if (isMine && canEdit) {
+            DropdownMenuItem(
+                text = { Text("Düzenle") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                },
+                onClick = {
+                    onDismiss()
+                    onEdit()
+                }
+            )
+        }
+        if (isMine) {
+            DropdownMenuItem(
+                text = { Text("Sil", color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                },
+                onClick = {
+                    onDismiss()
+                    onDelete()
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuotedReplyBlock(
+    senderName: String,
+    preview: String,
+    isMineBubble: Boolean,
+    onClick: () -> Unit
+) {
+    val accentColor = if (isMineBubble) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    val containerColor = if (isMineBubble) {
+        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.08f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = containerColor,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(28.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(accentColor)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = senderName,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = accentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = preview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isMineBubble) {
+                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZoomBadgeOverlay(
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(999.dp),
+        color = Color.Black.copy(alpha = 0.68f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.ZoomIn,
+                contentDescription = "Soruyu Büyüt",
+                tint = Color.White,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = "Büyüt",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                color = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+private fun ZoomableQuestionImageDialog(
+    bitmap: ImageBitmap?,
+    localPath: String?,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color(0xFF0A0D12)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF11161E))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Soru Görseli",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                val next = (scale - 0.5f).coerceIn(1f, 5f)
+                                scale = next
+                                if (next <= 1f) offset = Offset.Zero
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Remove,
+                                contentDescription = "Küçült",
+                                tint = Color.White
+                            )
+                        }
+                        Text(
+                            text = "${(scale * 100f).roundToInt()}%",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                        IconButton(
+                            onClick = {
+                                scale = (scale + 0.5f).coerceIn(1f, 5f)
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Yakınlaştır",
+                                tint = Color.White
+                            )
+                        }
+                        if (scale > 1.05f) {
+                            TextButton(
+                                onClick = {
+                                    scale = 1f
+                                    offset = Offset.Zero
+                                }
+                            ) {
+                                Text("Sıfırla", color = Color(0xFF38BDF8), fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Kapat",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    if (scale > 1.25f) {
+                                        scale = 1f
+                                        offset = Offset.Zero
+                                    } else {
+                                        scale = 2.5f
+                                    }
+                                }
+                            )
+                        }
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                val nextScale = (scale * zoom).coerceIn(1f, 5f)
+                                scale = nextScale
+                                if (nextScale <= 1f) {
+                                    offset = Offset.Zero
+                                } else {
+                                    val maxOffset = (nextScale - 1f) * 600f
+                                    offset = Offset(
+                                        x = (offset.x + pan.x).coerceIn(-maxOffset, maxOffset),
+                                        y = (offset.y + pan.y).coerceIn(-maxOffset, maxOffset)
+                                    )
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    val imgModifier = Modifier
+                        .fillMaxSize()
+                        .padding(8.dp)
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
+                            translationY = offset.y
+                        }
+
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap,
+                            contentDescription = "Büyütülmüş Soru Görseli",
+                            contentScale = ContentScale.Fit,
+                            modifier = imgModifier
+                        )
+                    } else if (!localPath.isNullOrBlank()) {
+                        val file = remember(localPath) { File(localPath) }
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(file)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "Büyütülmüş Soru Görseli",
+                            contentScale = ContentScale.Fit,
+                            modifier = imgModifier
+                        )
+                    }
                 }
             }
         }
