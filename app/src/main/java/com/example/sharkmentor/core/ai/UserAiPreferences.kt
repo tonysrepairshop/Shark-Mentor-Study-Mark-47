@@ -62,7 +62,7 @@ object UserAiPreferences {
 
     const val BUILTIN_DEFAULT_MODEL = "gemini-3.6-flash"
     const val STANDARD_GEMINI_MODEL = BUILTIN_DEFAULT_MODEL
-    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-2.5-flash"
+    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-3.6-flash"
 
     const val DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
     const val DEFAULT_KIMI_MODEL = "moonshot-v1-8k"
@@ -70,11 +70,7 @@ object UserAiPreferences {
     const val DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
     val KNOWN_VERTEX_GEMINI_MODELS = listOf(
-        "gemini-3.8-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro"
+        "gemini-3.6-flash"
     )
 
     private const val PREFS_NAME = "sharkmentor_user_ai_prefs"
@@ -318,6 +314,11 @@ object UserAiPreferences {
     // ── Opus Custom Config API ───────────────────────────────────────────────
 
     fun hasCustomKey(): Boolean = _configState.value.hasCustomKey
+
+    fun hasCustomUserGeminiKeys(context: Context? = null): Boolean {
+        context?.let { init(it) }
+        return hasCustomKey()
+    }
 
     fun getCustomApiKey(): String = _configState.value.customGeminiApiKey
 
