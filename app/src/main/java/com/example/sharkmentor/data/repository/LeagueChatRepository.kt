@@ -85,7 +85,7 @@ class LeagueChatRepository @Inject constructor(
     }
 
     private val firestore: FirebaseFirestore?
-        get() = GoogleServicesHelper.getFirestore()
+        get() = GoogleServicesHelper.getFirebaseFirestore()
 
     private val auth: FirebaseAuth?
         get() = GoogleServicesHelper.getFirebaseAuth()
