@@ -84,12 +84,14 @@ object MultiProviderAiClient {
     fun getGrokApiKey(context: Context? = null): String =
         UserAiPreferences.getOrNull(context)?.getUserGrokKey().orEmpty()
 
-    fun hasAnyExternalProviderKey(context: Context? = null): Boolean =
-        DeepSeekClient.getDeepSeekApiKey(context).isNotBlank() ||
-            DeepSeekClient.getKimiApiKey(context).isNotBlank() ||
+    fun hasAnyExternalProviderKey(context: Context? = null): Boolean {
+        val prefs = UserAiPreferences.getOrNull(context)
+        return prefs?.getUserDeepSeekKey()?.isNotBlank() == true ||
+            prefs?.getUserKimiKey()?.isNotBlank() == true ||
             getClaudeApiKey(context).isNotBlank() ||
             getOpenAiApiKey(context).isNotBlank() ||
             getGrokApiKey(context).isNotBlank()
+    }
 
     /**
      * Queries the live `/models` endpoint of [provider] using [apiKeyRaw] and returns

@@ -409,7 +409,19 @@ object UserAiPreferences {
     fun getSelectedGrokModel(): String = _selectedGrokModel.value
     fun getDiscoveredGrokModels(): List<GeminiModelOption> = _discoveredGrokModels.value
 
-    fun getSelectedProvider(): AiProviderChoice = _selectedAiProvider.value
+    private fun hasUserKeyForProvider(provider: AiProviderChoice): Boolean = when (provider) {
+        AiProviderChoice.AUTO, AiProviderChoice.GEMINI -> true
+        AiProviderChoice.DEEPSEEK -> getUserDeepSeekKey().isNotBlank()
+        AiProviderChoice.KIMI -> getUserKimiKey().isNotBlank()
+        AiProviderChoice.CLAUDE -> getUserClaudeKey().isNotBlank()
+        AiProviderChoice.OPENAI -> getUserOpenAiKey().isNotBlank()
+        AiProviderChoice.GROK -> getUserGrokKey().isNotBlank()
+    }
+
+    fun getSelectedProvider(): AiProviderChoice {
+        val selected = _selectedAiProvider.value
+        return if (hasUserKeyForProvider(selected)) selected else AiProviderChoice.AUTO
+    }
 
     fun resolveEffectiveGeminiModel(forKey: String? = null): String {
         val userKeys = getParsedUserGeminiKeys()
@@ -429,7 +441,7 @@ object UserAiPreferences {
     }
 
     fun getActiveProviderAndModel(): Pair<AiProviderChoice, String> {
-        return when (_selectedAiProvider.value) {
+        return when (getSelectedProvider()) {
             AiProviderChoice.GEMINI -> AiProviderChoice.GEMINI to resolveEffectiveGeminiModel()
             AiProviderChoice.DEEPSEEK -> AiProviderChoice.DEEPSEEK to getSelectedDeepSeekModel()
             AiProviderChoice.KIMI -> AiProviderChoice.KIMI to getSelectedKimiModel()
@@ -680,6 +692,15 @@ object UserAiPreferences {
         val effOpenAiModel = if (cleanOpenAi.isBlank()) DEFAULT_OPENAI_MODEL else sanitizeProviderModelId(selectedOpenAiModel, DEFAULT_OPENAI_MODEL)
         val effGrokModel = if (cleanGrok.isBlank()) DEFAULT_GROK_MODEL else sanitizeProviderModelId(selectedGrokModel, DEFAULT_GROK_MODEL)
 
+        val effectiveProvider = when (provider) {
+            AiProviderChoice.DEEPSEEK -> if (cleanDeepSeek.isNotBlank()) provider else AiProviderChoice.AUTO
+            AiProviderChoice.KIMI -> if (cleanKimi.isNotBlank()) provider else AiProviderChoice.AUTO
+            AiProviderChoice.CLAUDE -> if (cleanClaude.isNotBlank()) provider else AiProviderChoice.AUTO
+            AiProviderChoice.OPENAI -> if (cleanOpenAi.isNotBlank()) provider else AiProviderChoice.AUTO
+            AiProviderChoice.GROK -> if (cleanGrok.isNotBlank()) provider else AiProviderChoice.AUTO
+            AiProviderChoice.GEMINI, AiProviderChoice.AUTO -> provider
+        }
+
         val editor = sharedPrefs?.edit()
             ?.putString(KEY_GEMINI_KEYS, cleanGemini)
             ?.putString(KEY_LEGACY_CUSTOM_GEMINI_KEY, cleanGemini)
@@ -694,7 +715,7 @@ object UserAiPreferences {
             ?.putString(KEY_SELECTED_OPENAI_MODEL, effOpenAiModel)
             ?.putString(KEY_GROK_KEY, cleanGrok)
             ?.putString(KEY_SELECTED_GROK_MODEL, effGrokModel)
-            ?.putString(KEY_AI_PROVIDER, provider.id)
+            ?.putString(KEY_AI_PROVIDER, effectiveProvider.id)
 
         fun applyModelList(
             allowed: Boolean,
@@ -745,7 +766,7 @@ object UserAiPreferences {
         _selectedOpenAiModel.value = effOpenAiModel
         _userGrokKey.value = cleanGrok
         _selectedGrokModel.value = effGrokModel
-        _selectedAiProvider.value = provider
+        _selectedAiProvider.value = effectiveProvider
 
         ApiKeyRotator.invalidateAndReset()
     }
@@ -773,6 +794,7 @@ object UserAiPreferences {
             ?.remove(KEY_GROK_KEY)
             ?.remove(KEY_SELECTED_GROK_MODEL)
             ?.remove(KEY_DISCOVERED_GROK_MODELS)
+            ?.remove(KEY_AI_PROVIDER)
             ?.apply()
 
         _configState.value = UserAiConfigState()
@@ -794,6 +816,7 @@ object UserAiPreferences {
         _userGrokKey.value = ""
         _selectedGrokModel.value = DEFAULT_GROK_MODEL
         _discoveredGrokModels.value = emptyList()
+        _selectedAiProvider.value = AiProviderChoice.AUTO
 
         ApiKeyRotator.invalidateAndReset()
     }

@@ -65,7 +65,7 @@ class SharkMessagingService : FirebaseMessagingService() {
             }
         }
 
-        if (syncType == "NUDGE" || syncType == "STUDY_INVITE") {
+        if (syncType == "NUDGE" || syncType == "STUDY_INVITE" || syncType == "STUDY_INVITE_NUDGE") {
             val fromName = remoteMessage.data["fromName"]
                 ?: remoteMessage.data["senderName"]
                 ?: "Arkadaşın"
@@ -86,7 +86,7 @@ class SharkMessagingService : FirebaseMessagingService() {
             return
         }
 
-        if (syncType == "QUESTION" || syncType == "LEAGUE_QUESTION") {
+        if (syncType == "QUESTION" || syncType == "LEAGUE_QUESTION" || syncType == "LEAGUE_QUESTION_SHARED") {
             val senderName = remoteMessage.data["senderName"]
                 ?: remoteMessage.data["fromName"]
                 ?: "Grup Üyesi"

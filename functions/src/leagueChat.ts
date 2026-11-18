@@ -361,72 +361,274 @@ async function generateAiFallbackSolutionWithGemini36(
     }
   }
 
-  return `🦈 Shark AI (${GEMINI_MODEL}) Çözüm Rehberi:\nBu ${subject} (${topic}) sorusunda önce verilenleri birim ve formül bazında eşleştirip temel bağıntıyı uygulayarak adım adım sonuca ulaşabilirsin.`;
+  return `Shark AI (${GEMINI_MODEL}) Çözüm Rehberi:\nBu ${subject} (${topic}) sorusunda önce verilenleri birim ve formül bazında eşleştirip temel bağıntıyı uygulayarak adım adım sonuca ulaşabilirsin.`;
 }
 
-// ─── 1. ON QUESTION SOLUTION SUBMITTED (NOTIFY QUESTION OWNER) ───────────────
+const QUESTION_INVITE_TEMPLATES: string[] = [
+  "Gruba yeni bir %SUBJECT% sorusu düştü. Sen çözebilecek misin?",
+  "%SENDER% yeni bir %SUBJECT% sorusu paylaştı. Çözümünü göndermek için sohbete göz at.",
+  "%SUBJECT% adına yeni soru paylaşıldı. İlk doğru çözümü sen üretmeye hazır mısın?",
+  "Grupta %SUBJECT% sorusu seni bekliyor. Adımını at, çözüm önerini paylaş.",
+  "%SENDER% az önce %SUBJECT% sorusu bıraktı. İpucu ya da tam çözüm ile destek ol."
+];
+
+async function resolveChannelRecipientsAndMeta(
+  channelCollection: string,
+  channelId: string,
+  senderUid: string
+): Promise<{ recipientUids: string[]; groupName: string; isDm: boolean }> {
+  const isDm =
+    channelCollection === "dm_threads" ||
+    channelCollection === "direct_messages";
+  const recipients = new Set<string>();
+  let groupName = "";
+
+  try {
+    if (isDm) {
+      const dmSnap = await db.doc(`dm_threads/${channelId}`).get();
+      const dmData = dmSnap.exists
+        ? dmSnap.data()
+        : (await db.doc(`${channelCollection}/${channelId}`).get()).data();
+      const status = String(dmData?.status || dmData?.dmStatus || "ACCEPTED");
+      if (status === "REJECTED") {
+        return { recipientUids: [], groupName: "", isDm: true };
+      }
+      const participantIds = Array.isArray(dmData?.participantIds)
+        ? (dmData?.participantIds as string[])
+        : [];
+      for (const uid of participantIds) {
+        if (typeof uid === "string" && uid.trim().length > 0 && uid.trim() !== senderUid) {
+          recipients.add(uid.trim());
+        }
+      }
+      if (recipients.size === 0 && channelId.includes("_")) {
+        for (const part of channelId.split("_")) {
+          if (part.trim().length > 0 && part.trim() !== senderUid) {
+            recipients.add(part.trim());
+          }
+        }
+      }
+    } else if (channelCollection === "study_groups") {
+      const groupSnap = await db.doc(`study_groups/${channelId}`).get();
+      const gData = groupSnap.data();
+      groupName = String(gData?.name || `Grup ${channelId}`).trim();
+      const memberIds = Array.isArray(gData?.memberIds) ? (gData?.memberIds as string[]) : [];
+      for (const uid of memberIds) {
+        if (typeof uid === "string" && uid.trim().length > 0 && uid.trim() !== senderUid) {
+          recipients.add(uid.trim());
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[leagueChat] Failed to resolve recipients for ${channelCollection}/${channelId}:`, err);
+  }
+
+  return {
+    recipientUids: Array.from(recipients),
+    groupName,
+    isDm
+  };
+}
+
+// ─── 1. ON MESSAGE / QUESTION / SOLUTION CREATED (24/7 SEPARATED PUSH) ───────
 
 export const onQuestionSolutionSubmitted = functions.firestore
   .document("{channelCollection}/{channelId}/messages/{messageId}")
   .onCreate(async (snap, context) => {
     const channelCollection = context.params.channelCollection as string;
+    const channelId = context.params.channelId as string;
     if (!isSupportedChatCollection(channelCollection)) {
       return;
     }
 
     const data = snap.data();
-    if (!data || (data.messageType !== "SOLUTION_CARD" && data.type !== "SOLUTION")) {
+    if (!data || data.isDeleted === true) {
       return;
     }
 
-    const submission = (data.solutionSubmission || {}) as SolutionSubmissionDoc;
-    const questionMessageId = (
-      submission.questionMessageId ||
-      data.replyToQuestionMessageId ||
-      data.replyToQuestionId ||
-      ""
-    ) as string;
-    const solverUid = (submission.solverUid || data.senderUid || data.senderId || "") as string;
-    const solverName = (submission.solverName || data.senderName || "Arkadaşın") as string;
-    let questionOwnerUid = (submission.questionOwnerUid || "") as string;
+    const rawType = String(data.type || data.messageType || "TEXT").toUpperCase();
 
-    if (!questionOwnerUid && questionMessageId) {
-      const qSnap = await db
-        .collection(channelCollection)
-        .doc(context.params.channelId)
-        .collection("messages")
-        .doc(questionMessageId)
-        .get();
-      const qData = qSnap.data();
-      const qAttachment = (qData?.questionAttachment || {}) as QuestionAttachmentDoc;
-      questionOwnerUid = (qAttachment.ownerUid || qData?.senderUid || qData?.senderId || "") as string;
-    }
+    // Case A: Solution card submitted -> notify question owner
+    if (rawType === "SOLUTION_CARD" || rawType === "SOLUTION") {
+      const submission = (data.solutionSubmission || {}) as SolutionSubmissionDoc;
+      const questionMessageId = (
+        submission.questionMessageId ||
+        data.replyToQuestionMessageId ||
+        data.replyToQuestionId ||
+        ""
+      ) as string;
+      const solverUid = (submission.solverUid || data.senderUid || data.senderId || "") as string;
+      const solverName = (submission.solverName || data.senderName || "Arkadaşın") as string;
+      let questionOwnerUid = (submission.questionOwnerUid || "") as string;
 
-    if (!questionOwnerUid || questionOwnerUid === solverUid) {
+      if (!questionOwnerUid && questionMessageId) {
+        const qSnap = await db
+          .collection(channelCollection)
+          .doc(channelId)
+          .collection("messages")
+          .doc(questionMessageId)
+          .get();
+        const qData = qSnap.data();
+        const qAttachment = (qData?.questionAttachment || {}) as QuestionAttachmentDoc;
+        questionOwnerUid = (qAttachment.ownerUid || qData?.senderUid || qData?.senderId || "") as string;
+      }
+
+      if (!questionOwnerUid || questionOwnerUid === solverUid) {
+        return;
+      }
+
+      const title = `${solverName} soruna bir çözüm gönderdi`;
+      const body = "Çözümü incele ve doğruysa onaylayarak arkadaşına mentor puanı kazandır.";
+
+      await sendHighPriorityPush(
+        questionOwnerUid,
+        title,
+        body,
+        {
+          type: "QUESTION_SOLUTION_SUBMITTED",
+          channelCollection,
+          channelId,
+          roomId: channelId,
+          questionMessageId,
+          solutionMessageId: snap.id,
+          solverUid,
+          solverName,
+          method: String(submission.method || "DRAWING")
+        },
+        channelId,
+        solverUid
+      );
       return;
     }
 
-    const title = `✏️ ${solverName} soruna bir çözüm gönderdi!`;
-    const body = "Çözümü incele ve doğruysa ✓ ile onaylayarak arkadaşına mentor puanı kazandır.";
+    // Avoid duplicate notifications if legacy dual-write hits league_chats
+    if (channelCollection === "league_chats") {
+      return;
+    }
 
-    await sendHighPriorityPush(
-      questionOwnerUid,
-      title,
-      body,
-      {
-        type: "QUESTION_SOLUTION_SUBMITTED",
-        channelCollection,
-        channelId: context.params.channelId,
-        roomId: context.params.channelId,
-        questionMessageId,
-        solutionMessageId: snap.id,
-        solverUid,
-        solverName,
-        method: String(submission.method || "DRAWING")
-      },
-      context.params.channelId,
-      solverUid
+    const qAttachment = (data.questionAttachment || {}) as QuestionAttachmentDoc;
+    const senderUid = String(
+      data.senderId || data.senderUid || qAttachment.ownerUid || ""
+    ).trim();
+    if (!senderUid || senderUid === "SHARK_AI_MENTOR") {
+      return;
+    }
+    const senderName = String(
+      data.senderName || qAttachment.ownerName || "Grup Üyesi"
+    ).trim();
+
+    const { recipientUids, groupName, isDm } = await resolveChannelRecipientsAndMeta(
+      channelCollection,
+      channelId,
+      senderUid
     );
+    if (recipientUids.length === 0) {
+      return;
+    }
+
+    // Case B: Question shared -> separated inviting question notification
+    if (rawType === "QUESTION" || rawType === "QUESTION_CARD") {
+      const subject = String(
+        data.questionSubject || qAttachment.subject || "Ders"
+      ).trim() || "Ders";
+      const topic = String(
+        data.questionTopic || qAttachment.topic || ""
+      ).trim();
+      const subjectLabel = topic && topic.toLowerCase() !== "genel"
+        ? `${subject} (${topic})`
+        : subject;
+
+      const templateIdx = Math.abs(snap.id.split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0)) %
+        QUESTION_INVITE_TEMPLATES.length;
+      const body = isDm
+        ? `${senderName} sana yeni bir ${subjectLabel} sorusu gönderdi. Sen çözebilecek misin?`
+        : QUESTION_INVITE_TEMPLATES[templateIdx]
+            .replace("%SUBJECT%", subjectLabel)
+            .replace("%SENDER%", senderName);
+      const title = isDm
+        ? `${senderName} • Yeni ${subject} Sorusu`
+        : `${groupName || "Çalışma Grubu"} • Yeni ${subject} Sorusu`;
+
+      await Promise.all(
+        recipientUids.map((recipientUid) =>
+          sendHighPriorityPush(
+            recipientUid,
+            title,
+            body,
+            {
+              type: "QUESTION",
+              triggerType: "LEAGUE_QUESTION",
+              channelCollection,
+              channelId,
+              roomId: channelId,
+              groupCode: isDm ? "" : channelId,
+              groupId: isDm ? "" : channelId,
+              groupName: groupName || "",
+              isDm: isDm ? "true" : "false",
+              chatMode: isDm ? "DIRECT" : "GROUP",
+              messageId: snap.id,
+              id: snap.id,
+              senderUid,
+              senderId: senderUid,
+              senderName,
+              fromName: senderName,
+              questionSubject: subject,
+              subject,
+              questionTopic: topic,
+              topic
+            },
+            channelId,
+            senderUid
+          )
+        )
+      );
+      return;
+    }
+
+    // Case C: Text chat message -> separated chat notification
+    if (rawType === "TEXT") {
+      const messageText = String(data.text || "").trim();
+      if (!messageText) {
+        return;
+      }
+      const title = isDm
+        ? senderName
+        : `${groupName || "Çalışma Grubu"} • ${senderName}`;
+      const body = messageText.slice(0, 160);
+
+      await Promise.all(
+        recipientUids.map((recipientUid) =>
+          sendHighPriorityPush(
+            recipientUid,
+            title,
+            body,
+            {
+              type: isDm ? "DM_MESSAGE" : "CHAT_MESSAGE",
+              triggerType: "CHAT_MESSAGE",
+              channelCollection,
+              channelId,
+              roomId: channelId,
+              groupCode: isDm ? "" : channelId,
+              groupId: isDm ? "" : channelId,
+              groupName: groupName || "",
+              isDm: isDm ? "true" : "false",
+              chatMode: isDm ? "DIRECT" : "GROUP",
+              messageId: snap.id,
+              id: snap.id,
+              senderUid,
+              senderId: senderUid,
+              senderName,
+              fromName: senderName,
+              text: messageText.slice(0, 240),
+              body: messageText.slice(0, 240),
+              message: messageText.slice(0, 240)
+            },
+            channelId,
+            senderUid
+          )
+        )
+      );
+    }
   });
 
 // ─── 2. ON QUESTION SOLUTION VERIFIED (SYNC WEEKLY LEAGUE & NOTIFY SOLVER) ───
@@ -534,11 +736,11 @@ export const onQuestionSolutionVerified = functions.firestore
         console.warn(`[onQuestionSolutionVerified] Failed to sync weeklyLeague for ${solverUid}:`, err);
       }
 
-      const title = "🏆 Çözümün Onaylandı!";
+      const title = "Çözümün Onaylandı";
       const body =
         awardedPoints > 0
-          ? `Tebrikler! +${awardedPoints} Mentor Puanı ve +${bonusMinutes} dk haftalık odak bonusu kazandın!`
-          : "Çözümün soru sahibi tarafından doğru olarak onaylandı!";
+          ? `Tebrikler! +${awardedPoints} Mentor Puanı ve +${bonusMinutes} dk haftalık odak bonusu kazandın.`
+          : "Çözümün soru sahibi tarafından doğru olarak onaylandı.";
 
       await sendHighPriorityPush(
         solverUid,
@@ -558,7 +760,7 @@ export const onQuestionSolutionVerified = functions.firestore
         context.params.channelId
       );
     } else {
-      const title = "ℹ️ Çözümün Onaylanmadı";
+      const title = "Çözümün Onaylanmadı";
       const body = `Soru sahibi çözümü yeterli bulmadı (aynı soruda en fazla ${MAX_REJECTED_ATTEMPTS_PER_QUESTION} red hakkı).`;
 
       await sendHighPriorityPush(
@@ -828,7 +1030,7 @@ export const checkLeagueQuestionTimers = functions.pubsub
           questionMessageId: qDoc.id,
           questionOwnerUid: String(qAttachment.ownerUid || ""),
           solverUid: "SHARK_AI_MENTOR",
-          solverName: "🦈 Shark AI (gemini-3.6-flash)",
+          solverName: "Shark AI (gemini-3.6-flash)",
           method: "AI_FALLBACK",
           annotatedImageUrl: String(qAttachment.questionImageUrl || ""),
           explanationText: aiSolutionText,
@@ -849,7 +1051,7 @@ export const checkLeagueQuestionTimers = functions.pubsub
           channelId,
           channelType: channelCollection === "direct_messages" ? "DM" : "GROUP",
           senderUid: "SHARK_AI_MENTOR",
-          senderName: "🦈 Shark AI (gemini-3.6-flash)",
+          senderName: "Shark AI (gemini-3.6-flash)",
           senderAvatarPresetId: 0,
           senderShowcaseBadges: ["MEGALODON"],
           showcaseBadgeIds: ["MEGALODON"],
@@ -865,7 +1067,7 @@ export const checkLeagueQuestionTimers = functions.pubsub
           status: "AI_SOLVED",
           approvedSolutionId: "ai_fallback",
           approvedSolverUid: "SHARK_AI_MENTOR",
-          approvedSolverName: "🦈 Shark AI",
+          approvedSolverName: "Shark AI",
           aiFallbackText: aiSolutionText
         };
 
@@ -878,7 +1080,7 @@ export const checkLeagueQuestionTimers = functions.pubsub
         if (qAttachment.ownerUid) {
           await sendHighPriorityPush(
             qAttachment.ownerUid,
-            "🦈 Shark AI Sorunu Çözdü!",
+            "Shark AI Sorunu Çözdü",
             "Paylaştığın soruya 105 dakika içinde çözüm gelmediği için Shark AI adım adım çözümü sohbete ekledi.",
             {
               type: "AI_FALLBACK_SOLUTION",
