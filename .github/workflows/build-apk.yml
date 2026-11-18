@@ -164,8 +164,9 @@ jobs:
           TEST_ONLY=$( "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml | grep -E "testOnly|minSdkVersion|targetSdkVersion|versionCode|versionName|extractNativeLibs|isSplitRequired|debuggable|compileSdkVersionCodename" || true )
           BADGING=$("$AAPT2" dump badging "$APK" | head -n 5 || true)
 
+          CODENAME_VAL=$(echo "$BADGING" | sed -n "s/.*compileSdkVersionCodename='\([^']*\)'.*/\1/p" | head -n 1)
           CODENAME_FOUND=0
-          if echo "$BADGING $TEST_ONLY" | grep -qi "compileSdkVersionCodename"; then
+          if [ -n "$CODENAME_VAL" ] && ! echo "$CODENAME_VAL" | grep -qE "^([0-9]+(\.[0-9]+)*|REL)$"; then
             CODENAME_FOUND=1
           fi
           TEST_ONLY_FOUND=0
