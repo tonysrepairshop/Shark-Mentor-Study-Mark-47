@@ -39,12 +39,16 @@ object DrawingSerializer {
                     put("alpha", stroke.alpha.toDouble())
                     put("canvasWidth", stroke.canvasWidth.toDouble())
                     put("canvasHeight", stroke.canvasHeight.toDouble())
+                    put("pressureSensitive", stroke.pressureSensitive)
 
                     val ptsArray = JSONArray()
                     for (pt in stroke.points) {
                         val ptObj = JSONObject()
                         ptObj.put("x", pt.x.toDouble())
                         ptObj.put("y", pt.y.toDouble())
+                        if (kotlin.math.abs(pt.pressure - 1.0f) > 0.005f) {
+                            ptObj.put("p", ((pt.pressure * 1000f).toInt() / 1000.0))
+                        }
                         ptsArray.put(ptObj)
                     }
                     put("points", ptsArray)
@@ -74,8 +78,9 @@ object DrawingSerializer {
                     val ptObj = ptsArray.optJSONObject(pIdx) ?: continue
                     val x = ptObj.optDouble("x", Double.NaN).toFloat()
                     val y = ptObj.optDouble("y", Double.NaN).toFloat()
+                    val pressure = ptObj.optDouble("p", 1.0).toFloat().coerceIn(0.1f, 2.0f)
                     if (!x.isNaN() && !y.isNaN()) {
-                        points.add(DrawingPoint(x, y))
+                        points.add(DrawingPoint(x, y, pressure))
                     }
                 }
                 if (points.isEmpty()) continue
@@ -96,7 +101,8 @@ object DrawingSerializer {
                         alpha = obj.optDouble("alpha", 1.0).toFloat().coerceIn(0.05f, 1.0f),
                         points = points,
                         canvasWidth = obj.optDouble("canvasWidth", 1080.0).toFloat().coerceAtLeast(1f),
-                        canvasHeight = obj.optDouble("canvasHeight", 1920.0).toFloat().coerceAtLeast(1f)
+                        canvasHeight = obj.optDouble("canvasHeight", 1920.0).toFloat().coerceAtLeast(1f),
+                        pressureSensitive = obj.optBoolean("pressureSensitive", true)
                     )
                 )
             }
@@ -107,20 +113,46 @@ object DrawingSerializer {
         }
     }
 
-    // ── Note Sidecar Storage (files/note_drawings/note_<id>.json) ────────────
+    // ── Note Sidecar Storage (files/note_drawings/note_<id>.json & note_<id>_p<page>.json) ──
 
-    private fun getNoteDrawingFile(context: Context, noteId: String): File {
-        val dir = File(context.filesDir, NOTE_DRAWINGS_DIR).apply {
+    private fun sanitizeNoteId(noteId: String): String =
+        noteId.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "default" }
+
+    private fun getNoteDrawingDir(context: Context): File =
+        File(context.filesDir, NOTE_DRAWINGS_DIR).apply {
             if (!exists()) mkdirs()
         }
-        val safeId = noteId.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "default" }
+
+    private fun getNoteDrawingFile(context: Context, noteId: String): File {
+        val dir = getNoteDrawingDir(context)
+        val safeId = sanitizeNoteId(noteId)
         return File(dir, "note_${safeId}.json")
     }
 
+    private fun getNotePageDrawingFile(context: Context, noteId: String, pageIndex: Int): File {
+        if (pageIndex <= 0) return getNoteDrawingFile(context, noteId)
+        val dir = getNoteDrawingDir(context)
+        val safeId = sanitizeNoteId(noteId)
+        return File(dir, "note_${safeId}_p${pageIndex}.json")
+    }
+
     fun saveNoteDrawing(context: Context, noteId: String, strokes: List<DrawingStroke>) {
-        if (noteId.isBlank()) return
+        saveNotePageDrawing(context, noteId, pageIndex = 0, strokes = strokes)
+    }
+
+    fun loadNoteDrawing(context: Context, noteId: String): List<DrawingStroke> {
+        return loadNotePageDrawing(context, noteId, pageIndex = 0)
+    }
+
+    fun saveNotePageDrawing(
+        context: Context,
+        noteId: String,
+        pageIndex: Int,
+        strokes: List<DrawingStroke>
+    ) {
+        if (noteId.isBlank() || pageIndex < 0) return
         runCatching {
-            val file = getNoteDrawingFile(context, noteId)
+            val file = getNotePageDrawingFile(context, noteId, pageIndex)
             if (strokes.isEmpty()) {
                 if (file.exists()) file.delete()
                 return
@@ -128,37 +160,75 @@ object DrawingSerializer {
             val json = strokesToJson(strokes)
             file.writeText(json, Charsets.UTF_8)
         }.onFailure { e ->
-            Log.e(TAG, "Failed saving note drawing for $noteId", e)
+            Log.e(TAG, "Failed saving note drawing for $noteId page $pageIndex", e)
         }
     }
 
-    fun loadNoteDrawing(context: Context, noteId: String): List<DrawingStroke> {
-        if (noteId.isBlank()) return emptyList()
+    fun loadNotePageDrawing(
+        context: Context,
+        noteId: String,
+        pageIndex: Int
+    ): List<DrawingStroke> {
+        if (noteId.isBlank() || pageIndex < 0) return emptyList()
         return runCatching {
-            val file = getNoteDrawingFile(context, noteId)
+            val file = getNotePageDrawingFile(context, noteId, pageIndex)
             if (!file.exists()) return emptyList()
             strokesFromJson(file.readText(Charsets.UTF_8))
         }.getOrElse { e ->
-            Log.e(TAG, "Failed loading note drawing for $noteId", e)
+            Log.e(TAG, "Failed loading note drawing for $noteId page $pageIndex", e)
             emptyList()
+        }
+    }
+
+    fun deleteNotePageDrawingAndShift(
+        context: Context,
+        noteId: String,
+        deletedPageIndex: Int,
+        totalPagesBeforeDelete: Int
+    ) {
+        if (noteId.isBlank() || deletedPageIndex < 0 || totalPagesBeforeDelete <= 1) return
+        runCatching {
+            for (idx in deletedPageIndex until (totalPagesBeforeDelete - 1)) {
+                val nextStrokes = loadNotePageDrawing(context, noteId, idx + 1)
+                saveNotePageDrawing(context, noteId, idx, nextStrokes)
+            }
+            val lastFile = getNotePageDrawingFile(context, noteId, totalPagesBeforeDelete - 1)
+            if (lastFile.exists()) lastFile.delete()
+        }.onFailure { e ->
+            Log.w(TAG, "Failed shifting note page drawings for $noteId", e)
         }
     }
 
     fun hasNoteDrawing(context: Context, noteId: String): Boolean {
         if (noteId.isBlank()) return false
         return runCatching {
-            val file = getNoteDrawingFile(context, noteId)
-            file.exists() && file.length() > 30L
+            val dir = getNoteDrawingDir(context)
+            val safeId = sanitizeNoteId(noteId)
+            val primary = File(dir, "note_${safeId}.json")
+            if (primary.exists() && primary.length() > 30L) return@runCatching true
+            val prefix = "note_${safeId}_p"
+            dir.listFiles()?.any {
+                it.name.startsWith(prefix) && it.name.endsWith(".json") && it.length() > 30L
+            } == true
         }.getOrDefault(false)
     }
 
     fun duplicateNoteDrawing(context: Context, sourceNoteId: String, targetNoteId: String) {
         if (sourceNoteId.isBlank() || targetNoteId.isBlank()) return
         runCatching {
-            val src = getNoteDrawingFile(context, sourceNoteId)
-            if (src.exists()) {
-                val dst = getNoteDrawingFile(context, targetNoteId)
-                src.copyTo(dst, overwrite = true)
+            val dir = getNoteDrawingDir(context)
+            val srcSafe = sanitizeNoteId(sourceNoteId)
+            val dstSafe = sanitizeNoteId(targetNoteId)
+            val srcPrimary = File(dir, "note_${srcSafe}.json")
+            if (srcPrimary.exists()) {
+                srcPrimary.copyTo(File(dir, "note_${dstSafe}.json"), overwrite = true)
+            }
+            val pagePrefix = "note_${srcSafe}_p"
+            dir.listFiles()?.forEach { file ->
+                if (file.name.startsWith(pagePrefix) && file.name.endsWith(".json")) {
+                    val suffix = file.name.removePrefix("note_${srcSafe}")
+                    file.copyTo(File(dir, "note_${dstSafe}${suffix}"), overwrite = true)
+                }
             }
         }.onFailure { e ->
             Log.w(TAG, "Failed duplicating note drawing from $sourceNoteId to $targetNoteId", e)
@@ -168,8 +238,16 @@ object DrawingSerializer {
     fun deleteNoteDrawing(context: Context, noteId: String) {
         if (noteId.isBlank()) return
         runCatching {
-            val file = getNoteDrawingFile(context, noteId)
-            if (file.exists()) file.delete()
+            val dir = getNoteDrawingDir(context)
+            val safeId = sanitizeNoteId(noteId)
+            val primary = File(dir, "note_${safeId}.json")
+            if (primary.exists()) primary.delete()
+            val pagePrefix = "note_${safeId}_p"
+            dir.listFiles()?.forEach { file ->
+                if (file.name.startsWith(pagePrefix) && file.name.endsWith(".json")) {
+                    file.delete()
+                }
+            }
         }
     }
 
