@@ -5,9 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.sharkmentor.SharkMentorApplication
 import com.example.sharkmentor.core.ai.GeminiCoreService
+import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.fsrs.FsrsEngine
 import com.example.sharkmentor.core.fsrs.FsrsRating
 import com.example.sharkmentor.core.model.TwinQuestionData
+import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.data.local.entity.ErrorQuestionEntity
 import com.example.sharkmentor.data.local.entity.TrainingFolderEntity
@@ -571,6 +573,20 @@ class ErrorBankViewModel(application: Application, savedStateHandle: androidx.li
                 
                 dao?.updateQuestion(entityToSave)
                 com.example.sharkmentor.service.sync.SyncWorker.enqueueImmediateSync(context)
+
+                if (rating == FsrsRating.GOOD || rating == FsrsRating.EASY) {
+                    val effectiveTopic = currentQ.aiTopic?.takeIf { it.isNotBlank() } ?: currentQ.topic
+                    SharkBadgeCatalog.recordTopicQuestionSolvedLocally(
+                        context = context,
+                        subject = currentQ.subject,
+                        topic = effectiveTopic,
+                        syncToCloudIfLoggedIn = false
+                    )
+                    val uid = runCatching { GoogleServicesHelper.getCurrentUser(context = context)?.uid }.getOrNull()
+                    if (!uid.isNullOrBlank() && uid != "local_student" && uid != "student_default") {
+                        SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(context, uid)
+                    }
+                }
 
                 // Session Queue Logic:
                 sessionQueue.remove(currentQ)

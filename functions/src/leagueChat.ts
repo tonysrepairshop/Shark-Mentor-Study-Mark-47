@@ -78,7 +78,34 @@ function resolveBadgeTier(mentorPoints: number): { tier: BadgeTierName; displayN
 }
 
 function isSupportedChatCollection(col: string): boolean {
-  return col === "league_chats" || col === "study_groups" || col === "direct_messages";
+  return (
+    col === "league_chats" ||
+    col === "study_groups" ||
+    col === "direct_messages" ||
+    col === "dm_threads"
+  );
+}
+
+async function isSenderBlockedByRecipient(recipientUid: string, senderUid: string): Promise<boolean> {
+  const cleanRecipient = (recipientUid || "").trim();
+  const cleanSender = (senderUid || "").trim();
+  if (!cleanRecipient || !cleanSender || cleanRecipient === cleanSender) {
+    return false;
+  }
+  try {
+    const blockDoc = await db.doc(`user_blocks/${cleanRecipient}/blocked/${cleanSender}`).get();
+    if (blockDoc.exists) {
+      return true;
+    }
+    const recipientSnap = await db.doc(`students/${cleanRecipient}`).get();
+    const blockedArr = recipientSnap.data()?.blockedUserIds;
+    if (Array.isArray(blockedArr) && blockedArr.includes(cleanSender)) {
+      return true;
+    }
+  } catch (_err) {
+    // Ignore transient lookup errors
+  }
+  return false;
 }
 
 async function resolveStudentFcmTokens(studentId: string): Promise<string[]> {
@@ -118,8 +145,22 @@ async function sendHighPriorityPush(
   title: string,
   body: string,
   data: Record<string, string>,
-  roomId?: string
+  roomId?: string,
+  senderUid?: string
 ): Promise<boolean> {
+  const effectiveSenderUid = (
+    senderUid ||
+    data.solverUid ||
+    data.senderUid ||
+    data.questionOwnerUid ||
+    ""
+  ).trim();
+  if (effectiveSenderUid && (await isSenderBlockedByRecipient(recipientUid, effectiveSenderUid))) {
+    console.log(
+      `[leagueChat] Suppressed notification for ${recipientUid}; sender ${effectiveSenderUid} is blocked.`
+    );
+    return false;
+  }
   if (roomId && (await isRoomMutedForUser(roomId, recipientUid))) {
     console.log(`[leagueChat] Suppressed notification for ${recipientUid}; room ${roomId} is muted.`);
     return false;
@@ -334,13 +375,18 @@ export const onQuestionSolutionSubmitted = functions.firestore
     }
 
     const data = snap.data();
-    if (!data || data.messageType !== "SOLUTION_CARD") {
+    if (!data || (data.messageType !== "SOLUTION_CARD" && data.type !== "SOLUTION")) {
       return;
     }
 
     const submission = (data.solutionSubmission || {}) as SolutionSubmissionDoc;
-    const questionMessageId = (submission.questionMessageId || data.replyToQuestionMessageId || "") as string;
-    const solverUid = (submission.solverUid || data.senderUid || "") as string;
+    const questionMessageId = (
+      submission.questionMessageId ||
+      data.replyToQuestionMessageId ||
+      data.replyToQuestionId ||
+      ""
+    ) as string;
+    const solverUid = (submission.solverUid || data.senderUid || data.senderId || "") as string;
     const solverName = (submission.solverName || data.senderName || "Arkadaşın") as string;
     let questionOwnerUid = (submission.questionOwnerUid || "") as string;
 
@@ -353,7 +399,7 @@ export const onQuestionSolutionSubmitted = functions.firestore
         .get();
       const qData = qSnap.data();
       const qAttachment = (qData?.questionAttachment || {}) as QuestionAttachmentDoc;
-      questionOwnerUid = (qAttachment.ownerUid || qData?.senderUid || "") as string;
+      questionOwnerUid = (qAttachment.ownerUid || qData?.senderUid || qData?.senderId || "") as string;
     }
 
     if (!questionOwnerUid || questionOwnerUid === solverUid) {
@@ -378,7 +424,8 @@ export const onQuestionSolutionSubmitted = functions.firestore
         solverName,
         method: String(submission.method || "DRAWING")
       },
-      context.params.channelId
+      context.params.channelId,
+      solverUid
     );
   });
 
@@ -394,15 +441,19 @@ export const onQuestionSolutionVerified = functions.firestore
 
     const beforeData = change.before.data();
     const afterData = change.after.data();
-    if (!beforeData || !afterData || afterData.messageType !== "SOLUTION_CARD") {
+    if (
+      !beforeData ||
+      !afterData ||
+      (afterData.messageType !== "SOLUTION_CARD" && afterData.type !== "SOLUTION")
+    ) {
       return;
     }
 
     const beforeSub = (beforeData.solutionSubmission || {}) as SolutionSubmissionDoc;
     const afterSub = (afterData.solutionSubmission || {}) as SolutionSubmissionDoc;
 
-    const prevStatus = beforeSub.verifyStatus || "PENDING_ESCROW";
-    const nextStatus = afterSub.verifyStatus || "PENDING_ESCROW";
+    const prevStatus = beforeSub.verifyStatus || String(beforeData.approvalStatus || "PENDING_ESCROW");
+    const nextStatus = afterSub.verifyStatus || String(afterData.approvalStatus || "PENDING_ESCROW");
 
     if (prevStatus === nextStatus) {
       return;
@@ -411,13 +462,21 @@ export const onQuestionSolutionVerified = functions.firestore
       return;
     }
 
-    const solverUid = (afterSub.solverUid || afterData.senderUid || "") as string;
+    const solverUid = (
+      afterSub.solverUid ||
+      afterData.senderUid ||
+      afterData.senderId ||
+      ""
+    ) as string;
     if (!solverUid) {
       return;
     }
 
-    const awardedPoints = Number(afterSub.awardedPoints || 0);
-    const awardedBonusSeconds = Number(afterSub.awardedBonusSeconds || 0);
+    const awardedPoints = Number(afterSub.awardedPoints ?? afterData.escrowPoints ?? 0);
+    const awardedBonusSeconds = Number(
+      afterSub.awardedBonusSeconds ??
+        (afterData.escrowBonusMinutes ? Number(afterData.escrowBonusMinutes) * 60 : 0)
+    );
     const bonusMinutes = Math.round(awardedBonusSeconds / 60);
 
     if (nextStatus === "APPROVED") {
