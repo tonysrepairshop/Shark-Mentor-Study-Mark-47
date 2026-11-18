@@ -53,7 +53,9 @@ import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.example.sharkmentor.data.repository.CoachCodeRepository
 import com.example.sharkmentor.service.sync.SyncWorker
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.example.sharkmentor.ui.screens.leaguechat.BadgeShowcaseSelectorSheet
+import com.example.sharkmentor.ui.screens.profile.ProfileBadgesTab
 import com.example.sharkmentor.ui.screens.profile.ProfileViewModel
 import com.google.firebase.firestore.SetOptions
 import java.util.Locale
@@ -270,16 +272,46 @@ fun ProfileScreen(
         }
     }
 
+    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Profil ve Hesap") },
-                navigationIcon = {
-                    IconButton(onClick = onBackClick) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Geri")
+            Column {
+                TopAppBar(
+                    title = { Text("Profil ve Hesap") },
+                    navigationIcon = {
+                        IconButton(onClick = onBackClick) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Geri")
+                        }
                     }
+                )
+                TabRow(
+                    selectedTabIndex = selectedTabIndex,
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.primary
+                ) {
+                    Tab(
+                        selected = selectedTabIndex == 0,
+                        onClick = { selectedTabIndex = 0 },
+                        text = {
+                            Text(
+                                text = "Profil & Hesap",
+                                fontWeight = if (selectedTabIndex == 0) FontWeight.Bold else FontWeight.Medium
+                            )
+                        }
+                    )
+                    Tab(
+                        selected = selectedTabIndex == 1,
+                        onClick = { selectedTabIndex = 1 },
+                        text = {
+                            Text(
+                                text = "Rozetler (${unlockedBadgeIds.size}/${SharkBadgeCatalog.ALL_BADGES.size})",
+                                fontWeight = if (selectedTabIndex == 1) FontWeight.Bold else FontWeight.Medium
+                            )
+                        }
+                    )
                 }
-            )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
@@ -290,6 +322,32 @@ fun ProfileScreen(
         }
         val effectiveDisplayName = if (isGuest) "Misafir Öğrenci" else studentName.ifBlank { "Adını Belirle" }
 
+        if (selectedTabIndex == 1) {
+            ProfileBadgesTab(
+                unlockedBadgeIds = unlockedBadgeIds,
+                showcaseBadgeIds = showcaseBadgeIds,
+                badgeProgress = badgeProgress,
+                mentorPoints = mentorPoints,
+                onOpenShowcaseEditor = { showBadgeShowcaseSheet = true },
+                onUpdateShowcaseIds = { updated ->
+                    val saved = SharkBadgeCatalog.saveShowcaseBadgeIds(context, updated)
+                    showcaseBadgeIds = saved
+                    if (!isGuest && user != null) {
+                        SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(
+                            context = context,
+                            uid = uid,
+                            showcaseIds = saved,
+                            unlockedIds = unlockedBadgeIds,
+                            mentorPoints = mentorPoints,
+                            badgeProgress = badgeProgress
+                        )
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            )
+        } else {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -512,10 +570,24 @@ fun ProfileScreen(
                             )
                         } else {
                             Text(
-                                text = "Grup ve soru sohbetlerinde soru paylaşarak veya çözerek 12 kademeli rozetten kazanıp en fazla 5 rozetini burada sergileyebilirsin.",
+                                text = "Grup ve soru sohbetlerinde soru paylaşarak veya çözerek rozetler kazanıp en fazla 5 rozetini burada sergileyebilirsin.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(onClick = { selectedTabIndex = 1 }) {
+                                Text(
+                                    text = "Tüm Rozetleri Gör →",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 12.5.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }
@@ -721,6 +793,7 @@ fun ProfileScreen(
             }
             } // end Login/Logout item
         }
+        } // end Tab 0/1 branch
     }
 
 
