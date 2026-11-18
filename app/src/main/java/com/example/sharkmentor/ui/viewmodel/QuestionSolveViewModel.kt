@@ -1,5 +1,6 @@
 package com.example.sharkmentor.ui.viewmodel
 
+import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
@@ -65,15 +66,30 @@ enum class SolveRewardTier(
 }
 
 /**
+ * Soru Çözüm Ekranındaki 4 ana araç sekmesi:
+ * 1. PEN: ✏️ Kalem (basınç hassasiyetli çizim)
+ * 2. TEXT_BOX: 📝 Metin Kutusu (en az 25 karakter kuralı)
+ * 3. CAMERA_GALLERY: 📷 Kamera / Galeri (kağıda çözülen fotoğrafı seçme)
+ * 4. SHARK_AI: 🤖 Shark AI (AI çözüm kilidi onay diyaloğu)
+ */
+enum class SolveWorkspaceTool(val label: String, val emoji: String) {
+    PEN("Kalem", "✏️"),
+    TEXT_BOX("Metin Kutusu", "📝"),
+    CAMERA_GALLERY("Kamera / Galeri", "📷"),
+    SHARK_AI("Shark AI", "🤖")
+}
+
+/**
  * Lig Sohbeti Soru Çözüm Ekranı (QuestionSolveScreen) için ViewModel.
- * 105 dakikalık canlı geri sayım sayacını, kademeli ödül hesaplamasını ve
- * adım adım çözüm metni durumunu yönetir.
+ * 105 dakikalık canlı geri sayım sayacını, kademeli ödül hesaplamasını,
+ * 4 araç durumunu (Kalem, Metin Kutusu >=25 karakter, Kamera/Galeri, Shark AI Kilidi) yönetir.
  */
 class QuestionSolveViewModel : ViewModel() {
 
     companion object {
         const val TOTAL_SOLVE_WINDOW_MINUTES = 105L
         const val TOTAL_SOLVE_WINDOW_MILLIS = TOTAL_SOLVE_WINDOW_MINUTES * 60_000L
+        const val MIN_EXPLANATION_LENGTH = 25
 
         private const val GOLD_MAX_ELAPSED_MILLIS = 15L * 60_000L
         private const val SILVER_MAX_ELAPSED_MILLIS = 60L * 60_000L
@@ -131,8 +147,17 @@ class QuestionSolveViewModel : ViewModel() {
     private val _currentTier = MutableStateFlow(SolveRewardTier.GOLD_100)
     val currentTier: StateFlow<SolveRewardTier> = _currentTier.asStateFlow()
 
+    private val _activeTool = MutableStateFlow(SolveWorkspaceTool.PEN)
+    val activeTool: StateFlow<SolveWorkspaceTool> = _activeTool.asStateFlow()
+
     private val _explanationText = MutableStateFlow("")
     val explanationText: StateFlow<String> = _explanationText.asStateFlow()
+
+    private val _paperSolutionBitmap = MutableStateFlow<Bitmap?>(null)
+    val paperSolutionBitmap: StateFlow<Bitmap?> = _paperSolutionBitmap.asStateFlow()
+
+    private val _isAiLocked = MutableStateFlow(false)
+    val isAiLocked: StateFlow<Boolean> = _isAiLocked.asStateFlow()
 
     private val _isSubmitting = MutableStateFlow(false)
     val isSubmitting: StateFlow<Boolean> = _isSubmitting.asStateFlow()
@@ -151,7 +176,8 @@ class QuestionSolveViewModel : ViewModel() {
         topic: String,
         imageUrl: String,
         sharedAtMillis: Long,
-        expiresAtMillis: Long = sharedAtMillis + TOTAL_SOLVE_WINDOW_MILLIS
+        expiresAtMillis: Long = sharedAtMillis + TOTAL_SOLVE_WINDOW_MILLIS,
+        initialAiLocked: Boolean = false
     ) {
         val effectiveSharedAt = if (sharedAtMillis > 0L) sharedAtMillis else System.currentTimeMillis()
         val effectiveExpiresAt = if (expiresAtMillis > effectiveSharedAt) {
@@ -171,6 +197,9 @@ class QuestionSolveViewModel : ViewModel() {
         _imageUrl.value = imageUrl
         _sharedAtMillis.value = effectiveSharedAt
         _expiresAtMillis.value = effectiveExpiresAt
+        if (initialAiLocked) {
+            _isAiLocked.value = true
+        }
 
         if (!isSameQuestion) {
             startCountdown(effectiveSharedAt, effectiveExpiresAt)
@@ -204,11 +233,27 @@ class QuestionSolveViewModel : ViewModel() {
         )
     }
 
+    fun selectTool(tool: SolveWorkspaceTool) {
+        _activeTool.value = tool
+    }
+
     fun updateExplanation(text: String) {
         _explanationText.value = text
         if (_submitError.value != null) {
             _submitError.value = null
         }
+    }
+
+    fun setPaperSolutionBitmap(bitmap: Bitmap?) {
+        _paperSolutionBitmap.value = bitmap
+        if (bitmap != null && _submitError.value != null) {
+            _submitError.value = null
+        }
+    }
+
+    fun confirmAiLock() {
+        _isAiLocked.value = true
+        _submitError.value = null
     }
 
     fun setError(message: String?) {
