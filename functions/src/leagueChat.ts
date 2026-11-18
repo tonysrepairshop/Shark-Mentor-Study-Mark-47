@@ -14,7 +14,13 @@ const BUILTIN_GEMINI_KEYS: string[] = [
 
 const MAX_WEEKLY_QUESTION_BONUS_SECONDS = 9000;
 const MAX_DAILY_REWARDED_SOLUTIONS_PER_OWNER = 2;
+const MAX_REJECTED_ATTEMPTS_PER_QUESTION = 2;
+const MAX_SHOWCASE_BADGES = 5;
+const QUESTION_REWARD_WINDOW_MS = 105 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+type BadgeTierName = "BRONZE" | "SILVER" | "GOLD" | "MEGALODON";
+type SolutionMethodName = "TEXT" | "DRAWING" | "PHOTO" | "AI_FALLBACK";
 
 interface QuestionAttachmentDoc {
   questionId?: string;
@@ -26,12 +32,16 @@ interface QuestionAttachmentDoc {
   noteText?: string;
   sharedAtMillis?: number;
   expiresAtMillis?: number;
+  autoApproveAt?: number;
   durationMinutes?: number;
   status?: string;
   approvedSolutionId?: string | null;
   approvedSolverUid?: string | null;
   approvedSolverName?: string | null;
   solutionsCount?: number;
+  aiAccessedByUids?: string[];
+  rejectedSolverCounts?: Record<string, number>;
+  aiFallbackText?: string | null;
 }
 
 interface SolutionSubmissionDoc {
@@ -40,9 +50,11 @@ interface SolutionSubmissionDoc {
   questionOwnerUid?: string;
   solverUid?: string;
   solverName?: string;
+  method?: SolutionMethodName | string;
   annotatedImageUrl?: string;
   explanationText?: string;
   submittedAtMillis?: number;
+  autoApproveAt?: number;
   rewardTier?: string;
   escrowPoints?: number;
   potentialBonusSeconds?: number;
@@ -50,6 +62,23 @@ interface SolutionSubmissionDoc {
   verifiedAtMillis?: number | null;
   awardedPoints?: number;
   awardedBonusSeconds?: number;
+}
+
+function resolveBadgeTier(mentorPoints: number): { tier: BadgeTierName; displayName: string; target: number } {
+  if (mentorPoints >= 1800) {
+    return { tier: "MEGALODON", displayName: "Megalodon Mentor", target: 1800 };
+  }
+  if (mentorPoints >= 800) {
+    return { tier: "GOLD", displayName: "Altın Köpekbalığı", target: 800 };
+  }
+  if (mentorPoints >= 350) {
+    return { tier: "SILVER", displayName: "Gümüş Köpekbalığı", target: 350 };
+  }
+  return { tier: "BRONZE", displayName: "Bronz Köpekbalığı", target: 100 };
+}
+
+function isSupportedChatCollection(col: string): boolean {
+  return col === "league_chats" || col === "study_groups" || col === "direct_messages";
 }
 
 async function resolveStudentFcmTokens(studentId: string): Promise<string[]> {
@@ -72,12 +101,29 @@ async function resolveStudentFcmTokens(studentId: string): Promise<string[]> {
   return Array.from(tokens);
 }
 
+async function isRoomMutedForUser(roomId: string, uid: string): Promise<boolean> {
+  if (!roomId || !uid) return false;
+  try {
+    const roomSnap = await db.doc(`league_chats/${roomId}`).get();
+    if (!roomSnap.exists) return false;
+    const mutedBy = roomSnap.data()?.mutedBy;
+    return Array.isArray(mutedBy) && mutedBy.includes(uid);
+  } catch (_err) {
+    return false;
+  }
+}
+
 async function sendHighPriorityPush(
   recipientUid: string,
   title: string,
   body: string,
-  data: Record<string, string>
+  data: Record<string, string>,
+  roomId?: string
 ): Promise<boolean> {
+  if (roomId && (await isRoomMutedForUser(roomId, recipientUid))) {
+    console.log(`[leagueChat] Suppressed notification for ${recipientUid}; room ${roomId} is muted.`);
+    return false;
+  }
   const tokens = await resolveStudentFcmTokens(recipientUid);
   if (tokens.length === 0) {
     return false;
@@ -101,7 +147,11 @@ function getDayKeyUtcPlus3(nowMs: number = Date.now()): string {
   return utcPlus3.toISOString().split("T")[0];
 }
 
-function postJsonHttps(urlStr: string, headers: Record<string, string>, bodyStr: string): Promise<{ status: number; body: string }> {
+function postJsonHttps(
+  urlStr: string,
+  headers: Record<string, string>,
+  bodyStr: string
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(urlStr);
     const req = https.request(
@@ -187,6 +237,10 @@ function fetchBinaryAsBase64(urlStr: string): Promise<{ mimeType: string; base64
   });
 }
 
+/**
+ * Solves an expired question with `gemini-3.6-flash`.
+ * If `process.env.GEMINI_API_KEY` is not set, automatically rotates across the 3 built-in `AQ.` keys.
+ */
 async function generateAiFallbackSolutionWithGemini36(
   subject: string,
   topic: string,
@@ -196,7 +250,7 @@ async function generateAiFallbackSolutionWithGemini36(
   const promptText = [
     `Sen SharkMentor Study'nin uzman öğretmenisin. Ders: ${subject || "Genel"}, Konu: ${topic || "Genel"}.`,
     noteText ? `Öğrencinin notu: "${noteText}"` : "",
-    "Bu soru çalışma grubunda 24 saat boyunca akranlar tarafından çözülemedi.",
+    "Bu soru çalışma odasında 105 dakika boyunca akranlar tarafından çözülemedi.",
     "Soruyu adım adım, net, anlaşılır ve pedagojik bir dille Türkçe olarak çöz ve doğru cevabı açıkla."
   ]
     .filter((line) => line.length > 0)
@@ -275,7 +329,7 @@ export const onQuestionSolutionSubmitted = functions.firestore
   .document("{channelCollection}/{channelId}/messages/{messageId}")
   .onCreate(async (snap, context) => {
     const channelCollection = context.params.channelCollection as string;
-    if (channelCollection !== "study_groups" && channelCollection !== "direct_messages") {
+    if (!isSupportedChatCollection(channelCollection)) {
       return;
     }
 
@@ -309,24 +363,32 @@ export const onQuestionSolutionSubmitted = functions.firestore
     const title = `✏️ ${solverName} soruna bir çözüm gönderdi!`;
     const body = "Çözümü incele ve doğruysa ✓ ile onaylayarak arkadaşına mentor puanı kazandır.";
 
-    await sendHighPriorityPush(questionOwnerUid, title, body, {
-      type: "QUESTION_SOLUTION_SUBMITTED",
-      channelCollection,
-      channelId: context.params.channelId,
-      questionMessageId,
-      solutionMessageId: snap.id,
-      solverUid,
-      solverName
-    });
+    await sendHighPriorityPush(
+      questionOwnerUid,
+      title,
+      body,
+      {
+        type: "QUESTION_SOLUTION_SUBMITTED",
+        channelCollection,
+        channelId: context.params.channelId,
+        roomId: context.params.channelId,
+        questionMessageId,
+        solutionMessageId: snap.id,
+        solverUid,
+        solverName,
+        method: String(submission.method || "DRAWING")
+      },
+      context.params.channelId
+    );
   });
 
-// ─── 2. ON QUESTION SOLUTION VERIFIED (NOTIFY SOLVER OF APPROVAL/REJECTION) ──
+// ─── 2. ON QUESTION SOLUTION VERIFIED (SYNC WEEKLY LEAGUE & NOTIFY SOLVER) ───
 
 export const onQuestionSolutionVerified = functions.firestore
   .document("{channelCollection}/{channelId}/messages/{messageId}")
   .onUpdate(async (change, context) => {
     const channelCollection = context.params.channelCollection as string;
-    if (channelCollection !== "study_groups" && channelCollection !== "direct_messages") {
+    if (!isSupportedChatCollection(channelCollection)) {
       return;
     }
 
@@ -359,38 +421,106 @@ export const onQuestionSolutionVerified = functions.firestore
     const bonusMinutes = Math.round(awardedBonusSeconds / 60);
 
     if (nextStatus === "APPROVED") {
+      // Ensure approved bonus and badge tier are synced to institutions/GLOBAL_INDIVIDUAL/weeklyLeague/{solverUid}
+      try {
+        const solverSnap = await db.doc(`students/${solverUid}`).get();
+        const solverData = solverSnap.data() || {};
+        const totalMentorPts = Number(solverData.mentorPoints || awardedPoints);
+        const weeklyBonusSec = Math.min(
+          MAX_WEEKLY_QUESTION_BONUS_SECONDS,
+          Number(solverData.weeklyQuestionBonusSeconds || awardedBonusSeconds)
+        );
+        const badgeInfo = resolveBadgeTier(totalMentorPts);
+        const showcaseBadgeIds = Array.isArray(solverData.showcaseBadgeIds)
+          ? (solverData.showcaseBadgeIds as string[]).slice(0, MAX_SHOWCASE_BADGES)
+          : Array.isArray(solverData.showcaseBadges)
+          ? (solverData.showcaseBadges as string[]).slice(0, MAX_SHOWCASE_BADGES)
+          : [badgeInfo.tier];
+
+        await db
+          .doc(`students/${solverUid}/badges/${badgeInfo.tier}`)
+          .set(
+            {
+              badgeId: badgeInfo.tier,
+              title: badgeInfo.displayName,
+              tier: badgeInfo.tier,
+              progress: totalMentorPts,
+              target: badgeInfo.target,
+              unlocked: true,
+              unlockedAtMillis: Date.now()
+            },
+            { merge: true }
+          );
+
+        const globalLeagueRef = db.doc(`institutions/GLOBAL_INDIVIDUAL/weeklyLeague/${solverUid}`);
+        const globalSnap = await globalLeagueRef.get();
+        const currentFocusSec = Number(
+          globalSnap.data()?.weeklyFocusSeconds ?? solverData.weeklyFocusSeconds ?? 0
+        );
+        await globalLeagueRef.set(
+          {
+            studentId: solverUid,
+            displayName: afterSub.solverName || solverData.name || "Öğrenci",
+            weeklyFocusSeconds: Math.max(currentFocusSec, Number(solverData.weeklyFocusSeconds || 0)),
+            weeklyQuestionBonusSeconds: weeklyBonusSec,
+            mentorPoints: totalMentorPts,
+            badgeTier: badgeInfo.tier,
+            showcaseBadgeIds,
+            showcaseBadges: showcaseBadgeIds,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          },
+          { merge: true }
+        );
+      } catch (err) {
+        console.warn(`[onQuestionSolutionVerified] Failed to sync weeklyLeague for ${solverUid}:`, err);
+      }
+
       const title = "🏆 Çözümün Onaylandı!";
       const body =
         awardedPoints > 0
           ? `Tebrikler! +${awardedPoints} Mentor Puanı ve +${bonusMinutes} dk haftalık odak bonusu kazandın!`
           : "Çözümün soru sahibi tarafından doğru olarak onaylandı!";
 
-      await sendHighPriorityPush(solverUid, title, body, {
-        type: "QUESTION_SOLUTION_VERIFIED",
-        verifyStatus: "APPROVED",
-        channelCollection,
-        channelId: context.params.channelId,
-        solutionMessageId: change.after.id,
-        questionMessageId: String(afterSub.questionMessageId || ""),
-        awardedPoints: String(awardedPoints),
-        awardedBonusSeconds: String(awardedBonusSeconds)
-      });
+      await sendHighPriorityPush(
+        solverUid,
+        title,
+        body,
+        {
+          type: "QUESTION_SOLUTION_VERIFIED",
+          verifyStatus: "APPROVED",
+          channelCollection,
+          channelId: context.params.channelId,
+          roomId: context.params.channelId,
+          solutionMessageId: change.after.id,
+          questionMessageId: String(afterSub.questionMessageId || ""),
+          awardedPoints: String(awardedPoints),
+          awardedBonusSeconds: String(awardedBonusSeconds)
+        },
+        context.params.channelId
+      );
     } else {
       const title = "ℹ️ Çözümün Onaylanmadı";
-      const body = "Soru sahibi çözümü yeterli bulmadı. Soruyu tekrar inceleyip yeni bir çözüm gönderebilirsin.";
+      const body = `Soru sahibi çözümü yeterli bulmadı (aynı soruda en fazla ${MAX_REJECTED_ATTEMPTS_PER_QUESTION} red hakkı).`;
 
-      await sendHighPriorityPush(solverUid, title, body, {
-        type: "QUESTION_SOLUTION_VERIFIED",
-        verifyStatus: "REJECTED",
-        channelCollection,
-        channelId: context.params.channelId,
-        solutionMessageId: change.after.id,
-        questionMessageId: String(afterSub.questionMessageId || "")
-      });
+      await sendHighPriorityPush(
+        solverUid,
+        title,
+        body,
+        {
+          type: "QUESTION_SOLUTION_VERIFIED",
+          verifyStatus: "REJECTED",
+          channelCollection,
+          channelId: context.params.channelId,
+          roomId: context.params.channelId,
+          solutionMessageId: change.after.id,
+          questionMessageId: String(afterSub.questionMessageId || "")
+        },
+        context.params.channelId
+      );
     }
   });
 
-// ─── 3. SCHEDULED 15-MINUTE SWEEP FOR EXPIRED / UNVERIFIED QUESTIONS ─────────
+// ─── 3. SCHEDULED 5-MINUTE QUESTION TIMER & AUTO-APPROVAL SWEEP ──────────────
 
 async function autoApproveSolutionTransaction(
   questionDocRef: admin.firestore.DocumentReference,
@@ -404,6 +534,10 @@ async function autoApproveSolutionTransaction(
   const ownerUid = (qAttachment.ownerUid || sub.questionOwnerUid || "").trim();
 
   if (!solverUid) return;
+
+  const aiAccessed = Array.isArray(qAttachment.aiAccessedByUids) ? qAttachment.aiAccessedByUids : [];
+  const rejectedCounts = qAttachment.rejectedSolverCounts || {};
+  const solverRejectedCount = Number(rejectedCounts[solverUid] || 0);
 
   const solverRef = db.collection("students").doc(solverUid);
   const globalLeagueRef = db
@@ -425,7 +559,10 @@ async function autoApproveSolutionTransaction(
 
     const pairField = `dailyOwnerReward_${todayKey}_${ownerUid}`;
     const solvedTodayForOwner = Number(sData[pairField] || 0);
-    const withinDailyLimit = solvedTodayForOwner < MAX_DAILY_REWARDED_SOLUTIONS_PER_OWNER;
+    const eligibleForReward =
+      solvedTodayForOwner < MAX_DAILY_REWARDED_SOLUTIONS_PER_OWNER &&
+      !aiAccessed.includes(solverUid) &&
+      solverRejectedCount < MAX_REJECTED_ATTEMPTS_PER_QUESTION;
 
     const currentMentorPts = Number(sData.mentorPoints || 0);
     const currentWeeklyBonus = Math.min(
@@ -436,9 +573,9 @@ async function autoApproveSolutionTransaction(
     const currentGolden = Number(sData.goldenWindowSolveCount || 0);
     const currentWeeklyFocusSec = Number(sData.weeklyFocusSeconds || 0);
 
-    const awardedPts = withinDailyLimit ? escrowPts : 0;
+    const awardedPts = eligibleForReward ? escrowPts : 0;
     const remainingBonusCap = Math.max(0, MAX_WEEKLY_QUESTION_BONUS_SECONDS - currentWeeklyBonus);
-    const awardedBonusSec = withinDailyLimit ? Math.min(potentialBonusSec, remainingBonusCap) : 0;
+    const awardedBonusSec = eligibleForReward ? Math.min(potentialBonusSec, remainingBonusCap) : 0;
 
     const nextMentorPts = currentMentorPts + awardedPts;
     const nextWeeklyBonus = Math.min(
@@ -447,6 +584,13 @@ async function autoApproveSolutionTransaction(
     );
     const nextSolvedTotal = currentSolvedTotal + 1;
     const nextGolden = sub.rewardTier === "GOLD_100" ? currentGolden + 1 : currentGolden;
+    const badgeInfo = resolveBadgeTier(nextMentorPts);
+
+    const existingShowcase = Array.isArray(sData.showcaseBadgeIds)
+      ? (sData.showcaseBadgeIds as string[]).slice(0, MAX_SHOWCASE_BADGES)
+      : Array.isArray(sData.showcaseBadges)
+      ? (sData.showcaseBadges as string[]).slice(0, MAX_SHOWCASE_BADGES)
+      : [badgeInfo.tier];
 
     const updatedSub: SolutionSubmissionDoc = {
       ...sub,
@@ -465,11 +609,7 @@ async function autoApproveSolutionTransaction(
     };
 
     tx.update(questionDocRef, { questionAttachment: updatedQuestion });
-    tx.set(
-      solutionDocRef,
-      { solutionSubmission: updatedSub },
-      { merge: true }
-    );
+    tx.set(solutionDocRef, { solutionSubmission: updatedSub }, { merge: true });
     tx.set(
       questionDocRef.collection("solutions").doc(sub.solutionId || solutionDocRef.id),
       updatedSub,
@@ -482,35 +622,63 @@ async function autoApproveSolutionTransaction(
       weeklyQuestionBonusSeconds: nextWeeklyBonus,
       solvedTotalCount: nextSolvedTotal,
       goldenWindowSolveCount: nextGolden,
+      badgeTier: badgeInfo.tier,
+      showcaseBadgeIds: existingShowcase,
+      showcaseBadges: existingShowcase,
       weeklyFocusSeconds: currentWeeklyFocusSec + awardedBonusSec,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
-    if (withinDailyLimit && awardedPts > 0 && ownerUid) {
+    if (eligibleForReward && awardedPts > 0 && ownerUid) {
       studentUpdate[pairField] = solvedTodayForOwner + 1;
     }
     tx.set(solverRef, studentUpdate, { merge: true });
 
-    if (awardedBonusSec > 0 && leagueSnap.exists) {
-      const lData = leagueSnap.data() || {};
-      const lWeeklySec = Number(lData.weeklyFocusSeconds || currentWeeklyFocusSec);
-      tx.set(
-        globalLeagueRef,
-        {
-          weeklyFocusSeconds: lWeeklySec + awardedBonusSec,
-          mentorPoints: nextMentorPts,
-          weeklyQuestionBonusSeconds: nextWeeklyBonus
-        },
-        { merge: true }
-      );
-    }
+    tx.set(
+      solverRef.collection("badges").doc(badgeInfo.tier),
+      {
+        badgeId: badgeInfo.tier,
+        title: badgeInfo.displayName,
+        tier: badgeInfo.tier,
+        progress: nextMentorPts,
+        target: badgeInfo.target,
+        unlocked: true,
+        unlockedAtMillis: now
+      },
+      { merge: true }
+    );
+
+    const lData = leagueSnap.exists ? leagueSnap.data() || {} : {};
+    const lWeeklySec = Number(lData.weeklyFocusSeconds ?? currentWeeklyFocusSec);
+    tx.set(
+      globalLeagueRef,
+      {
+        studentId: solverUid,
+        displayName: sub.solverName || sData.name || "Öğrenci",
+        weeklyFocusSeconds: lWeeklySec + awardedBonusSec,
+        mentorPoints: nextMentorPts,
+        weeklyQuestionBonusSeconds: nextWeeklyBonus,
+        badgeTier: badgeInfo.tier,
+        showcaseBadgeIds: existingShowcase,
+        showcaseBadges: existingShowcase,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    );
   });
 }
 
-export const onExpiredQuestionsSweep = functions.pubsub
-  .schedule("every 15 minutes")
+/**
+ * Scheduled job running every 5 minutes (`checkLeagueQuestionTimers`):
+ * - For `OPEN` questions where the 105-minute window has elapsed (`expiresAtMillis <= now`)
+ *   and no peer solutions are pending, solves the question using `gemini-3.6-flash` (with built-in
+ *   3 `AQ.` keys fallback when `process.env.GEMINI_API_KEY` is absent) and closes it as `AI_SOLVED`.
+ * - For questions with unverified peer solutions whose 24-hour `autoApproveAt` deadline has passed,
+ *   auto-approves the first valid solution and credits `institutions/GLOBAL_INDIVIDUAL/weeklyLeague/{solverId}`.
+ */
+export const checkLeagueQuestionTimers = functions.pubsub
+  .schedule("every 5 minutes")
   .onRun(async () => {
     const now = Date.now();
-    const cutoff24h = now - TWENTY_FOUR_HOURS_MS;
 
     const openQuestionsSnap = await db
       .collectionGroup("messages")
@@ -525,21 +693,25 @@ export const onExpiredQuestionsSweep = functions.pubsub
       const qData = qDoc.data();
       const qAttachment = (qData.questionAttachment || {}) as QuestionAttachmentDoc;
       const status = qAttachment.status || "OPEN";
-      if (status !== "OPEN") {
+      if (status !== "OPEN" && status !== "PENDING_APPROVAL") {
         continue;
       }
 
       const sharedAt = Number(qAttachment.sharedAtMillis || qData.createdAtMillis || now);
-      if (sharedAt > cutoff24h) {
+      const expiresAt = Number(qAttachment.expiresAtMillis || sharedAt + QUESTION_REWARD_WINDOW_MS);
+      const questionAutoApproveAt = Number(qAttachment.autoApproveAt || sharedAt + TWENTY_FOUR_HOURS_MS);
+
+      // Only act once the 105-minute window has expired
+      if (now < expiresAt) {
         continue;
       }
 
       const messagesCollection = qDoc.ref.parent;
       const channelDocRef = messagesCollection.parent;
-      const channelId = channelDocRef?.id || String(qData.channelId || "");
-      const channelCollection = channelDocRef?.parent.id || "study_groups";
+      const channelId = channelDocRef?.id || String(qData.roomId || qData.channelId || "");
+      const channelCollection = channelDocRef?.parent.id || "league_chats";
 
-      // Check for candidate unverified solutions submitted to this question
+      // Check candidate solutions in both `messages` and `solutions` subcollection
       const candidateSolutionsSnap = await messagesCollection
         .where("replyToQuestionMessageId", "==", qDoc.id)
         .get();
@@ -563,21 +735,25 @@ export const onExpiredQuestionsSweep = functions.pubsub
       if (pendingSolutionDocs.length > 0) {
         const firstSolutionDoc = pendingSolutionDocs[0];
         const firstSub = (firstSolutionDoc.data().solutionSubmission || {}) as SolutionSubmissionDoc;
-        try {
-          await autoApproveSolutionTransaction(qDoc.ref, firstSolutionDoc.ref, qAttachment, firstSub);
-          console.log(
-            `[onExpiredQuestionsSweep] Auto-approved solution ${firstSolutionDoc.id} for question ${qDoc.id}`
-          );
-        } catch (err) {
-          console.error(
-            `[onExpiredQuestionsSweep] Failed to auto-approve solution ${firstSolutionDoc.id}:`,
-            err
-          );
+        const subAutoApproveAt = Number(firstSub.autoApproveAt || questionAutoApproveAt);
+
+        if (now >= subAutoApproveAt || now >= questionAutoApproveAt) {
+          try {
+            await autoApproveSolutionTransaction(qDoc.ref, firstSolutionDoc.ref, qAttachment, firstSub);
+            console.log(
+              `[checkLeagueQuestionTimers] Auto-approved solution ${firstSolutionDoc.id} for question ${qDoc.id}`
+            );
+          } catch (err) {
+            console.error(
+              `[checkLeagueQuestionTimers] Failed to auto-approve solution ${firstSolutionDoc.id}:`,
+              err
+            );
+          }
         }
         continue;
       }
 
-      // No peer solutions submitted after 24h -> Solve with gemini-3.6-flash and mark CLOSED_BY_AI
+      // 105 minutes elapsed and 0 peer solutions -> Solve with gemini-3.6-flash and mark AI_SOLVED
       try {
         const aiSolutionText = await generateAiFallbackSolutionWithGemini36(
           String(qAttachment.subject || "Genel"),
@@ -587,27 +763,56 @@ export const onExpiredQuestionsSweep = functions.pubsub
         );
 
         const aiMsgRef = messagesCollection.doc();
+        const aiSubRef = qDoc.ref.collection("solutions").doc("ai_fallback");
+        const aiSubmission: SolutionSubmissionDoc = {
+          solutionId: "ai_fallback",
+          questionMessageId: qDoc.id,
+          questionOwnerUid: String(qAttachment.ownerUid || ""),
+          solverUid: "SHARK_AI_MENTOR",
+          solverName: "🦈 Shark AI (gemini-3.6-flash)",
+          method: "AI_FALLBACK",
+          annotatedImageUrl: String(qAttachment.questionImageUrl || ""),
+          explanationText: aiSolutionText,
+          submittedAtMillis: now,
+          autoApproveAt: now,
+          rewardTier: "EXPIRED_0",
+          escrowPoints: 0,
+          potentialBonusSeconds: 0,
+          verifyStatus: "APPROVED",
+          verifiedAtMillis: now,
+          awardedPoints: 0,
+          awardedBonusSeconds: 0
+        };
+
         const aiMessagePayload = {
           id: aiMsgRef.id,
+          roomId: channelId,
           channelId,
-          channelType: channelCollection === "direct_messages" ? "DIRECT_MESSAGE" : "STUDY_GROUP",
+          channelType: channelCollection === "direct_messages" ? "DM" : "GROUP",
           senderUid: "SHARK_AI_MENTOR",
           senderName: "🦈 Shark AI (gemini-3.6-flash)",
           senderAvatarPresetId: 0,
-          senderShowcaseBadges: ["SHARK_AI"],
+          senderShowcaseBadges: ["MEGALODON"],
+          showcaseBadgeIds: ["MEGALODON"],
           messageType: "AI_FALLBACK_SOLUTION",
           text: aiSolutionText,
-          createdAtMillis: Date.now(),
+          createdAtMillis: now,
+          solutionSubmission: aiSubmission,
           replyToQuestionMessageId: qDoc.id
         };
 
         const closedAttachment: QuestionAttachmentDoc = {
           ...qAttachment,
-          status: "CLOSED_BY_AI"
+          status: "AI_SOLVED",
+          approvedSolutionId: "ai_fallback",
+          approvedSolverUid: "SHARK_AI_MENTOR",
+          approvedSolverName: "🦈 Shark AI",
+          aiFallbackText: aiSolutionText
         };
 
         const batch = db.batch();
         batch.set(aiMsgRef, aiMessagePayload);
+        batch.set(aiSubRef, aiSubmission, { merge: true });
         batch.update(qDoc.ref, { questionAttachment: closedAttachment });
         await batch.commit();
 
@@ -615,20 +820,25 @@ export const onExpiredQuestionsSweep = functions.pubsub
           await sendHighPriorityPush(
             qAttachment.ownerUid,
             "🦈 Shark AI Sorunu Çözdü!",
-            "Paylaştığın soruya 24 saat içinde çözüm gelmediği için Shark AI adım adım çözümü sohbete ekledi.",
+            "Paylaştığın soruya 105 dakika içinde çözüm gelmediği için Shark AI adım adım çözümü sohbete ekledi.",
             {
               type: "AI_FALLBACK_SOLUTION",
+              status: "AI_SOLVED",
               channelCollection,
               channelId,
+              roomId: channelId,
               questionMessageId: qDoc.id,
               aiMessageId: aiMsgRef.id
-            }
+            },
+            channelId
           );
         }
 
-        console.log(`[onExpiredQuestionsSweep] Posted AI_FALLBACK_SOLUTION for question ${qDoc.id}`);
+        console.log(`[checkLeagueQuestionTimers] Closed question ${qDoc.id} as AI_SOLVED`);
       } catch (err) {
-        console.error(`[onExpiredQuestionsSweep] AI fallback failed for question ${qDoc.id}:`, err);
+        console.error(`[checkLeagueQuestionTimers] AI fallback failed for question ${qDoc.id}:`, err);
       }
     }
   });
+
+export const onExpiredQuestionsSweep = checkLeagueQuestionTimers;

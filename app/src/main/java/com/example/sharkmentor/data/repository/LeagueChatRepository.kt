@@ -6,26 +6,35 @@ import android.net.Uri
 import android.util.Log
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.data.local.entity.ErrorQuestionEntity
+import com.example.sharkmentor.data.model.BadgeTier
 import com.example.sharkmentor.data.model.ChatChannelType
 import com.example.sharkmentor.data.model.DirectMessageThread
 import com.example.sharkmentor.data.model.DmRequestStatus
 import com.example.sharkmentor.data.model.LeagueChatMessage
+import com.example.sharkmentor.data.model.LeagueChatRoom
 import com.example.sharkmentor.data.model.MAX_DAILY_REWARDED_SOLUTIONS_PER_OWNER
+import com.example.sharkmentor.data.model.MAX_REJECTED_ATTEMPTS_PER_QUESTION
 import com.example.sharkmentor.data.model.MAX_SHOWCASE_BADGES
 import com.example.sharkmentor.data.model.MAX_WEEKLY_QUESTION_BONUS_SECONDS
 import com.example.sharkmentor.data.model.MentorStats
 import com.example.sharkmentor.data.model.MessageType
+import com.example.sharkmentor.data.model.ModerationReport
+import com.example.sharkmentor.data.model.QUESTION_AUTO_APPROVE_WINDOW_MILLIS
 import com.example.sharkmentor.data.model.QUESTION_REWARD_WINDOW_MILLIS
 import com.example.sharkmentor.data.model.QUESTION_REWARD_WINDOW_MINUTES
 import com.example.sharkmentor.data.model.QuestionAttachment
 import com.example.sharkmentor.data.model.QuestionStatus
 import com.example.sharkmentor.data.model.RewardTier
+import com.example.sharkmentor.data.model.SolutionMethod
 import com.example.sharkmentor.data.model.SolutionSubmission
 import com.example.sharkmentor.data.model.SolutionVerifyStatus
+import com.example.sharkmentor.data.model.StudentBadge
+import com.example.sharkmentor.data.model.UserBlockRecord
 import com.example.sharkmentor.data.model.calculateRewardTier
 import com.example.sharkmentor.data.remote.CloudStorageManager
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.CollectionReference
+import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -48,14 +57,21 @@ import javax.inject.Singleton
 
 /**
  * Repository for Shark League Peer Learning & Question Chat:
- * - Study Group & Request-Approved Direct Message real-time streams (`limitToLast(40)`)
- * - Sharing Error Notebook questions to chat with 105-minute reward window
- * - Submitting annotated peer solutions with Escrow (`pendingMentorPoints`)
- * - Owner verification (`✓` approve / `✗` reject) with anti-abuse caps:
- *   - Weekly max +9000s (150 min) bonus focus seconds (`MAX_WEEKLY_QUESTION_BONUS_SECONDS`)
- *   - Daily max 2 rewarded solutions for the same question owner (`MAX_DAILY_REWARDED_SOLUTIONS_PER_OWNER`)
- * - Request-approved Direct Messages (`sendDmRequest`, `respondToDmRequest`, `observeDmThreads`)
- * - Showcase badge selection (`updateShowcaseBadges`, max 3 badges)
+ * - Collections:
+ *   - `league_chats/{roomId}` (`GROUP`/`DM`, `mutedBy`, `themePresetId`)
+ *   - `league_chats/{roomId}/messages/{messageId}/solutions/{solutionId}`
+ *   - `user_blocks/{uid}/blocked/{targetUid}`
+ *   - `moderation_reports/{reportId}`
+ *   - `students/{uid}/badges/{badgeId}`
+ * - Anti-Cheat:
+ *   - `aiAccessedByUids: List<String>` (users who opened AI on a question cannot earn peer reward on it)
+ *   - `rejectedSolverCounts: Map<String, Int>` (max 2 rejected attempts per question)
+ *   - `method` (`TEXT | DRAWING | PHOTO | AI_FALLBACK`)
+ *   - `autoApproveAt` (24-hour auto-approval deadline)
+ *   - Weekly max +9000s bonus focus cap & max 2 rewarded solutions/day for the same question owner
+ * - Badges & Showcase:
+ *   - `showcaseBadgeIds` max 5 badges
+ *   - Badge tiers: `BRONZE | SILVER | GOLD | MEGALODON`
  */
 @Singleton
 class LeagueChatRepository @Inject constructor(
@@ -65,6 +81,7 @@ class LeagueChatRepository @Inject constructor(
         private const val TAG = "LeagueChatRepository"
         const val CHAT_HISTORY_LIMIT = 40L
         private const val GLOBAL_LEAGUE_BUCKET = "GLOBAL_INDIVIDUAL"
+        private const val LEAGUE_CHATS_COLLECTION = "league_chats"
     }
 
     private val firestore: FirebaseFirestore?
@@ -76,7 +93,13 @@ class LeagueChatRepository @Inject constructor(
     private val currentUid: String?
         get() = GoogleServicesHelper.getCurrentUser(auth)?.uid
 
-    private fun channelMessagesRef(db: FirebaseFirestore, channelId: String, isGroup: Boolean): CollectionReference {
+    private fun roomDocRef(db: FirebaseFirestore, roomId: String): DocumentReference =
+        db.collection(LEAGUE_CHATS_COLLECTION).document(roomId)
+
+    private fun roomMessagesRef(db: FirebaseFirestore, roomId: String): CollectionReference =
+        roomDocRef(db, roomId).collection("messages")
+
+    private fun legacyMessagesRef(db: FirebaseFirestore, channelId: String, isGroup: Boolean): CollectionReference {
         val parentCollection = if (isGroup) "study_groups" else "direct_messages"
         return db.collection(parentCollection).document(channelId).collection("messages")
     }
@@ -92,7 +115,103 @@ class LeagueChatRepository @Inject constructor(
         return sdf.format(Date(nowMillis))
     }
 
-    // ── 1. Real-Time Group & DM Chat Listeners (limitToLast(40)) ─────────────
+    // ── Room Configuration (`league_chats/{roomId}`) ─────────────────────────
+
+    suspend fun ensureLeagueChatRoom(
+        roomId: String,
+        isGroup: Boolean,
+        title: String = "",
+        participantIds: List<String> = emptyList(),
+        themePresetId: Int = 0
+    ): Result<LeagueChatRoom> = withContext(Dispatchers.IO) {
+        runCatching {
+            val db = firestore ?: throw IllegalStateException("Firestore bağlantısı kurulamadı.")
+            val uid = currentUid.orEmpty()
+            require(roomId.isNotBlank()) { "Oda kimliği boş olamaz." }
+
+            val ref = roomDocRef(db, roomId)
+            val snap = ref.get().await()
+            val now = System.currentTimeMillis()
+            val type = if (isGroup) ChatChannelType.GROUP else ChatChannelType.DM
+            val mergedParticipants = (participantIds + listOfNotNull(uid.takeIf { it.isNotBlank() })).distinct()
+
+            if (!snap.exists()) {
+                val room = LeagueChatRoom(
+                    roomId = roomId,
+                    type = type,
+                    title = title.ifBlank { if (isGroup) "Çalışma Grubu #$roomId" else "Özel Mesaj" },
+                    groupCode = if (isGroup) roomId else null,
+                    participantIds = mergedParticipants,
+                    mutedBy = emptyList(),
+                    themePresetId = themePresetId,
+                    dmStatus = DmRequestStatus.ACCEPTED,
+                    createdAtMillis = now,
+                    lastMessageAtMillis = now
+                )
+                ref.set(room.toMap(), SetOptions.merge()).await()
+                room
+            } else {
+                LeagueChatRoom.fromMap(snap.id, snap.data.orEmpty())
+            }
+        }
+    }
+
+    suspend fun setRoomMuted(roomId: String, muted: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val db = firestore ?: throw IllegalStateException("Firestore bağlantısı kurulamadı.")
+            val uid = currentUid ?: throw IllegalStateException("Oturum açmış kullanıcı bulunamadı.")
+            val updateVal = if (muted) FieldValue.arrayUnion(uid) else FieldValue.arrayRemove(uid)
+            roomDocRef(db, roomId).set(
+                mapOf(
+                    "roomId" to roomId,
+                    "mutedBy" to updateVal,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+            Unit
+        }
+    }
+
+    suspend fun setRoomThemePreset(roomId: String, themePresetId: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val db = firestore ?: throw IllegalStateException("Firestore bağlantısı kurulamadı.")
+            roomDocRef(db, roomId).set(
+                mapOf(
+                    "roomId" to roomId,
+                    "themePresetId" to themePresetId,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+            Unit
+        }
+    }
+
+    fun observeChatRoom(roomId: String): Flow<LeagueChatRoom?> = callbackFlow {
+        val db = firestore
+        if (db == null || roomId.isBlank()) {
+            trySend(null)
+            close()
+            return@callbackFlow
+        }
+        val registration: ListenerRegistration? = runCatching {
+            roomDocRef(db, roomId).addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    trySend(null)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null && snapshot.exists()) {
+                    trySend(LeagueChatRoom.fromMap(snapshot.id, snapshot.data.orEmpty()))
+                } else {
+                    trySend(null)
+                }
+            }
+        }.getOrNull()
+        awaitClose { registration?.remove() }
+    }.catch { emit(null) }
+
+    // ── 1. Real-Time Group & DM Chat Listeners (`limitToLast(40)`) ───────────
 
     fun observeMessages(channelId: String, isGroup: Boolean = true): Flow<List<LeagueChatMessage>> = callbackFlow {
         val db = firestore
@@ -103,7 +222,7 @@ class LeagueChatRepository @Inject constructor(
         }
 
         val registration: ListenerRegistration? = runCatching {
-            channelMessagesRef(db, channelId, isGroup)
+            roomMessagesRef(db, channelId)
                 .orderBy("createdAtMillis", Query.Direction.ASCENDING)
                 .limitToLast(CHAT_HISTORY_LIMIT)
                 .addSnapshotListener { snapshot, error ->
@@ -135,6 +254,37 @@ class LeagueChatRepository @Inject constructor(
     fun observeDirectMessages(threadId: String): Flow<List<LeagueChatMessage>> =
         observeMessages(channelId = threadId, isGroup = false)
 
+    fun observeQuestionSolutions(
+        roomId: String,
+        questionMessageId: String
+    ): Flow<List<SolutionSubmission>> = callbackFlow {
+        val db = firestore
+        if (db == null || roomId.isBlank() || questionMessageId.isBlank()) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        val registration: ListenerRegistration? = runCatching {
+            roomMessagesRef(db, roomId)
+                .document(questionMessageId)
+                .collection("solutions")
+                .orderBy("submittedAtMillis", Query.Direction.ASCENDING)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    val list = snapshot?.documents?.mapNotNull { doc ->
+                        SolutionSubmission.fromMap(doc.data)
+                    }.orEmpty()
+                    trySend(list)
+                }
+        }.getOrNull()
+
+        awaitClose { registration?.remove() }
+    }.catch { emit(emptyList()) }
+
     // ── 2. Send Text Message ─────────────────────────────────────────────────
 
     suspend fun sendTextMessage(
@@ -150,10 +300,11 @@ class LeagueChatRepository @Inject constructor(
             require(trimmed.isNotEmpty()) { "Mesaj metni boş olamaz." }
             require(channelId.isNotBlank()) { "Sohbet kanalı geçersiz." }
 
-            if (!isGroup) {
-                val threadSnap = db.collection("direct_messages").document(channelId).get().await()
-                val statusStr = threadSnap.getString("status").orEmpty()
-                if (threadSnap.exists() && statusStr == DmRequestStatus.REJECTED.name) {
+            val roomRef = roomDocRef(db, channelId)
+            val roomSnap = roomRef.get().await()
+            if (!isGroup && roomSnap.exists()) {
+                val dmStatus = roomSnap.getString("dmStatus") ?: roomSnap.getString("status").orEmpty()
+                if (dmStatus == DmRequestStatus.REJECTED.name) {
                     throw IllegalStateException("Bu mesaj isteği reddedilmiş.")
                 }
             }
@@ -164,17 +315,18 @@ class LeagueChatRepository @Inject constructor(
                 ?: profileSnap?.getString("displayName")?.takeIf { it.isNotBlank() }
                 ?: "Öğrenci"
             val avatarPresetId = (profileSnap?.getLong("avatarPresetId") ?: 0L).toInt()
-            val showcaseBadges = (profileSnap?.get("showcaseBadges") as? List<*>)
+            val showcaseBadges = ((profileSnap?.get("showcaseBadgeIds") as? List<*>)
+                ?: (profileSnap?.get("showcaseBadges") as? List<*>))
                 ?.mapNotNull { it as? String }
                 ?.take(MAX_SHOWCASE_BADGES)
                 .orEmpty()
 
             val now = System.currentTimeMillis()
-            val msgRef = channelMessagesRef(db, channelId, isGroup).document()
+            val msgRef = roomMessagesRef(db, channelId).document()
             val message = LeagueChatMessage(
                 id = msgRef.id,
                 channelId = channelId,
-                channelType = if (isGroup) ChatChannelType.STUDY_GROUP else ChatChannelType.DIRECT_MESSAGE,
+                channelType = if (isGroup) ChatChannelType.GROUP else ChatChannelType.DM,
                 senderUid = uid,
                 senderName = resolvedName,
                 senderAvatarPresetId = avatarPresetId,
@@ -185,6 +337,20 @@ class LeagueChatRepository @Inject constructor(
             )
 
             msgRef.set(message.toMap()).await()
+            runCatching {
+                legacyMessagesRef(db, channelId, isGroup).document(msgRef.id).set(message.toMap()).await()
+            }
+
+            roomRef.set(
+                mapOf(
+                    "roomId" to channelId,
+                    "type" to if (isGroup) ChatChannelType.GROUP.name else ChatChannelType.DM.name,
+                    "lastMessagePreview" to trimmed.take(120),
+                    "lastMessageAtMillis" to now,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
 
             if (!isGroup) {
                 runCatching {
@@ -203,7 +369,53 @@ class LeagueChatRepository @Inject constructor(
         }
     }
 
-    // ── 3. Share Error Question to Chat ──────────────────────────────────────
+    // ── 3. Share Error Question to Chat & Anti-Cheat AI Access Tracking ──────
+
+    suspend fun recordAiAccessedOnQuestion(
+        roomId: String,
+        questionMessageId: String,
+        isGroup: Boolean = true,
+        uid: String? = currentUid
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val db = firestore ?: throw IllegalStateException("Firestore bağlantısı kurulamadı.")
+            val effectiveUid = uid?.takeIf { it.isNotBlank() }
+                ?: currentUid
+                ?: throw IllegalStateException("Kullanıcı oturumu bulunamadı.")
+            val qRef = roomMessagesRef(db, roomId).document(questionMessageId)
+            db.runTransaction { tx ->
+                val snap = tx.get(qRef)
+                if (!snap.exists()) return@runTransaction
+                @Suppress("UNCHECKED_CAST")
+                val qAttachment = QuestionAttachment.fromMap(
+                    snap.get("questionAttachment") as? Map<String, Any?>
+                ) ?: return@runTransaction
+                if (effectiveUid !in qAttachment.aiAccessedByUids) {
+                    val updated = qAttachment.copy(
+                        aiAccessedByUids = (qAttachment.aiAccessedByUids + effectiveUid).distinct()
+                    )
+                    tx.update(qRef, "questionAttachment", updated.toMap())
+                }
+            }.await()
+            runCatching {
+                val legacyRef = legacyMessagesRef(db, roomId, isGroup).document(questionMessageId)
+                val legacySnap = legacyRef.get().await()
+                if (legacySnap.exists()) {
+                    @Suppress("UNCHECKED_CAST")
+                    val qAtt = QuestionAttachment.fromMap(
+                        legacySnap.get("questionAttachment") as? Map<String, Any?>
+                    )
+                    if (qAtt != null && effectiveUid !in qAtt.aiAccessedByUids) {
+                        legacyRef.update(
+                            "questionAttachment",
+                            qAtt.copy(aiAccessedByUids = (qAtt.aiAccessedByUids + effectiveUid).distinct()).toMap()
+                        ).await()
+                    }
+                }
+            }
+            Unit
+        }
+    }
 
     suspend fun shareErrorQuestionToChat(
         context: Context,
@@ -264,7 +476,8 @@ class LeagueChatRepository @Inject constructor(
                 ?: profileSnap?.getString("displayName")?.takeIf { it.isNotBlank() }
                 ?: "Öğrenci"
             val avatarPresetId = (profileSnap?.getLong("avatarPresetId") ?: 0L).toInt()
-            val showcaseBadges = (profileSnap?.get("showcaseBadges") as? List<*>)
+            val showcaseBadges = ((profileSnap?.get("showcaseBadgeIds") as? List<*>)
+                ?: (profileSnap?.get("showcaseBadges") as? List<*>))
                 ?.mapNotNull { it as? String }
                 ?.take(MAX_SHOWCASE_BADGES)
                 .orEmpty()
@@ -280,12 +493,15 @@ class LeagueChatRepository @Inject constructor(
                 noteText = noteText.trim(),
                 sharedAtMillis = now,
                 expiresAtMillis = now + QUESTION_REWARD_WINDOW_MILLIS,
+                autoApproveAt = now + QUESTION_AUTO_APPROVE_WINDOW_MILLIS,
                 durationMinutes = QUESTION_REWARD_WINDOW_MINUTES.toInt(),
                 status = QuestionStatus.OPEN,
-                solutionsCount = 0
+                solutionsCount = 0,
+                aiAccessedByUids = emptyList(),
+                rejectedSolverCounts = emptyMap()
             )
 
-            val msgRef = channelMessagesRef(db, channelId, isGroup).document()
+            val msgRef = roomMessagesRef(db, channelId).document()
             val displaySummary = buildString {
                 append("❓ [${attachment.subject} • ${attachment.topic}] soru paylaşıldı")
                 if (noteText.isNotBlank()) {
@@ -296,7 +512,7 @@ class LeagueChatRepository @Inject constructor(
             val message = LeagueChatMessage(
                 id = msgRef.id,
                 channelId = channelId,
-                channelType = if (isGroup) ChatChannelType.STUDY_GROUP else ChatChannelType.DIRECT_MESSAGE,
+                channelType = if (isGroup) ChatChannelType.GROUP else ChatChannelType.DM,
                 senderUid = uid,
                 senderName = resolvedName,
                 senderAvatarPresetId = avatarPresetId,
@@ -308,25 +524,26 @@ class LeagueChatRepository @Inject constructor(
             )
 
             msgRef.set(message.toMap()).await()
-
-            if (!isGroup) {
-                runCatching {
-                    db.collection("direct_messages").document(channelId).set(
-                        mapOf(
-                            "lastMessagePreview" to displaySummary.take(120),
-                            "lastMessageAtMillis" to now,
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        ),
-                        SetOptions.merge()
-                    ).await()
-                }
+            runCatching {
+                legacyMessagesRef(db, channelId, isGroup).document(msgRef.id).set(message.toMap()).await()
             }
+
+            roomDocRef(db, channelId).set(
+                mapOf(
+                    "roomId" to channelId,
+                    "type" to if (isGroup) ChatChannelType.GROUP.name else ChatChannelType.DM.name,
+                    "lastMessagePreview" to displaySummary.take(120),
+                    "lastMessageAtMillis" to now,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
 
             message
         }
     }
 
-    // ── 4. Submit Question Solution (Escrow / Pending Points) ────────────────
+    // ── 4. Submit Question Solution (Escrow + Anti-Cheat Validation) ─────────
 
     suspend fun submitQuestionSolution(
         context: Context? = null,
@@ -336,6 +553,7 @@ class LeagueChatRepository @Inject constructor(
         annotatedBitmap: Bitmap? = null,
         annotatedImageUri: Uri? = null,
         explanationText: String = "",
+        method: SolutionMethod? = null,
         solverName: String? = null
     ): Result<LeagueChatMessage> = withContext(Dispatchers.IO) {
         runCatching {
@@ -345,11 +563,17 @@ class LeagueChatRepository @Inject constructor(
                 "Kanal veya soru kimliği eksik."
             }
 
-            val messagesCol = channelMessagesRef(db, channelId, isGroup)
-            val questionDocRef = messagesCol.document(questionMessageId)
-            val questionSnap = questionDocRef.get().await()
+            val roomMsgsCol = roomMessagesRef(db, channelId)
+            val questionDocRef = roomMsgsCol.document(questionMessageId)
+            var questionSnap = questionDocRef.get().await()
             if (!questionSnap.exists()) {
-                throw IllegalStateException("Soru mesajı bulunamadı.")
+                val legacySnap = legacyMessagesRef(db, channelId, isGroup).document(questionMessageId).get().await()
+                if (legacySnap.exists()) {
+                    questionDocRef.set(legacySnap.data.orEmpty()).await()
+                    questionSnap = legacySnap
+                } else {
+                    throw IllegalStateException("Soru mesajı bulunamadı.")
+                }
             }
 
             val questionMsg = LeagueChatMessage.fromMap(
@@ -362,14 +586,25 @@ class LeagueChatRepository @Inject constructor(
             if (qAttachment.ownerUid == uid) {
                 throw IllegalStateException("Kendi paylaştığınız soruya ödüllü çözüm gönderemezsiniz.")
             }
-            if (qAttachment.status == QuestionStatus.SOLVED_APPROVED ||
-                qAttachment.status == QuestionStatus.CLOSED_BY_AI
-            ) {
+            if (uid in qAttachment.aiAccessedByUids) {
+                throw IllegalStateException("Bu soru için Shark AI ipucu/çözümü açtığınızdan ödüllü akran çözümü gönderemezsiniz.")
+            }
+            val rejectedCountForSolver = qAttachment.rejectedSolverCounts[uid] ?: 0
+            if (rejectedCountForSolver >= MAX_REJECTED_ATTEMPTS_PER_QUESTION) {
+                throw IllegalStateException("Bu soruda en fazla $MAX_REJECTED_ATTEMPTS_PER_QUESTION reddedilen çözüm hakkınızı doldurdunuz.")
+            }
+            if (qAttachment.status.isClosed) {
                 throw IllegalStateException("Bu soru zaten çözülmüş ve kapatılmış.")
             }
 
             val now = System.currentTimeMillis()
             val solutionId = "sol_${now}_${UUID.randomUUID().toString().take(6)}"
+
+            val resolvedMethod = method ?: when {
+                annotatedBitmap != null -> SolutionMethod.DRAWING
+                annotatedImageUri != null -> SolutionMethod.PHOTO
+                else -> SolutionMethod.TEXT
+            }
 
             val annotatedUrl = when {
                 annotatedBitmap != null && !annotatedBitmap.isRecycled -> {
@@ -404,7 +639,8 @@ class LeagueChatRepository @Inject constructor(
                 ?: profileSnap?.getString("displayName")?.takeIf { it.isNotBlank() }
                 ?: "Arkadaşın"
             val avatarPresetId = (profileSnap?.getLong("avatarPresetId") ?: 0L).toInt()
-            val showcaseBadges = (profileSnap?.get("showcaseBadges") as? List<*>)
+            val showcaseBadges = ((profileSnap?.get("showcaseBadgeIds") as? List<*>)
+                ?: (profileSnap?.get("showcaseBadges") as? List<*>))
                 ?.mapNotNull { it as? String }
                 ?.take(MAX_SHOWCASE_BADGES)
                 .orEmpty()
@@ -414,22 +650,25 @@ class LeagueChatRepository @Inject constructor(
                 submittedAtMillis = now
             )
 
+            val autoApproveDeadline = now + QUESTION_AUTO_APPROVE_WINDOW_MILLIS
             val submission = SolutionSubmission(
                 solutionId = solutionId,
                 questionMessageId = questionMessageId,
                 questionOwnerUid = qAttachment.ownerUid,
                 solverUid = uid,
                 solverName = resolvedSolverName,
+                method = resolvedMethod,
                 annotatedImageUrl = annotatedUrl,
                 explanationText = explanationText.trim(),
                 submittedAtMillis = now,
+                autoApproveAt = autoApproveDeadline,
                 rewardTier = rewardTier,
                 escrowPoints = rewardTier.mentorPoints,
                 potentialBonusSeconds = rewardTier.bonusFocusSeconds,
                 verifyStatus = SolutionVerifyStatus.PENDING_ESCROW
             )
 
-            val solutionMsgRef = messagesCol.document(solutionId)
+            val solutionMsgRef = roomMsgsCol.document(solutionId)
             val summaryText = buildString {
                 append("✏️ $resolvedSolverName çözüm gönderdi (${rewardTier.windowLabel})")
                 if (explanationText.isNotBlank()) {
@@ -440,7 +679,7 @@ class LeagueChatRepository @Inject constructor(
             val solutionChatMessage = LeagueChatMessage(
                 id = solutionId,
                 channelId = channelId,
-                channelType = if (isGroup) ChatChannelType.STUDY_GROUP else ChatChannelType.DIRECT_MESSAGE,
+                channelType = if (isGroup) ChatChannelType.GROUP else ChatChannelType.DM,
                 senderUid = uid,
                 senderName = resolvedSolverName,
                 senderAvatarPresetId = avatarPresetId,
@@ -462,7 +701,10 @@ class LeagueChatRepository @Inject constructor(
                 @Suppress("UNCHECKED_CAST")
                 val latestQMap = latestQSnap.get("questionAttachment") as? Map<String, Any?>
                 val latestQ = QuestionAttachment.fromMap(latestQMap) ?: qAttachment
-                val updatedQ = latestQ.copy(solutionsCount = latestQ.solutionsCount + 1)
+                val updatedQ = latestQ.copy(
+                    solutionsCount = latestQ.solutionsCount + 1,
+                    autoApproveAt = minOf(latestQ.autoApproveAt, autoApproveDeadline)
+                )
 
                 tx.set(solutionMsgRef, solutionChatMessage.toMap())
                 tx.set(
@@ -479,6 +721,16 @@ class LeagueChatRepository @Inject constructor(
                     SetOptions.merge()
                 )
             }.await()
+
+            runCatching {
+                val legacyCol = legacyMessagesRef(db, channelId, isGroup)
+                legacyCol.document(solutionId).set(solutionChatMessage.toMap()).await()
+                legacyCol.document(questionMessageId)
+                    .collection("solutions")
+                    .document(solutionId)
+                    .set(submission.toMap())
+                    .await()
+            }
 
             solutionChatMessage
         }
@@ -500,9 +752,9 @@ class LeagueChatRepository @Inject constructor(
                 "Eksik doğrulama parametresi."
             }
 
-            val messagesCol = channelMessagesRef(db, channelId, isGroup)
-            val questionDocRef = messagesCol.document(questionMessageId)
-            val solutionMsgRef = messagesCol.document(solutionId)
+            val roomMsgsCol = roomMessagesRef(db, channelId)
+            val questionDocRef = roomMsgsCol.document(questionMessageId)
+            val solutionMsgRef = roomMsgsCol.document(solutionId)
             val subSolRef = questionDocRef.collection("solutions").document(solutionId)
 
             val now = System.currentTimeMillis()
@@ -527,10 +779,10 @@ class LeagueChatRepository @Inject constructor(
 
                 @Suppress("UNCHECKED_CAST")
                 val currentSub = when {
+                    subSolSnap.exists() -> SolutionSubmission.fromMap(subSolSnap.data)
                     solMsgSnap.exists() -> SolutionSubmission.fromMap(
                         solMsgSnap.get("solutionSubmission") as? Map<String, Any?>
                     )
-                    subSolSnap.exists() -> SolutionSubmission.fromMap(subSolSnap.data)
                     else -> null
                 } ?: throw IllegalStateException("Çözüm kaydı bulunamadı.")
 
@@ -550,10 +802,10 @@ class LeagueChatRepository @Inject constructor(
                 val nextPending = (currentPending - currentSub.escrowPoints).coerceAtLeast(0)
 
                 if (approved) {
-                    // Check daily cap: max 2 rewarded solutions per day to the same question owner
                     val pairCounterField = "dailyOwnerReward_${todayKey}_${qAttachment.ownerUid}"
                     val solvedTodayForOwner = (solverSnap.getLong(pairCounterField) ?: 0L).toInt()
-                    val withinDailyOwnerLimit = solvedTodayForOwner < MAX_DAILY_REWARDED_SOLUTIONS_PER_OWNER
+                    val withinDailyOwnerLimit = solvedTodayForOwner < MAX_DAILY_REWARDED_SOLUTIONS_PER_OWNER &&
+                        currentSub.solverUid !in qAttachment.aiAccessedByUids
 
                     val currentMentorPoints = (solverSnap.getLong("mentorPoints") ?: 0L).toInt()
                     val currentWeeklyBonusSec = (solverSnap.getLong("weeklyQuestionBonusSeconds") ?: 0L)
@@ -580,18 +832,21 @@ class LeagueChatRepository @Inject constructor(
                     } else {
                         currentGoldenCount
                     }
+                    val nextBadgeTier = BadgeTier.fromPoints(nextMentorPoints)
 
                     val existingBadges = (solverSnap.get("unlockedBadges") as? List<*>)
                         ?.mapNotNull { it as? String }
                         ?.toMutableSet()
                         ?: mutableSetOf()
-                    if (nextSolvedTotal >= 1) existingBadges.add("FIRST_SOLVE")
-                    if (nextGoldenCount >= 1) existingBadges.add("GOLDEN_RESCUER")
-                    if (nextGoldenCount >= 5) existingBadges.add("SPEED_SHARK")
-                    if (nextSolvedTotal >= 10) existingBadges.add("PEER_MENTOR_10")
-                    if (nextMentorPoints >= 500) existingBadges.add("SHARK_PROFESSOR")
+                    if (nextSolvedTotal >= 1) existingBadges.add("BRONZE_FIRST_SOLVE")
+                    if (nextGoldenCount >= 1) existingBadges.add("SILVER_GOLDEN_RESCUER")
+                    if (nextSolvedTotal >= 10) existingBadges.add("GOLD_MENTOR_10")
+                    if (nextMentorPoints >= BadgeTier.MEGALODON.minMentorPoints) {
+                        existingBadges.add("MEGALODON_MENTOR")
+                    }
 
-                    val existingShowcase = (solverSnap.get("showcaseBadges") as? List<*>)
+                    val existingShowcase = ((solverSnap.get("showcaseBadgeIds") as? List<*>)
+                        ?: (solverSnap.get("showcaseBadges") as? List<*>))
                         ?.mapNotNull { it as? String }
                         ?.filter { it in existingBadges }
                         ?.distinct()
@@ -626,7 +881,9 @@ class LeagueChatRepository @Inject constructor(
                         "solvedTotalCount" to nextSolvedTotal,
                         "goldenWindowSolveCount" to nextGoldenCount,
                         "unlockedBadges" to existingBadges.toList(),
+                        "showcaseBadgeIds" to existingShowcase,
                         "showcaseBadges" to existingShowcase,
+                        "badgeTier" to nextBadgeTier.name,
                         "weeklyFocusSeconds" to (currentWeeklyFocusSec + awardedBonusSec),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -635,22 +892,45 @@ class LeagueChatRepository @Inject constructor(
                     }
                     tx.set(solverRef, studentUpdates, SetOptions.merge())
 
-                    if (awardedBonusSec > 0L && globalLeagueSnap.exists()) {
-                        val leagueWeeklySec = globalLeagueSnap.getLong("weeklyFocusSeconds") ?: currentWeeklyFocusSec
-                        tx.set(
-                            globalLeagueRef,
-                            mapOf(
-                                "weeklyFocusSeconds" to (leagueWeeklySec + awardedBonusSec),
-                                "mentorPoints" to nextMentorPoints,
-                                "weeklyQuestionBonusSeconds" to nextWeeklyBonusSec
-                            ),
-                            SetOptions.merge()
-                        )
+                    // Upsert badge document in students/{solverUid}/badges/{badgeTier}
+                    val badgeDocRef = solverRef.collection("badges").document(nextBadgeTier.name)
+                    val badgeDoc = StudentBadge(
+                        badgeId = nextBadgeTier.name,
+                        title = nextBadgeTier.displayName,
+                        description = "Mentor Puanı: $nextMentorPoints • Çözülen Soru: $nextSolvedTotal",
+                        tier = nextBadgeTier,
+                        progress = nextMentorPoints,
+                        target = nextBadgeTier.minMentorPoints,
+                        unlocked = true,
+                        unlockedAtMillis = now
+                    )
+                    tx.set(badgeDocRef, badgeDoc.toMap(), SetOptions.merge())
+
+                    // Apply approved bonus to institutions/GLOBAL_INDIVIDUAL/weeklyLeague/{solverUid}
+                    val leagueWeeklySec = if (globalLeagueSnap.exists()) {
+                        globalLeagueSnap.getLong("weeklyFocusSeconds") ?: currentWeeklyFocusSec
+                    } else {
+                        currentWeeklyFocusSec
                     }
+                    tx.set(
+                        globalLeagueRef,
+                        mapOf(
+                            "studentId" to currentSub.solverUid,
+                            "displayName" to currentSub.solverName,
+                            "weeklyFocusSeconds" to (leagueWeeklySec + awardedBonusSec),
+                            "mentorPoints" to nextMentorPoints,
+                            "weeklyQuestionBonusSeconds" to nextWeeklyBonusSec,
+                            "showcaseBadgeIds" to existingShowcase,
+                            "showcaseBadges" to existingShowcase,
+                            "badgeTier" to nextBadgeTier.name,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        ),
+                        SetOptions.merge()
+                    )
 
                     finalizedSub
                 } else {
-                    // Rejected (✗): remove escrow points and reopen question
+                    // Rejected (✗): remove escrow points, increment rejectedSolverCounts[solverUid], reopen question
                     val finalizedSub = currentSub.copy(
                         verifyStatus = SolutionVerifyStatus.REJECTED,
                         verifiedAtMillis = now,
@@ -658,11 +938,17 @@ class LeagueChatRepository @Inject constructor(
                         awardedBonusSeconds = 0L
                     )
 
+                    val prevRejectedForSolver = qAttachment.rejectedSolverCounts[currentSub.solverUid] ?: 0
+                    val updatedRejectedMap = qAttachment.rejectedSolverCounts.toMutableMap().apply {
+                        put(currentSub.solverUid, prevRejectedForSolver + 1)
+                    }
+
                     val reopenedQuestion = qAttachment.copy(
                         status = QuestionStatus.OPEN,
                         approvedSolutionId = null,
                         approvedSolverUid = null,
-                        approvedSolverName = null
+                        approvedSolverName = null,
+                        rejectedSolverCounts = updatedRejectedMap
                     )
 
                     tx.update(questionDocRef, "questionAttachment", reopenedQuestion.toMap())
@@ -703,6 +989,15 @@ class LeagueChatRepository @Inject constructor(
                 "Geçerli bir alıcı seçilmelidir."
             }
 
+            // Check if blocked by either side
+            val myBlockSnap = db.collection("user_blocks").document(uid)
+                .collection("blocked").document(targetUid).get().await()
+            val theirBlockSnap = db.collection("user_blocks").document(targetUid)
+                .collection("blocked").document(uid).get().await()
+            if (myBlockSnap.exists() || theirBlockSnap.exists()) {
+                throw IllegalStateException("Bu kullanıcı ile mesajlaşma engellenmiş.")
+            }
+
             val profileSnap = runCatching { db.collection("students").document(uid).get().await() }.getOrNull()
             val resolvedSenderName = senderName?.takeIf { it.isNotBlank() }
                 ?: profileSnap?.getString("name")?.takeIf { it.isNotBlank() }
@@ -710,12 +1005,12 @@ class LeagueChatRepository @Inject constructor(
                 ?: "Öğrenci"
 
             val threadId = buildDeterministicDmThreadId(uid, targetUid)
-            val threadRef = db.collection("direct_messages").document(threadId)
-            val existingSnap = threadRef.get().await()
+            val roomRef = roomDocRef(db, threadId)
+            val existingSnap = roomRef.get().await()
             val now = System.currentTimeMillis()
             val preview = initialMessage.trim().ifBlank { "👋 Merhaba! Çalışma mesajı isteği gönderdi." }
 
-            val existingStatus = existingSnap.getString("status")
+            val existingStatus = (existingSnap.getString("dmStatus") ?: existingSnap.getString("status"))
                 ?.let { runCatching { DmRequestStatus.valueOf(it) }.getOrNull() }
 
             val effectiveStatus = if (existingStatus == DmRequestStatus.ACCEPTED) {
@@ -741,14 +1036,17 @@ class LeagueChatRepository @Inject constructor(
                 createdAtMillis = existingSnap.getLong("createdAtMillis") ?: now
             )
 
-            threadRef.set(thread.toMap(), SetOptions.merge()).await()
+            roomRef.set(thread.toMap(), SetOptions.merge()).await()
+            runCatching {
+                db.collection("direct_messages").document(threadId).set(thread.toMap(), SetOptions.merge()).await()
+            }
 
             if (initialMessage.isNotBlank()) {
-                val msgRef = threadRef.collection("messages").document()
+                val msgRef = roomMessagesRef(db, threadId).document()
                 val firstMsg = LeagueChatMessage(
                     id = msgRef.id,
                     channelId = threadId,
-                    channelType = ChatChannelType.DIRECT_MESSAGE,
+                    channelType = ChatChannelType.DM,
                     senderUid = uid,
                     senderName = resolvedSenderName,
                     messageType = MessageType.TEXT,
@@ -771,13 +1069,15 @@ class LeagueChatRepository @Inject constructor(
             val uid = currentUid ?: throw IllegalStateException("Oturum açmış kullanıcı bulunamadı.")
             require(threadId.isNotBlank()) { "DM kanal kimliği boş olamaz." }
 
-            val threadRef = db.collection("direct_messages").document(threadId)
-            val snap = threadRef.get().await()
-            if (!snap.exists()) {
+            val roomRef = roomDocRef(db, threadId)
+            val snap = roomRef.get().await()
+            val legacyRef = db.collection("direct_messages").document(threadId)
+            val effectiveSnap = if (snap.exists()) snap else legacyRef.get().await()
+            if (!effectiveSnap.exists()) {
                 throw IllegalStateException("DM isteği bulunamadı.")
             }
 
-            val currentThread = DirectMessageThread.fromMap(snap.id, snap.data.orEmpty())
+            val currentThread = DirectMessageThread.fromMap(effectiveSnap.id, effectiveSnap.data.orEmpty())
             if (currentThread.receiverUid.isNotBlank() &&
                 currentThread.receiverUid != uid &&
                 uid !in currentThread.participantIds
@@ -787,14 +1087,14 @@ class LeagueChatRepository @Inject constructor(
 
             val nextStatus = if (accept) DmRequestStatus.ACCEPTED else DmRequestStatus.REJECTED
             val now = System.currentTimeMillis()
-            threadRef.set(
-                mapOf(
-                    "status" to nextStatus.name,
-                    "lastMessageAtMillis" to now,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                ),
-                SetOptions.merge()
-            ).await()
+            val statusUpdate = mapOf(
+                "status" to nextStatus.name,
+                "dmStatus" to nextStatus.name,
+                "lastMessageAtMillis" to now,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            roomRef.set(statusUpdate, SetOptions.merge()).await()
+            runCatching { legacyRef.set(statusUpdate, SetOptions.merge()).await() }
 
             currentThread.copy(status = nextStatus, lastMessageAtMillis = now)
         }
@@ -810,7 +1110,7 @@ class LeagueChatRepository @Inject constructor(
         }
 
         val registration: ListenerRegistration? = runCatching {
-            db.collection("direct_messages")
+            db.collection(LEAGUE_CHATS_COLLECTION)
                 .whereArrayContains("participantIds", uid)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
@@ -821,6 +1121,13 @@ class LeagueChatRepository @Inject constructor(
                     val threads = snapshot?.documents
                         ?.mapNotNull { doc ->
                             val data = doc.data ?: return@mapNotNull null
+                            val typeStr = (data["type"] as? String).orEmpty()
+                            if (typeStr.isNotBlank() &&
+                                typeStr != ChatChannelType.DM.name &&
+                                typeStr != ChatChannelType.DIRECT_MESSAGE.name
+                            ) {
+                                return@mapNotNull null
+                            }
                             DirectMessageThread.fromMap(doc.id, data)
                         }
                         ?.sortedByDescending { it.lastMessageAtMillis }
@@ -838,7 +1145,101 @@ class LeagueChatRepository @Inject constructor(
         emit(emptyList())
     }
 
-    // ── 7. Mentor Stats & Showcase Badges (Max 3) ────────────────────────────
+    // ── 7. User Blocking (`user_blocks/{uid}/blocked/{targetUid}`) & Moderation (`moderation_reports/{reportId}`) ─
+
+    suspend fun blockUser(
+        targetUid: String,
+        targetName: String = "",
+        reason: String = ""
+    ): Result<UserBlockRecord> = withContext(Dispatchers.IO) {
+        runCatching {
+            val db = firestore ?: throw IllegalStateException("Firestore bağlantısı kurulamadı.")
+            val uid = currentUid ?: throw IllegalStateException("Oturum açmış kullanıcı bulunamadı.")
+            require(targetUid.isNotBlank() && targetUid != uid) { "Geçersiz kullanıcı." }
+
+            val record = UserBlockRecord(
+                blockerUid = uid,
+                blockedUid = targetUid,
+                blockedName = targetName,
+                reason = reason.trim(),
+                createdAtMillis = System.currentTimeMillis()
+            )
+            db.collection("user_blocks")
+                .document(uid)
+                .collection("blocked")
+                .document(targetUid)
+                .set(record.toMap(), SetOptions.merge())
+                .await()
+            record
+        }
+    }
+
+    suspend fun unblockUser(targetUid: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val db = firestore ?: throw IllegalStateException("Firestore bağlantısı kurulamadı.")
+            val uid = currentUid ?: throw IllegalStateException("Oturum açmış kullanıcı bulunamadı.")
+            db.collection("user_blocks")
+                .document(uid)
+                .collection("blocked")
+                .document(targetUid)
+                .delete()
+                .await()
+            Unit
+        }
+    }
+
+    fun observeBlockedUserIds(uid: String? = currentUid): Flow<Set<String>> = callbackFlow {
+        val db = firestore
+        val effectiveUid = uid?.takeIf { it.isNotBlank() } ?: currentUid
+        if (db == null || effectiveUid.isNullOrBlank()) {
+            trySend(emptySet())
+            close()
+            return@callbackFlow
+        }
+        val registration: ListenerRegistration? = runCatching {
+            db.collection("user_blocks")
+                .document(effectiveUid)
+                .collection("blocked")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        trySend(emptySet())
+                        return@addSnapshotListener
+                    }
+                    val ids = snapshot?.documents?.map { it.id }?.toSet().orEmpty()
+                    trySend(ids)
+                }
+        }.getOrNull()
+        awaitClose { registration?.remove() }
+    }.catch { emit(emptySet()) }
+
+    suspend fun reportMessageOrUser(
+        roomId: String,
+        reportedUid: String,
+        messageId: String? = null,
+        reason: String,
+        details: String = ""
+    ): Result<ModerationReport> = withContext(Dispatchers.IO) {
+        runCatching {
+            val db = firestore ?: throw IllegalStateException("Firestore bağlantısı kurulamadı.")
+            val uid = currentUid ?: throw IllegalStateException("Oturum açmış kullanıcı bulunamadı.")
+            val reportRef = db.collection("moderation_reports").document()
+            val report = ModerationReport(
+                reportId = reportRef.id,
+                reporterUid = uid,
+                reportedUid = reportedUid,
+                roomId = roomId,
+                messageId = messageId,
+                reason = reason.trim().ifBlank { "Uygunsuz İçerik" },
+                details = details.trim(),
+                status = "OPEN",
+                createdAtMillis = System.currentTimeMillis()
+            )
+            reportRef.set(report.toMap()).await()
+            report
+        }
+    }
+
+    // ── 8. Mentor Stats, Student Badges (`students/{uid}/badges/{badgeId}`) & Showcase Badges (Max 5) ─
 
     suspend fun updateShowcaseBadges(
         uid: String? = currentUid,
@@ -858,6 +1259,7 @@ class LeagueChatRepository @Inject constructor(
 
             db.collection("students").document(effectiveUid).set(
                 mapOf(
+                    "showcaseBadgeIds" to trimmed,
                     "showcaseBadges" to trimmed,
                     "updatedAt" to FieldValue.serverTimestamp()
                 ),
@@ -870,7 +1272,10 @@ class LeagueChatRepository @Inject constructor(
                     .collection("weeklyLeague")
                     .document(effectiveUid)
                     .set(
-                        mapOf("showcaseBadges" to trimmed),
+                        mapOf(
+                            "showcaseBadgeIds" to trimmed,
+                            "showcaseBadges" to trimmed
+                        ),
                         SetOptions.merge()
                     )
                     .await()
@@ -879,6 +1284,35 @@ class LeagueChatRepository @Inject constructor(
             trimmed
         }
     }
+
+    fun observeStudentBadges(uid: String? = currentUid): Flow<List<StudentBadge>> = callbackFlow {
+        val db = firestore
+        val effectiveUid = uid?.takeIf { it.isNotBlank() } ?: currentUid
+        if (db == null || effectiveUid.isNullOrBlank()) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        val registration: ListenerRegistration? = runCatching {
+            db.collection("students")
+                .document(effectiveUid)
+                .collection("badges")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    val badges = snapshot?.documents?.mapNotNull { doc ->
+                        val data = doc.data ?: return@mapNotNull null
+                        StudentBadge.fromMap(doc.id, data)
+                    }.orEmpty()
+                    trySend(badges)
+                }
+        }.getOrNull()
+
+        awaitClose { registration?.remove() }
+    }.catch { emit(emptyList()) }
 
     fun observeMentorStats(uid: String? = currentUid): Flow<MentorStats> = callbackFlow {
         val db = firestore
