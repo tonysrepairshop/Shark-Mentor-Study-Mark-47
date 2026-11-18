@@ -790,7 +790,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     )
                     .await()
 
-                // Credit solver mentor points, capped weekly bonus seconds & 12 tiered badges
+                // Credit solver mentor points, capped weekly bonus seconds & 50+ topic/subject badges
                 val solverId = solution.senderId
                 if (solverId.isNotBlank()) {
                     if (solverId == uid) {
@@ -802,33 +802,34 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                             context = appContext,
                             subject = question.subject,
                             solveElapsedMs = solveElapsedMs,
-                            createdAtMillis = solution.createdAtMillis
+                            createdAtMillis = solution.createdAtMillis,
+                            topic = question.topic
                         )
                         SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(appContext, uid)
                     } else {
-                        val earnedFirstTierBadges = mutableListOf(SharkBadgeCatalog.BADGE_ILK_COZUM)
                         val progressIncrements = hashMapOf<String, Any>(
                             SharkBadgeCatalog.BADGE_ILK_COZUM to FieldValue.increment(1L),
-                            SharkBadgeCatalog.BADGE_SORU_AVCISI to FieldValue.increment(1L)
+                            SharkBadgeCatalog.BADGE_SORU_AVCISI to FieldValue.increment(1L),
+                            SharkBadgeCatalog.BADGE_SERI_MENTOR to FieldValue.increment(1L),
+                            SharkBadgeCatalog.BADGE_MEGALODON_ONDERI to FieldValue.increment(1L)
                         )
                         if (solveElapsedMs in 0L..(15L * 60L * 1_000L)) {
-                            earnedFirstTierBadges.add(SharkBadgeCatalog.BADGE_HIZLI_KOPEKBALIGI)
                             progressIncrements[SharkBadgeCatalog.BADGE_HIZLI_KOPEKBALIGI] = FieldValue.increment(1L)
                         }
                         if (solveElapsedMs in (60L * 60L * 1_000L)..(105L * 60L * 1_000L)) {
-                            earnedFirstTierBadges.add(SharkBadgeCatalog.BADGE_CAN_SIMIDI)
                             progressIncrements[SharkBadgeCatalog.BADGE_CAN_SIMIDI] = FieldValue.increment(1L)
                         }
-                        SharkBadgeCatalog.subjectBadgeIdFor(question.subject)?.let { subjBadgeId ->
-                            earnedFirstTierBadges.add(subjBadgeId)
-                            progressIncrements[subjBadgeId] = FieldValue.increment(1L)
+                        SharkBadgeCatalog.topicAndSubjectBadgeIdsFor(
+                            subject = question.subject,
+                            topic = question.topic
+                        ).forEach { badgeId ->
+                            progressIncrements[badgeId] = FieldValue.increment(1L)
                         }
 
                         runCatching {
                             val studentRewardPayload = hashMapOf<String, Any>(
                                 "mentorPoints" to FieldValue.increment(solution.escrowPoints.toLong()),
                                 "approvedSolutionsCount" to FieldValue.increment(1L),
-                                "unlockedBadges" to FieldValue.arrayUnion(*earnedFirstTierBadges.toTypedArray()),
                                 "badgeProgress" to progressIncrements
                             )
                             if (bonusSecs > 0L) {

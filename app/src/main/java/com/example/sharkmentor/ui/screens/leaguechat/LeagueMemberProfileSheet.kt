@@ -4,6 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -50,20 +52,24 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.sharkmentor.core.badges.BadgeTier
 import com.example.sharkmentor.core.badges.SharkBadgeCatalog
-import com.example.sharkmentor.core.badges.SharkBadgeShowcaseRow
+import com.example.sharkmentor.core.badges.SharkBadgeChip
+import com.example.sharkmentor.core.badges.SharkBadgeDef
 import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.ui.viewmodel.LeagueEntry
 
 /**
  * Member profile modal sheet displaying real name, weekly study stats & bonus breakdown,
- * Mentor Points, 5-badge showcase, request-approved DM action, and Block / Report moderation.
+ * Mentor Points, clickable 5-badge showcase with tier detail inspection, request-approved
+ * DM action, and Block / Report moderation.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun LeagueMemberProfileSheet(
     entry: LeagueEntry,
@@ -89,6 +95,7 @@ fun LeagueMemberProfileSheet(
     var noteInput by rememberSaveable(entry.studentId) { mutableStateOf("") }
     var showBlockConfirmDialog by rememberSaveable(entry.studentId) { mutableStateOf(false) }
     var showReportDialog by rememberSaveable(entry.studentId) { mutableStateOf(false) }
+    var inspectedBadge by remember(entry.studentId) { mutableStateOf<SharkBadgeDef?>(null) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -211,6 +218,12 @@ fun LeagueMemberProfileSheet(
             }
 
             // 5 Rozet Vitrini
+            val validShowcaseBadges = remember(entry.showcaseBadges) {
+                entry.showcaseBadges
+                    .mapNotNull { SharkBadgeCatalog.findById(it) }
+                    .distinctBy { it.id }
+                    .take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+            }
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -221,27 +234,54 @@ fun LeagueMemberProfileSheet(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = "5 ROZET VİTRİNİ",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        ),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    val validBadges = entry.showcaseBadges.filter { SharkBadgeCatalog.findById(it) != null }
-                    if (validBadges.isEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "5 ROZET VİTRİNİ",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            ),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        if (validShowcaseBadges.isNotEmpty()) {
+                            Text(
+                                text = "Detay için dokun",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    if (validShowcaseBadges.isEmpty()) {
                         Text(
                             text = "Bu öğrenci henüz vitrin rozeti sergilemiyor.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        SharkBadgeShowcaseRow(
-                            badgeIds = validBadges,
-                            compact = false,
-                            badgeProgress = entry.badgeProgress
-                        )
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            validShowcaseBadges.forEach { badge ->
+                                val progressInfo = badge.progressFor(
+                                    rawCount = entry.badgeProgress[badge.id] ?: 0,
+                                    isLegacyUnlocked = true
+                                )
+                                SharkBadgeChip(
+                                    badge = badge,
+                                    tier = progressInfo.unlockedTier ?: BadgeTier.BRONZE,
+                                    compact = false,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { inspectedBadge = badge }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -490,6 +530,16 @@ fun LeagueMemberProfileSheet(
                 onReportUser(entry, reason, details)
                 onDismiss()
             }
+        )
+    }
+
+    inspectedBadge?.let { badge ->
+        BadgeTierDetailDialog(
+            badge = badge,
+            rawCount = entry.badgeProgress[badge.id] ?: 0,
+            isLegacyUnlocked = true,
+            ownerLabel = realName,
+            onDismiss = { inspectedBadge = null }
         )
     }
 }
