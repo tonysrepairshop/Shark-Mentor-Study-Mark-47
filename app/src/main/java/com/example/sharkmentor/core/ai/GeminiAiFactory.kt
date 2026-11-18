@@ -47,14 +47,13 @@ data class GeminiSdkResult(
  * Pure OkHttp + Gson Gemini execution & failover pipeline.
  *
  * - Default built-in keys (`BuildConfig.GEMINI_API_KEY_1/2/3`) strictly run `gemini-3.6-flash`
- *   (with controlled 404 fallback to `gemini-2.5-flash` only if 3.6 returns 404 across both
- *   Vertex AI Express & AI Studio across all built-in keys).
+ *   across both Vertex AI Express & Google AI Studio endpoints.
  * - User-entered keys run the user's selected supported model, falling back to built-in keys
  *   on `gemini-3.6-flash` if custom keys exhaust quota or fail.
  */
 object GeminiAiFactory {
-    const val SOLE_GEMINI_MODEL = UserAiPreferences.BUILTIN_DEFAULT_MODEL
-    const val CONTROLLED_404_FALLBACK_MODEL = UserAiPreferences.CONTROLLED_404_FALLBACK_MODEL
+    const val SOLE_GEMINI_MODEL = "gemini-3.6-flash"
+    const val CONTROLLED_404_FALLBACK_MODEL = SOLE_GEMINI_MODEL
     const val VISION_MODEL = SOLE_GEMINI_MODEL
     const val FAST_MODEL_3_6 = SOLE_GEMINI_MODEL
     const val FALLBACK_MODEL_3_6 = SOLE_GEMINI_MODEL

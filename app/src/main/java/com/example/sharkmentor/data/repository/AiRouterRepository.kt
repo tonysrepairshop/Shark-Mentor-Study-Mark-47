@@ -626,17 +626,18 @@ $MANDATORY_PERSONA_RULES
             fun isVisionCapableProviderConfigured(p: AiProviderChoice): Boolean = when (p) {
                 AiProviderChoice.CLAUDE -> MultiProviderAiClient.getClaudeApiKey(context).isNotBlank()
                 AiProviderChoice.OPENAI -> MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank()
+                AiProviderChoice.GROK -> MultiProviderAiClient.getGrokApiKey(context).isNotBlank()
                 AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(context).isNotBlank()
                 else -> false
             }
 
-            // If user explicitly chose Claude/OpenAI/Kimi (or AUTO resolves to Claude/OpenAI) and we have an image bitmap, honor it first
+            // If user explicitly chose Claude/OpenAI/Grok/Kimi (or AUTO resolves to one) and we have an image bitmap, honor it first
             val autoActiveProvider = prefs?.getActiveProviderAndModel()?.first ?: AiProviderChoice.GEMINI
             val primaryExternalVision = when {
-                selectedProvider in listOf(AiProviderChoice.CLAUDE, AiProviderChoice.OPENAI, AiProviderChoice.KIMI) &&
+                selectedProvider in listOf(AiProviderChoice.CLAUDE, AiProviderChoice.OPENAI, AiProviderChoice.GROK, AiProviderChoice.KIMI) &&
                     isVisionCapableProviderConfigured(selectedProvider) -> selectedProvider
                 selectedProvider == AiProviderChoice.AUTO &&
-                    autoActiveProvider in listOf(AiProviderChoice.CLAUDE, AiProviderChoice.OPENAI) &&
+                    autoActiveProvider in listOf(AiProviderChoice.CLAUDE, AiProviderChoice.OPENAI, AiProviderChoice.GROK) &&
                     isVisionCapableProviderConfigured(autoActiveProvider) -> autoActiveProvider
                 else -> null
             }
@@ -711,10 +712,11 @@ $MANDATORY_PERSONA_RULES
             val lastException = geminiResult.exceptionOrNull()
             if (lastException is CancellationException) throw lastException
 
-            // Seamless fallback to any other configured vision-capable external provider (Claude, OpenAI, Kimi)
+            // Seamless fallback to any other configured vision-capable external provider (Claude, OpenAI, Grok, Kimi)
             val fallbackVisionProviders = listOf(
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.OPENAI,
+                AiProviderChoice.GROK,
                 AiProviderChoice.KIMI
             ).filter { it != primaryExternalVision && isVisionCapableProviderConfigured(it) }
 
@@ -810,8 +812,8 @@ $MANDATORY_PERSONA_RULES
     }
 
     /**
-     * Dedicated Text/Chat streaming pipeline across all 5 providers
-     * (`Gemini`, `DeepSeek`, `Kimi`, `Claude`, `GPT (OpenAI)` and `AUTO`).
+     * Dedicated Text/Chat streaming pipeline across all providers
+     * (`Gemini`, `DeepSeek`, `Kimi`, `Claude`, `GPT (OpenAI)`, `Grok (xAI)` and `AUTO`).
      */
     suspend fun executeTextStream(
         activeEngine: SharkAiEngine = SharkAiEngine.CONVERSATIONAL_PEER,
@@ -835,6 +837,7 @@ $MANDATORY_PERSONA_RULES
         fun hasKeyForProvider(provider: AiProviderChoice): Boolean = when (provider) {
             AiProviderChoice.CLAUDE -> MultiProviderAiClient.getClaudeApiKey(context).isNotBlank()
             AiProviderChoice.OPENAI -> MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank()
+            AiProviderChoice.GROK -> MultiProviderAiClient.getGrokApiKey(context).isNotBlank()
             AiProviderChoice.DEEPSEEK -> DeepSeekClient.getDeepSeekApiKey(context).isNotBlank()
             AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(context).isNotBlank()
             AiProviderChoice.GEMINI -> (prefs?.getParsedUserGeminiKeys()?.isNotEmpty() == true)
@@ -914,6 +917,7 @@ $MANDATORY_PERSONA_RULES
 
             AiProviderChoice.CLAUDE,
             AiProviderChoice.OPENAI,
+            AiProviderChoice.GROK,
             AiProviderChoice.DEEPSEEK,
             AiProviderChoice.KIMI -> {
                 var explicitError: Throwable? = null

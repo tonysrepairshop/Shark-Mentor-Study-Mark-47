@@ -32,6 +32,7 @@ class GeminiCoreService(private val context: Context) {
     }
 
     companion object {
+        const val ACTIVE_GEMINI_MODEL = "gemini-3.6-flash"
         private const val MAX_INLINE_PDF_BYTES = 12 * 1024 * 1024
         const val SYSTEM_PERSONA_RULES = """
 KESİN KURALLAR:

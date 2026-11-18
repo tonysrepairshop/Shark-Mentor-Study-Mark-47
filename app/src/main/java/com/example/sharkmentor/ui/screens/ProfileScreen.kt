@@ -1,5 +1,6 @@
 package com.example.sharkmentor.ui.screens
 
+import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -19,12 +20,14 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Grade
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,12 +44,61 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharkmentor.core.badges.SharkBadgeCatalog
+import com.example.sharkmentor.core.badges.SharkBadgeShowcaseRow
 import com.example.sharkmentor.core.util.AvatarHelper
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.core.util.SessionManager
 import com.example.sharkmentor.core.util.SharkAvatar
+import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.example.sharkmentor.data.repository.CoachCodeRepository
+import com.example.sharkmentor.service.sync.SyncWorker
+import com.example.sharkmentor.ui.screens.leaguechat.BadgeShowcaseSelectorSheet
 import com.example.sharkmentor.ui.screens.profile.ProfileViewModel
+import com.google.firebase.firestore.SetOptions
+import java.util.Locale
+
+private fun isMeaningfulProfileName(candidate: String?): Boolean {
+    val clean = SyncWorker.sanitizeTurkishText(candidate).trim()
+    if (clean.length < 2) return false
+    val lower = clean.lowercase(Locale("tr"))
+    return lower != "öğrenci" &&
+        lower != "ogrenci" &&
+        lower != "kayıtlı öğrenci" &&
+        lower != "kayitli ogrenci" &&
+        lower != "student" &&
+        lower != "null"
+}
+
+private fun saveProfileNameLocallyAndCloud(
+    context: Context,
+    uid: String?,
+    isGuest: Boolean,
+    rawName: String
+) {
+    val clean = SyncWorker.sanitizeTurkishText(rawName.trim())
+    if (!isMeaningfulProfileName(clean)) return
+
+    context.applicationContext
+        .getSharedPreferences("user_preferences", Context.MODE_PRIVATE)
+        .edit()
+        .putString("student_name", clean)
+        .apply()
+
+    if (!isGuest && !uid.isNullOrBlank()) {
+        val db = GoogleServicesHelper.getFirebaseFirestore(context) ?: return
+        db.collection("students").document(uid)
+            .set(mapOf("name" to clean, "displayName" to clean), SetOptions.merge())
+        db.collection("institutions").document("GLOBAL_INDIVIDUAL")
+            .collection("weeklyLeague").document(uid)
+            .set(mapOf("displayName" to clean), SetOptions.merge())
+        val friendCode = UserPreferences.getInstance(context).friendCode
+        if (!friendCode.isNullOrBlank()) {
+            db.collection("friend_codes").document(friendCode)
+                .set(mapOf("displayName" to clean), SetOptions.merge())
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,11 +109,18 @@ fun ProfileScreen(
     onLoginClick: () -> Unit = onLogoutClick
 ) {
     val context = LocalContext.current
+    val userPrefs = remember(context) { UserPreferences.getInstance(context) }
     val user = GoogleServicesHelper.getCurrentUser(context = context)
     val uid = user?.uid ?: "ID Alınamadı"
     val isGuest = user == null || user.isAnonymous
 
-    var studentName by remember { mutableStateOf(user?.displayName ?: "") }
+    var studentName by remember {
+        val initial = userPrefs.studentName?.takeIf { isMeaningfulProfileName(it) }
+            ?: user?.displayName?.takeIf { isMeaningfulProfileName(it) }
+            ?: user?.email?.substringBefore("@")?.takeIf { isMeaningfulProfileName(it) }
+            ?: ""
+        mutableStateOf(initial)
+    }
     var studentEmail by remember { mutableStateOf(user?.email ?: "") }
     var studentGrade by remember { mutableStateOf("12. Sınıf") }
     var studentTargetExam by remember { mutableStateOf("YKS 2027") }
@@ -77,6 +136,13 @@ fun ProfileScreen(
     var showUnlinkConfirm by remember { mutableStateOf(false) }
     var showBookingSheet by remember { mutableStateOf(false) }
     var showAvatarPickerSheet by remember { mutableStateOf(false) }
+    var showBadgeShowcaseSheet by remember { mutableStateOf(false) }
+    var showNameEditDialog by remember { mutableStateOf(false) }
+
+    var unlockedBadgeIds by remember { mutableStateOf(SharkBadgeCatalog.getUnlockedBadgeIds(context)) }
+    var showcaseBadgeIds by remember { mutableStateOf(SharkBadgeCatalog.getShowcaseBadgeIds(context)) }
+    var badgeProgress by remember { mutableStateOf(SharkBadgeCatalog.getBadgeProgressCounts(context)) }
+    var mentorPoints by remember { mutableStateOf(SharkBadgeCatalog.getMentorPoints(context)) }
 
     val activeMeetings by viewModel.studentMeetings.collectAsStateWithLifecycle()
     val avatarState by viewModel.avatarState.collectAsStateWithLifecycle()
@@ -104,12 +170,54 @@ fun ProfileScreen(
     }
 
     LaunchedEffect(uid) {
+        unlockedBadgeIds = SharkBadgeCatalog.getUnlockedBadgeIds(context)
+        showcaseBadgeIds = SharkBadgeCatalog.getShowcaseBadgeIds(context)
+        badgeProgress = SharkBadgeCatalog.getBadgeProgressCounts(context)
+        mentorPoints = SharkBadgeCatalog.getMentorPoints(context)
+
         if (user != null && !isGuest) {
             GoogleServicesHelper.getFirebaseFirestore(context)?.collection("students")?.document(uid)?.get()
                 ?.addOnSuccessListener { snapshot ->
-                    val nameInDb = snapshot.getString("name")
+                    val nameInDb = listOf("name", "displayName", "fullName", "username")
+                        .firstNotNullOfOrNull { field ->
+                            snapshot.getString(field)?.takeIf { isMeaningfulProfileName(it) }
+                        }
                     if (!nameInDb.isNullOrBlank()) {
-                        studentName = nameInDb
+                        studentName = SyncWorker.sanitizeTurkishText(nameInDb)
+                        saveProfileNameLocallyAndCloud(context, uid, isGuest = false, rawName = studentName)
+                    } else if (isMeaningfulProfileName(studentName)) {
+                        saveProfileNameLocallyAndCloud(context, uid, isGuest = false, rawName = studentName)
+                    }
+
+                    val remotePoints = snapshot.getLong("mentorPoints")?.toInt() ?: 0
+                    val mergedPoints = maxOf(remotePoints, SharkBadgeCatalog.getMentorPoints(context))
+                    mentorPoints = SharkBadgeCatalog.saveMentorPoints(context, mergedPoints)
+
+                    val remoteProgress = SharkBadgeCatalog.parseRemoteProgressMap(snapshot.get("badgeProgress"))
+                    badgeProgress = SharkBadgeCatalog.mergeBadgeProgress(context, remoteProgress)
+
+                    val remoteUnlocked = (snapshot.get("unlockedBadges") as? List<*>)
+                        ?.mapNotNull { it?.toString()?.trim() }
+                        ?.filter { it.isNotBlank() }
+                        .orEmpty()
+                    unlockedBadgeIds = SharkBadgeCatalog.mergeUnlockedBadges(context, remoteUnlocked)
+
+                    val remoteShowcase = (snapshot.get("showcaseBadges") as? List<*>)
+                        ?.mapNotNull { it?.toString()?.trim() }
+                        ?.filter { it.isNotBlank() }
+                        ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                        .orEmpty()
+                    if (remoteShowcase.isNotEmpty() && SharkBadgeCatalog.getShowcaseBadgeIds(context).isEmpty()) {
+                        showcaseBadgeIds = SharkBadgeCatalog.saveShowcaseBadgeIds(context, remoteShowcase)
+                    } else {
+                        showcaseBadgeIds = SharkBadgeCatalog.getShowcaseBadgeIds(context)
+                    }
+
+                    val weekKey = SharkBadgeCatalog.currentIsoWeekKey()
+                    val remoteBonus = SharkBadgeCatalog.parseWeeklyBonusForWeek(snapshot.get("weeklyBonusByWeek"), weekKey)
+                    val localBonus = SharkBadgeCatalog.getWeeklyBonusSeconds(context, weekKey)
+                    if (remoteBonus > localBonus) {
+                        SharkBadgeCatalog.saveWeeklyBonusSeconds(context, remoteBonus, weekKey)
                     }
 
                     val hasAvatarFields = snapshot.contains("avatarBase64") || snapshot.contains("avatarPresetId")
@@ -135,7 +243,7 @@ fun ProfileScreen(
                         institutionName = instInDb ?: "Bağlı Kurum"
                         hasCoach = true
                         SessionManager.setLinkedToInstitution(context, true)
-                                          SessionManager.setUserMode(context, "campus")
+                        SessionManager.setUserMode(context, "campus")
                     }
 
                     val coachId = snapshot.getString("coachId")
@@ -148,7 +256,7 @@ fun ProfileScreen(
                                 }
                                 hasCoach = true
                                 SessionManager.setLinkedToInstitution(context, true)
-                                          SessionManager.setUserMode(context, "campus")
+                                SessionManager.setUserMode(context, "campus")
                                 isLoading = false
                             }
                             ?.addOnFailureListener { isLoading = false }
@@ -180,7 +288,7 @@ fun ProfileScreen(
         } else {
             studentEmail.ifBlank { "E-posta Belirtilmemiş" }
         }
-        val effectiveDisplayName = if (isGuest) "Misafir Öğrenci" else studentName.ifBlank { "Kayıtlı Öğrenci" }
+        val effectiveDisplayName = if (isGuest) "Misafir Öğrenci" else studentName.ifBlank { "Adını Belirle" }
 
         LazyColumn(
             modifier = Modifier
@@ -251,18 +359,35 @@ fun ProfileScreen(
                             }
                         }
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = effectiveDisplayName,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.clickable(enabled = !isGuest) { showNameEditDialog = true }
+                            ) {
+                                Text(
+                                    text = effectiveDisplayName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (!isGuest) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Adı Düzenle",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
                             Text(
                                 text = if (isGuest) "Geçici Oturum" else "Doğrulanmış Öğrenci Hesabı",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = "Görseli değiştirmek için dokun",
+                                text = "Görseli veya adını değiştirmek için dokun",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.padding(top = 2.dp)
@@ -326,6 +451,75 @@ fun ProfileScreen(
                 }
             }
             } // end User Info Card item
+
+            // ── Mentor Puanı & 5 Rozet Vitrini Card ──────────────────────────
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = "5 Rozet Vitrini & Mentorluk",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "$mentorPoints Mentor Puanı • ${unlockedBadgeIds.size}/${SharkBadgeCatalog.ALL_BADGES.size} Rozet Kazanıldı",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            TextButton(onClick = { showBadgeShowcaseSheet = true }) {
+                                Text(
+                                    text = "Vitrini Düzenle (Maks. 5)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        if (showcaseBadgeIds.isNotEmpty()) {
+                            SharkBadgeShowcaseRow(
+                                badgeIds = showcaseBadgeIds,
+                                compact = false,
+                                badgeProgress = badgeProgress
+                            )
+                        } else {
+                            Text(
+                                text = "Grup ve soru sohbetlerinde soru paylaşarak veya çözerek 12 kademeli rozetten kazanıp en fazla 5 rozetini burada sergileyebilirsin.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
 
             // ── Kurum & Koç Bağlantısı Form Section ──────────────────────────────────
             if (!isGuest) {
@@ -391,6 +585,11 @@ fun ProfileScreen(
                                             isSubmitting = false
                                             hasCoach = true
                                             institutionName = "Bağlı Kurum ($cleanCode)"
+                                            if (isMeaningfulProfileName(inputStudentName)) {
+                                                val updatedName = SyncWorker.sanitizeTurkishText(inputStudentName.trim())
+                                                studentName = updatedName
+                                                saveProfileNameLocallyAndCloud(context, uid, isGuest = isGuest, rawName = updatedName)
+                                            }
                                             Toast.makeText(context, "Koç ve kurum bağlantısı başarıyla sağlandı!", Toast.LENGTH_SHORT).show()
                                         },
                                         onError = { err ->
@@ -553,9 +752,74 @@ fun ProfileScreen(
         )
     }
 
+    if (showNameEditDialog) {
+        var draftName by remember(studentName) { mutableStateOf(studentName) }
+        AlertDialog(
+            onDismissRequest = { showNameEditDialog = false },
+            title = { Text("Görünecek Adını Güncelle", fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = draftName,
+                    onValueChange = { draftName = it.take(36) },
+                    label = { Text("Adın veya Takma Adın") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clean = SyncWorker.sanitizeTurkishText(draftName.trim())
+                        if (isMeaningfulProfileName(clean)) {
+                            studentName = clean
+                            saveProfileNameLocallyAndCloud(context, uid, isGuest = isGuest, rawName = clean)
+                            showNameEditDialog = false
+                            Toast.makeText(context, "Adın \"$clean\" olarak güncellendi!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Lütfen geçerli bir ad girin.", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = draftName.trim().length >= 2
+                ) {
+                    Text("Kaydet")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNameEditDialog = false }) {
+                    Text("İptal")
+                }
+            }
+        )
+    }
+
+    if (showBadgeShowcaseSheet) {
+        BadgeShowcaseSelectorSheet(
+            unlockedBadgeIds = unlockedBadgeIds,
+            initialSelectedIds = showcaseBadgeIds,
+            badgeProgress = badgeProgress,
+            mentorPoints = mentorPoints,
+            onDismiss = { showBadgeShowcaseSheet = false },
+            onSaveShowcase = { selected ->
+                val saved = SharkBadgeCatalog.saveShowcaseBadgeIds(context, selected)
+                showcaseBadgeIds = saved
+                if (!isGuest && user != null) {
+                    SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(
+                        context = context,
+                        uid = uid,
+                        showcaseIds = saved,
+                        unlockedIds = unlockedBadgeIds,
+                        mentorPoints = mentorPoints,
+                        badgeProgress = badgeProgress
+                    )
+                }
+                Toast.makeText(context, "5 rozet vitrinin kaydedildi!", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
     if (showAvatarPickerSheet) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        val previewName = if (isGuest) "Misafir Öğrenci" else studentName.ifBlank { "Kayıtlı Öğrenci" }
+        val previewName = if (isGuest) "Misafir Öğrenci" else studentName.ifBlank { "Öğrenci" }
 
         ModalBottomSheet(
             onDismissRequest = { showAvatarPickerSheet = false },

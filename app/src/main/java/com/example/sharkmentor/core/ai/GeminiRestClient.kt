@@ -210,7 +210,7 @@ data class GeminiConnectionTestResult(
 object GeminiRestClient {
 
     private const val TAG = "GeminiRestClient"
-    const val MODEL_ID = UserAiPreferences.BUILTIN_DEFAULT_MODEL
+    const val MODEL_ID = "gemini-3.6-flash"
     private const val VERTEX_EXPRESS_BASE = "https://aiplatform.googleapis.com/v1/publishers/google/models"
     private const val AI_STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -277,12 +277,20 @@ object GeminiRestClient {
         modelName: String,
         streaming: Boolean
     ): String {
-        val cleanModel = sanitizeModelName(modelName)
+        val cleanModel = sanitizeModelName(modelName).ifBlank { MODEL_ID }
         val suffix = if (streaming) "streamGenerateContent?alt=sse" else "generateContent"
         return when (endpoint) {
             GeminiEndpointType.VERTEX_AI_EXPRESS -> "$VERTEX_EXPRESS_BASE/$cleanModel:$suffix"
             GeminiEndpointType.GOOGLE_AI_STUDIO -> "$AI_STUDIO_BASE/$cleanModel:$suffix"
         }
+    }
+
+    fun appendApiKeyQueryParam(baseUrl: String, apiKey: String): String {
+        val cleanKey = sanitizeApiKey(apiKey)
+        if (cleanKey.isBlank()) return baseUrl
+        val separator = if (baseUrl.contains("?")) "&" else "?"
+        val encoded = java.net.URLEncoder.encode(cleanKey, "UTF-8")
+        return "$baseUrl${separator}key=$encoded"
     }
 
     fun buildListModelsUrl(pageSize: Int = 100): String {
@@ -798,7 +806,7 @@ object GeminiRestClient {
 
         for ((idx, endpoint) in endpoints.withIndex()) {
             val isFallbackAttempt = idx > 0
-            val url = buildGenerateUrl(endpoint, cleanModel, streaming = false)
+            val url = appendApiKeyQueryParam(buildGenerateUrl(endpoint, cleanModel, streaming = false), cleanKey)
 
             val request = Request.Builder()
                 .url(url)
@@ -875,7 +883,7 @@ object GeminiRestClient {
             )
         }
 
-        val cleanModel = sanitizeModelName(modelName)
+        val cleanModel = sanitizeModelName(modelName).ifBlank { MODEL_ID }
         val requestJson = buildRequestBody(
             contents = contents,
             systemInstruction = systemInstruction,
@@ -888,7 +896,7 @@ object GeminiRestClient {
 
         for ((idx, endpoint) in endpoints.withIndex()) {
             val isFallbackAttempt = idx > 0
-            val url = buildGenerateUrl(endpoint, cleanModel, streaming = true)
+            val url = appendApiKeyQueryParam(buildGenerateUrl(endpoint, cleanModel, streaming = true), cleanKey)
 
             val request = Request.Builder()
                 .url(url)
@@ -989,7 +997,7 @@ object GeminiRestClient {
         }
 
         val request = Request.Builder()
-            .url(buildListModelsUrl(100))
+            .url(appendApiKeyQueryParam(buildListModelsUrl(100), cleanKey))
             .addHeader("x-goog-api-key", cleanKey)
             .get()
             .build()

@@ -23,7 +23,8 @@ enum class AiProviderChoice(val id: String, val label: String, val shortLabel: S
     DEEPSEEK("deepseek", "DeepSeek", "DeepSeek"),
     KIMI("kimi", "Kimi", "Kimi"),
     CLAUDE("claude", "Claude", "Claude"),
-    OPENAI("openai", "GPT (OpenAI)", "GPT");
+    OPENAI("openai", "GPT (OpenAI)", "GPT"),
+    GROK("grok", "Grok (xAI)", "Grok");
 
     companion object {
         fun fromId(raw: String?): AiProviderChoice =
@@ -52,8 +53,8 @@ data class UserAiConfigState(
 
 /**
  * SharedPreferences-backed singleton holding user-supplied AI API keys,
- * discovered/selected models for all 5 supported providers
- * (Gemini, DeepSeek, Kimi, Claude, OpenAI GPT), and preferred AI provider.
+ * discovered/selected models for all 6 supported providers
+ * (Gemini, DeepSeek, Kimi, Claude, OpenAI GPT, xAI Grok), and preferred AI provider.
  *
  * Safe to access without prior [init] on pure-JVM unit tests (falls back to in-memory state
  * and Gson serialization with zero `org.json` dependency).
@@ -62,19 +63,16 @@ object UserAiPreferences {
 
     const val BUILTIN_DEFAULT_MODEL = "gemini-3.6-flash"
     const val STANDARD_GEMINI_MODEL = BUILTIN_DEFAULT_MODEL
-    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-2.5-flash"
+    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-3.6-flash"
 
     const val DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
     const val DEFAULT_KIMI_MODEL = "moonshot-v1-8k"
     const val DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5"
     const val DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+    const val DEFAULT_GROK_MODEL = "grok-3-mini"
 
     val KNOWN_VERTEX_GEMINI_MODELS = listOf(
-        "gemini-3.8-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro"
+        "gemini-3.6-flash"
     )
 
     private const val PREFS_NAME = "sharkmentor_user_ai_prefs"
@@ -100,6 +98,10 @@ object UserAiPreferences {
     private const val KEY_OPENAI_KEY = "user_openai_key"
     private const val KEY_SELECTED_OPENAI_MODEL = "selected_openai_model"
     private const val KEY_DISCOVERED_OPENAI_MODELS = "discovered_openai_models"
+
+    private const val KEY_GROK_KEY = "user_grok_key"
+    private const val KEY_SELECTED_GROK_MODEL = "selected_grok_model"
+    private const val KEY_DISCOVERED_GROK_MODELS = "discovered_grok_models"
 
     private const val KEY_AI_PROVIDER = "selected_ai_provider"
 
@@ -162,6 +164,16 @@ object UserAiPreferences {
 
     private val _discoveredOpenAiModels = MutableStateFlow<List<GeminiModelOption>>(emptyList())
     val discoveredOpenAiModels: StateFlow<List<GeminiModelOption>> = _discoveredOpenAiModels.asStateFlow()
+
+    // ── Grok (xAI) ───────────────────────────────────────────────────────────
+    private val _userGrokKey = MutableStateFlow("")
+    val userGrokKey: StateFlow<String> = _userGrokKey.asStateFlow()
+
+    private val _selectedGrokModel = MutableStateFlow(DEFAULT_GROK_MODEL)
+    val selectedGrokModel: StateFlow<String> = _selectedGrokModel.asStateFlow()
+
+    private val _discoveredGrokModels = MutableStateFlow<List<GeminiModelOption>>(emptyList())
+    val discoveredGrokModels: StateFlow<List<GeminiModelOption>> = _discoveredGrokModels.asStateFlow()
 
     // ── Selected Active Provider ─────────────────────────────────────────────
     private val _selectedAiProvider = MutableStateFlow(AiProviderChoice.AUTO)
@@ -248,6 +260,15 @@ object UserAiPreferences {
             prefs.getString(KEY_DISCOVERED_OPENAI_MODELS, "").orEmpty()
         )
 
+        _userGrokKey.value = sanitizeKey(prefs.getString(KEY_GROK_KEY, ""))
+        _selectedGrokModel.value = sanitizeProviderModelId(
+            prefs.getString(KEY_SELECTED_GROK_MODEL, DEFAULT_GROK_MODEL),
+            DEFAULT_GROK_MODEL
+        )
+        _discoveredGrokModels.value = decodeModelOptions(
+            prefs.getString(KEY_DISCOVERED_GROK_MODELS, "").orEmpty()
+        )
+
         _selectedAiProvider.value = AiProviderChoice.fromId(
             prefs.getString(KEY_AI_PROVIDER, AiProviderChoice.AUTO.id)
         )
@@ -283,7 +304,12 @@ object UserAiPreferences {
 
     fun sanitizeKey(raw: String?): String {
         return raw.orEmpty()
+            .replace("\u200B", "")
+            .replace("\uFEFF", "")
+            .replace("\u00A0", " ")
             .trim()
+            .removePrefix("Bearer ")
+            .removePrefix("bearer ")
             .replace("\r", "")
             .replace("\n", "")
             .replace("\"", "")
@@ -318,6 +344,11 @@ object UserAiPreferences {
     // ── Opus Custom Config API ───────────────────────────────────────────────
 
     fun hasCustomKey(): Boolean = _configState.value.hasCustomKey
+
+    fun hasCustomUserGeminiKeys(context: Context? = null): Boolean {
+        context?.let { init(it) }
+        return hasCustomKey()
+    }
 
     fun getCustomApiKey(): String = _configState.value.customGeminiApiKey
 
@@ -374,6 +405,10 @@ object UserAiPreferences {
     fun getSelectedOpenAiModel(): String = _selectedOpenAiModel.value
     fun getDiscoveredOpenAiModels(): List<GeminiModelOption> = _discoveredOpenAiModels.value
 
+    fun getUserGrokKey(): String = sanitizeKey(_userGrokKey.value)
+    fun getSelectedGrokModel(): String = _selectedGrokModel.value
+    fun getDiscoveredGrokModels(): List<GeminiModelOption> = _discoveredGrokModels.value
+
     fun getSelectedProvider(): AiProviderChoice = _selectedAiProvider.value
 
     fun resolveEffectiveGeminiModel(forKey: String? = null): String {
@@ -400,6 +435,7 @@ object UserAiPreferences {
             AiProviderChoice.KIMI -> AiProviderChoice.KIMI to getSelectedKimiModel()
             AiProviderChoice.CLAUDE -> AiProviderChoice.CLAUDE to getSelectedClaudeModel()
             AiProviderChoice.OPENAI -> AiProviderChoice.OPENAI to getSelectedOpenAiModel()
+            AiProviderChoice.GROK -> AiProviderChoice.GROK to getSelectedGrokModel()
             AiProviderChoice.AUTO -> when {
                 getParsedUserGeminiKeys().isNotEmpty() ->
                     AiProviderChoice.GEMINI to resolveEffectiveGeminiModel()
@@ -407,6 +443,8 @@ object UserAiPreferences {
                     AiProviderChoice.CLAUDE to getSelectedClaudeModel()
                 getUserOpenAiKey().isNotBlank() ->
                     AiProviderChoice.OPENAI to getSelectedOpenAiModel()
+                getUserGrokKey().isNotBlank() ->
+                    AiProviderChoice.GROK to getSelectedGrokModel()
                 getUserDeepSeekKey().isNotBlank() ->
                     AiProviderChoice.DEEPSEEK to getSelectedDeepSeekModel()
                 getUserKimiKey().isNotBlank() ->
@@ -428,6 +466,7 @@ object UserAiPreferences {
         AiProviderChoice.KIMI -> getSelectedKimiModel()
         AiProviderChoice.CLAUDE -> getSelectedClaudeModel()
         AiProviderChoice.OPENAI -> getSelectedOpenAiModel()
+        AiProviderChoice.GROK -> getSelectedGrokModel()
     }
 
     // ── Mutators ─────────────────────────────────────────────────────────────
@@ -618,7 +657,10 @@ object UserAiPreferences {
         selectedClaudeModel: String = _selectedClaudeModel.value,
         discoveredClaudeModels: List<GeminiModelOption>? = null,
         selectedOpenAiModel: String = _selectedOpenAiModel.value,
-        discoveredOpenAiModels: List<GeminiModelOption>? = null
+        discoveredOpenAiModels: List<GeminiModelOption>? = null,
+        grokKey: String = _userGrokKey.value,
+        selectedGrokModel: String = _selectedGrokModel.value,
+        discoveredGrokModels: List<GeminiModelOption>? = null
     ) {
         val cleanGemini = sanitizeRawGeminiKeys(geminiKeys)
         val hasGeminiKey = parseGeminiKeyList(cleanGemini).isNotEmpty()
@@ -626,6 +668,7 @@ object UserAiPreferences {
         val cleanKimi = sanitizeKey(kimiKey)
         val cleanClaude = sanitizeKey(claudeKey)
         val cleanOpenAi = sanitizeKey(openAiKey)
+        val cleanGrok = sanitizeKey(grokKey)
 
         val deepSeekAllowed = cleanDeepSeek.isNotBlank() || hasBuiltInDeepSeekKey()
         val kimiAllowed = cleanKimi.isNotBlank() || hasBuiltInKimiKey()
@@ -635,6 +678,7 @@ object UserAiPreferences {
         val effKimiModel = if (!kimiAllowed) DEFAULT_KIMI_MODEL else sanitizeProviderModelId(selectedKimiModel, DEFAULT_KIMI_MODEL)
         val effClaudeModel = if (cleanClaude.isBlank()) DEFAULT_CLAUDE_MODEL else sanitizeProviderModelId(selectedClaudeModel, DEFAULT_CLAUDE_MODEL)
         val effOpenAiModel = if (cleanOpenAi.isBlank()) DEFAULT_OPENAI_MODEL else sanitizeProviderModelId(selectedOpenAiModel, DEFAULT_OPENAI_MODEL)
+        val effGrokModel = if (cleanGrok.isBlank()) DEFAULT_GROK_MODEL else sanitizeProviderModelId(selectedGrokModel, DEFAULT_GROK_MODEL)
 
         val editor = sharedPrefs?.edit()
             ?.putString(KEY_GEMINI_KEYS, cleanGemini)
@@ -648,6 +692,8 @@ object UserAiPreferences {
             ?.putString(KEY_SELECTED_CLAUDE_MODEL, effClaudeModel)
             ?.putString(KEY_OPENAI_KEY, cleanOpenAi)
             ?.putString(KEY_SELECTED_OPENAI_MODEL, effOpenAiModel)
+            ?.putString(KEY_GROK_KEY, cleanGrok)
+            ?.putString(KEY_SELECTED_GROK_MODEL, effGrokModel)
             ?.putString(KEY_AI_PROVIDER, provider.id)
 
         fun applyModelList(
@@ -671,6 +717,7 @@ object UserAiPreferences {
         applyModelList(kimiAllowed, discoveredKimiModels, KEY_DISCOVERED_KIMI_MODELS, _discoveredKimiModels)
         applyModelList(cleanClaude.isNotBlank(), discoveredClaudeModels, KEY_DISCOVERED_CLAUDE_MODELS, _discoveredClaudeModels)
         applyModelList(cleanOpenAi.isNotBlank(), discoveredOpenAiModels, KEY_DISCOVERED_OPENAI_MODELS, _discoveredOpenAiModels)
+        applyModelList(cleanGrok.isNotBlank(), discoveredGrokModels, KEY_DISCOVERED_GROK_MODELS, _discoveredGrokModels)
 
         val currentGeminiIds = _discoveredGeminiModels.value.map { it.id }
         if (!hasGeminiKey) {
@@ -696,6 +743,8 @@ object UserAiPreferences {
         _selectedClaudeModel.value = effClaudeModel
         _userOpenAiKey.value = cleanOpenAi
         _selectedOpenAiModel.value = effOpenAiModel
+        _userGrokKey.value = cleanGrok
+        _selectedGrokModel.value = effGrokModel
         _selectedAiProvider.value = provider
 
         ApiKeyRotator.invalidateAndReset()
@@ -721,6 +770,9 @@ object UserAiPreferences {
             ?.remove(KEY_OPENAI_KEY)
             ?.remove(KEY_SELECTED_OPENAI_MODEL)
             ?.remove(KEY_DISCOVERED_OPENAI_MODELS)
+            ?.remove(KEY_GROK_KEY)
+            ?.remove(KEY_SELECTED_GROK_MODEL)
+            ?.remove(KEY_DISCOVERED_GROK_MODELS)
             ?.apply()
 
         _configState.value = UserAiConfigState()
@@ -739,6 +791,9 @@ object UserAiPreferences {
         _userOpenAiKey.value = ""
         _selectedOpenAiModel.value = DEFAULT_OPENAI_MODEL
         _discoveredOpenAiModels.value = emptyList()
+        _userGrokKey.value = ""
+        _selectedGrokModel.value = DEFAULT_GROK_MODEL
+        _discoveredGrokModels.value = emptyList()
 
         ApiKeyRotator.invalidateAndReset()
     }
@@ -763,6 +818,9 @@ object UserAiPreferences {
         _userOpenAiKey.value = ""
         _selectedOpenAiModel.value = DEFAULT_OPENAI_MODEL
         _discoveredOpenAiModels.value = emptyList()
+        _userGrokKey.value = ""
+        _selectedGrokModel.value = DEFAULT_GROK_MODEL
+        _discoveredGrokModels.value = emptyList()
         _selectedAiProvider.value = AiProviderChoice.AUTO
         ApiKeyRotator.invalidateAndReset()
     }

@@ -112,6 +112,10 @@ fun AiSettingsScreen(
     val savedOpenAiModel by userAiPrefs.selectedOpenAiModel.collectAsStateWithLifecycle()
     val savedOpenAiList by userAiPrefs.discoveredOpenAiModels.collectAsStateWithLifecycle()
 
+    val savedGrok by userAiPrefs.userGrokKey.collectAsStateWithLifecycle()
+    val savedGrokModel by userAiPrefs.selectedGrokModel.collectAsStateWithLifecycle()
+    val savedGrokList by userAiPrefs.discoveredGrokModels.collectAsStateWithLifecycle()
+
     val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
 
     // Editable local states
@@ -134,6 +138,10 @@ fun AiSettingsScreen(
     var openAiInput by remember(savedOpenAi) { mutableStateOf(savedOpenAi) }
     var selectedOpenAiModel by remember(savedOpenAiModel) { mutableStateOf(savedOpenAiModel) }
     var discoveredOpenAiModels by remember(savedOpenAiList) { mutableStateOf(savedOpenAiList) }
+
+    var grokInput by remember(savedGrok) { mutableStateOf(savedGrok) }
+    var selectedGrokModel by remember(savedGrokModel) { mutableStateOf(savedGrokModel) }
+    var discoveredGrokModels by remember(savedGrokList) { mutableStateOf(savedGrokList) }
 
     var selectedProvider by remember(savedProvider) { mutableStateOf(savedProvider) }
 
@@ -160,7 +168,10 @@ fun AiSettingsScreen(
             selectedClaudeModel = selectedClaudeModel,
             discoveredClaudeModels = if (claudeInput.isNotBlank()) discoveredClaudeModels else emptyList(),
             selectedOpenAiModel = selectedOpenAiModel,
-            discoveredOpenAiModels = if (openAiInput.isNotBlank()) discoveredOpenAiModels else emptyList()
+            discoveredOpenAiModels = if (openAiInput.isNotBlank()) discoveredOpenAiModels else emptyList(),
+            grokKey = grokInput,
+            selectedGrokModel = selectedGrokModel,
+            discoveredGrokModels = if (grokInput.isNotBlank()) discoveredGrokModels else emptyList()
         )
         ApiKeyRotator.invalidateAndReset()
         if (showFeedback) {
@@ -182,7 +193,9 @@ fun AiSettingsScreen(
         claudeInput,
         selectedClaudeModel,
         openAiInput,
-        selectedOpenAiModel
+        selectedOpenAiModel,
+        grokInput,
+        selectedGrokModel
     ) {
         val effGeminiModel = if (hasCustomGeminiInput) selectedGeminiModel else UserAiPreferences.STANDARD_GEMINI_MODEL
         when (selectedProvider) {
@@ -191,10 +204,12 @@ fun AiSettingsScreen(
             AiProviderChoice.KIMI -> AiProviderChoice.KIMI to selectedKimiModel
             AiProviderChoice.CLAUDE -> AiProviderChoice.CLAUDE to selectedClaudeModel
             AiProviderChoice.OPENAI -> AiProviderChoice.OPENAI to selectedOpenAiModel
+            AiProviderChoice.GROK -> AiProviderChoice.GROK to selectedGrokModel
             AiProviderChoice.AUTO -> when {
                 hasCustomGeminiInput -> AiProviderChoice.GEMINI to effGeminiModel
                 claudeInput.isNotBlank() -> AiProviderChoice.CLAUDE to selectedClaudeModel
                 openAiInput.isNotBlank() -> AiProviderChoice.OPENAI to selectedOpenAiModel
+                grokInput.isNotBlank() -> AiProviderChoice.GROK to selectedGrokModel
                 deepSeekInput.isNotBlank() -> AiProviderChoice.DEEPSEEK to selectedDeepSeekModel
                 kimiInput.isNotBlank() -> AiProviderChoice.KIMI to selectedKimiModel
                 else -> AiProviderChoice.GEMINI to UserAiPreferences.STANDARD_GEMINI_MODEL
@@ -273,7 +288,8 @@ fun AiSettingsScreen(
                                 deepSeekInput.isBlank() &&
                                 kimiInput.isBlank() &&
                                 claudeInput.isBlank() &&
-                                openAiInput.isBlank()
+                                openAiInput.isBlank() &&
+                                grokInput.isBlank()
                             ) {
                                 "Özel anahtar girilmediğinde varsayılan Gemini (${UserAiPreferences.STANDARD_GEMINI_MODEL}) kullanılır. Dilediğiniz sağlayıcıya API anahtarı ekleyip modellerini listeleyebilir ve test edebilirsiniz."
                             } else {
@@ -605,6 +621,59 @@ fun AiSettingsScreen(
                     onTest = { key, modelId ->
                         MultiProviderAiClient.testConnection(
                             provider = AiProviderChoice.KIMI,
+                            context = context,
+                            candidateKey = key,
+                            candidateModelId = modelId
+                        )
+                    }
+                )
+
+                // 6. Grok (xAI)
+                ProviderConfigCard(
+                    provider = AiProviderChoice.GROK,
+                    title = "Grok (xAI)",
+                    keyLabel = "xAI Grok API Key",
+                    keyPlaceholder = "xai-...",
+                    keyValue = grokInput,
+                    hasConfiguredKey = grokInput.isNotBlank(),
+                    allowTestWithoutUserKey = false,
+                    selectedModel = selectedGrokModel,
+                    discoveredModels = discoveredGrokModels,
+                    isPreferred = selectedProvider == AiProviderChoice.GROK,
+                    searchPlaceholder = "Grok modeli ara (grok-4, grok-3, mini)...",
+                    onKeyChange = {
+                        grokInput = it
+                        if (it.isBlank()) {
+                            selectedGrokModel = UserAiPreferences.DEFAULT_GROK_MODEL
+                            discoveredGrokModels = emptyList()
+                        }
+                    },
+                    onClearKey = {
+                        grokInput = ""
+                        selectedGrokModel = UserAiPreferences.DEFAULT_GROK_MODEL
+                        discoveredGrokModels = emptyList()
+                    },
+                    onSelectProvider = {
+                        selectedProvider = AiProviderChoice.GROK
+                        persistAll(showFeedback = false)
+                    },
+                    onSelectModel = { modelId ->
+                        selectedGrokModel = modelId
+                        persistAll(showFeedback = false)
+                    },
+                    onModelsDiscovered = { models ->
+                        discoveredGrokModels = models
+                        if (models.none { it.id == selectedGrokModel }) {
+                            selectedGrokModel = models
+                                .firstOrNull { it.id == UserAiPreferences.DEFAULT_GROK_MODEL }
+                                ?.id ?: models.first().id
+                        }
+                        persistAll(showFeedback = false)
+                    },
+                    onDiscover = { key -> MultiProviderAiClient.fetchSupportedModels(AiProviderChoice.GROK, key) },
+                    onTest = { key, modelId ->
+                        MultiProviderAiClient.testConnection(
+                            provider = AiProviderChoice.GROK,
                             context = context,
                             candidateKey = key,
                             candidateModelId = modelId

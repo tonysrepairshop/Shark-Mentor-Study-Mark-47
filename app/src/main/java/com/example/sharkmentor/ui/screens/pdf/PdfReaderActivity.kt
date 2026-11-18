@@ -22,6 +22,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
@@ -38,6 +39,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -111,6 +113,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -144,6 +147,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -735,6 +740,8 @@ fun PdfReaderScreen(
         }
     }
 
+    val pdfRenderMutex = remember(lazyRenderer) { Mutex() }
+
     // Per-page DrawingController cache so each page has its own annotations & 60-step Undo/Redo
     val pageControllers = remember(pdfIdentifier) {
         mutableStateMapOf<Int, DrawingController>()
@@ -742,10 +749,13 @@ fun PdfReaderScreen(
 
     // Shared active tool state synchronized across pages so switching page keeps the selected pen/highlighter
     var showStudioToolbar by remember { mutableStateOf(false) }
+    var isStudioBarCollapsed by remember { mutableStateOf(false) }
+    var studioBarOffset by remember { mutableStateOf(Offset(16f, 24f)) }
     var globalActiveTool by remember { mutableStateOf(DrawingTool.NONE) }
     var globalPenColor by remember { mutableStateOf(Color(0xFF1E88E5)) }
     var globalStrokeWidth by remember { mutableFloatStateOf(4.5f) }
     var globalAlpha by remember { mutableFloatStateOf(1.0f) }
+    var globalPressureSensitive by remember { mutableStateOf(true) }
 
     fun getOrCreatePageController(pageIdx: Int): DrawingController {
         return pageControllers.getOrPut(pageIdx) {
@@ -763,6 +773,7 @@ fun PdfReaderScreen(
                     }
                 }
             ).apply {
+                bindPreferencesContext(context)
                 setInitialStrokes(loadedStrokes)
                 selectTool(globalActiveTool)
                 if (!globalActiveTool.isPenTool) {
@@ -770,6 +781,7 @@ fun PdfReaderScreen(
                     strokeWidth = globalStrokeWidth
                     alpha = globalAlpha
                 }
+                pressureSensitivityEnabled = globalPressureSensitive
             }
         }
     }
@@ -782,12 +794,14 @@ fun PdfReaderScreen(
         activePageController.penColor,
         activePageController.strokeWidth,
         activePageController.alpha,
+        activePageController.pressureSensitivityEnabled,
         currentPageIndex
     ) {
         globalActiveTool = activePageController.activeTool
         globalPenColor = activePageController.penColor
         globalStrokeWidth = activePageController.strokeWidth
         globalAlpha = activePageController.alpha
+        globalPressureSensitive = activePageController.pressureSensitivityEnabled
 
         pageControllers.values.forEach { ctrl ->
             if (ctrl !== activePageController) {
@@ -797,6 +811,7 @@ fun PdfReaderScreen(
                 ctrl.penColor = globalPenColor
                 ctrl.strokeWidth = globalStrokeWidth
                 ctrl.alpha = globalAlpha
+                ctrl.pressureSensitivityEnabled = globalPressureSensitive
             }
         }
     }
@@ -852,13 +867,20 @@ fun PdfReaderScreen(
 
                 // Do NOT recycle thumbBitmap because LruCache in LazyPdfPageRenderer owns it
                 var thumbPath: String? = null
-                val thumbBitmap = runCatching {
-                    lazyRenderer.renderPage(
-                        pageIndex = 0,
-                        maxWidthPx = 720,
-                        visiblePageHint = currentPageIndex
-                    )
-                }.getOrNull()
+                val thumbBitmap = try {
+                    pdfRenderMutex.withLock {
+                        lazyRenderer.renderPage(
+                            pageIndex = 0,
+                            maxWidthPx = 720,
+                            visiblePageHint = currentPageIndex
+                        )
+                    }
+                } catch (_: OutOfMemoryError) {
+                    System.gc()
+                    null
+                } catch (_: Throwable) {
+                    null
+                }
                 if (thumbBitmap != null && !thumbBitmap.isRecycled) {
                     runCatching {
                         val thumbDir = File(appContext.filesDir, "rendered_pdf_pages").apply {
@@ -952,11 +974,20 @@ fun PdfReaderScreen(
 
                 // 1. Try Vision analysis on the current visible PDF page first
                 // NOTE: Do NOT recycle currentPageBitmap — LruCache inside LazyPdfPageRenderer owns it.
-                val currentPageBitmap = lazyRenderer.renderPage(
-                    pageIndex = currentPageIndex,
-                    maxWidthPx = 1000,
-                    visiblePageHint = currentPageIndex
-                )
+                val currentPageBitmap = try {
+                    pdfRenderMutex.withLock {
+                        lazyRenderer.renderPage(
+                            pageIndex = currentPageIndex,
+                            maxWidthPx = 960,
+                            visiblePageHint = currentPageIndex
+                        )
+                    }
+                } catch (_: OutOfMemoryError) {
+                    System.gc()
+                    null
+                } catch (_: Throwable) {
+                    null
+                }
 
                 val extractedText = runCatching {
                     DocumentTextExtractor.extractCleanText(
@@ -1042,6 +1073,8 @@ fun PdfReaderScreen(
                         AiProviderChoice.CLAUDE.takeIf { MultiProviderAiClient.getClaudeApiKey(context).isNotBlank() }
                     AiProviderChoice.OPENAI ->
                         AiProviderChoice.OPENAI.takeIf { MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank() }
+                    AiProviderChoice.GROK ->
+                        AiProviderChoice.GROK.takeIf { MultiProviderAiClient.getGrokApiKey(context).isNotBlank() }
                     AiProviderChoice.DEEPSEEK ->
                         AiProviderChoice.DEEPSEEK.takeIf { DeepSeekClient.getDeepSeekApiKey(context).isNotBlank() }
                     AiProviderChoice.KIMI ->
@@ -1425,20 +1458,7 @@ fun PdfReaderScreen(
             colors = TopAppBarDefaults.topAppBarColors(containerColor = surfaceColor)
         )
 
-        // Expandable Drawing Studio Toolbar
-        AnimatedVisibility(visible = showStudioToolbar) {
-            DrawingStudioBar(
-                controller = activePageController,
-                isCompactMode = true,
-                onCloseStudio = {
-                    showStudioToolbar = false
-                    activePageController.selectTool(DrawingTool.NONE)
-                },
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-            )
-        }
-
-        // Main PDF Viewport with Pinch-to-Zoom & Pan + Lazy On-Demand Page Rendering
+        // Main PDF Viewport with Pinch-to-Zoom & Pan + Lazy On-Demand Page Rendering + Draggable Studio Bar
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
@@ -1519,6 +1539,7 @@ fun PdfReaderScreen(
                         isNearVisible = isNearVisible,
                         currentVisiblePage = currentPageIndex,
                         renderer = lazyRenderer,
+                        renderMutex = pdfRenderMutex,
                         drawingController = pageController,
                         onTwoFingerScroll = if (zoomScale <= 1.05f) {
                             { dy, _ -> listState.dispatchRawDelta(-dy) }
@@ -1526,6 +1547,155 @@ fun PdfReaderScreen(
                             null
                         }
                     )
+                }
+            }
+
+            // Draggable & Collapsible Floating Studio Toolbar (clamped within viewport bounds)
+            if (showStudioToolbar) {
+                val maxDragX = (viewportWidthPx - 180f).coerceAtLeast(0f)
+                val maxDragY = (viewportHeightPx - 96f).coerceAtLeast(0f)
+                val clampedX = studioBarOffset.x.coerceIn(0f, maxDragX)
+                val clampedY = studioBarOffset.y.coerceIn(0f, maxDragY)
+
+                if (isStudioBarCollapsed) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = surfaceColor.copy(alpha = 0.96f),
+                        tonalElevation = 8.dp,
+                        shadowElevation = 10.dp,
+                        border = BorderStroke(1.2.dp, primaryColor.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
+                            .pointerInput(viewportWidthPx, viewportHeightPx) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    studioBarOffset = Offset(
+                                        x = (studioBarOffset.x + dragAmount.x).coerceIn(0f, maxDragX),
+                                        y = (studioBarOffset.y + dragAmount.y).coerceIn(0f, maxDragY)
+                                    )
+                                }
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val isDrawingNow = activePageController.activeTool != DrawingTool.NONE
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (isDrawingNow) primaryColor.copy(alpha = 0.18f) else onSurfaceColor.copy(alpha = 0.1f),
+                                modifier = Modifier.clickable {
+                                    if (isDrawingNow) {
+                                        activePageController.selectTool(DrawingTool.NONE)
+                                    } else {
+                                        activePageController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                                    }
+                                }
+                            ) {
+                                Text(
+                                    text = if (isDrawingNow) "✏️ Çizim Aktif" else "🖐️ Gezinme (Kaydır)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isDrawingNow) primaryColor else onSurfaceColor,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+
+                            TextButton(
+                                onClick = { isStudioBarCollapsed = false },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                modifier = Modifier.height(26.dp)
+                            ) {
+                                Text("Aç", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
+                            .padding(horizontal = 8.dp)
+                            .widthIn(max = 680.dp)
+                            .fillMaxWidth(0.96f)
+                    ) {
+                        // Drag Handle + Mode Switch Bar (Gezinme vs Çizim + Küçült)
+                        Surface(
+                            shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
+                            color = surfaceColor.copy(alpha = 0.96f),
+                            tonalElevation = 6.dp,
+                            border = BorderStroke(0.8.dp, onSurfaceColor.copy(alpha = 0.14f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .pointerInput(viewportWidthPx, viewportHeightPx) {
+                                    detectDragGestures { change, dragAmount ->
+                                        change.consume()
+                                        studioBarOffset = Offset(
+                                            x = (studioBarOffset.x + dragAmount.x).coerceIn(0f, maxDragX),
+                                            y = (studioBarOffset.y + dragAmount.y).coerceIn(0f, maxDragY)
+                                        )
+                                    }
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val isDrawingNow = activePageController.activeTool != DrawingTool.NONE
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "⋮⋮ Taşı",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = onSurfaceColor.copy(alpha = 0.55f)
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (isDrawingNow) primaryColor.copy(alpha = 0.16f) else onSurfaceColor.copy(alpha = 0.08f),
+                                        modifier = Modifier.clickable {
+                                            if (isDrawingNow) {
+                                                activePageController.selectTool(DrawingTool.NONE)
+                                            } else {
+                                                activePageController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                                            }
+                                        }
+                                    ) {
+                                        Text(
+                                            text = if (isDrawingNow) "✏️ Çizim Modu (Kaydırma için dokun)" else "🖐️ Gezinme / Kaydırma Modu",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isDrawingNow) primaryColor else onSurfaceColor,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                }
+
+                                TextButton(
+                                    onClick = { isStudioBarCollapsed = true },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(24.dp)
+                                ) {
+                                    Text("Küçült", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        DrawingStudioBar(
+                            controller = activePageController,
+                            isCompactMode = true,
+                            onCloseStudio = {
+                                showStudioToolbar = false
+                                activePageController.selectTool(DrawingTool.NONE)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
 
@@ -1864,6 +2034,7 @@ private fun LazyPdfPageCard(
     isNearVisible: Boolean,
     currentVisiblePage: Int,
     renderer: LazyPdfPageRenderer,
+    renderMutex: Mutex,
     drawingController: DrawingController,
     onTwoFingerScroll: ((Float, Float) -> Unit)? = null
 ) {
@@ -1873,19 +2044,46 @@ private fun LazyPdfPageCard(
     var pageAspectRatio by remember(pageIndex) {
         mutableFloatStateOf(0.707f) // Standard A4 portrait aspect ratio (W / H)
     }
+    var hasRenderError by remember(pageIndex) {
+        mutableStateOf(false)
+    }
 
     LaunchedEffect(pageIndex, isNearVisible, currentVisiblePage) {
         if (isNearVisible) {
-            val bmp = renderer.renderPage(
-                pageIndex = pageIndex,
-                maxWidthPx = 1200,
-                visiblePageHint = currentVisiblePage
-            )
+            hasRenderError = false
+            val bmp = try {
+                renderMutex.withLock {
+                    renderer.renderPage(
+                        pageIndex = pageIndex,
+                        maxWidthPx = 1120,
+                        visiblePageHint = currentVisiblePage
+                    )
+                }
+            } catch (_: OutOfMemoryError) {
+                System.gc()
+                try {
+                    renderMutex.withLock {
+                        renderer.renderPage(
+                            pageIndex = pageIndex,
+                            maxWidthPx = 720,
+                            visiblePageHint = currentVisiblePage
+                        )
+                    }
+                } catch (_: Throwable) {
+                    hasRenderError = true
+                    null
+                }
+            } catch (_: Throwable) {
+                hasRenderError = true
+                null
+            }
             if (bmp != null && !bmp.isRecycled) {
                 pageBitmap = bmp
                 if (bmp.height > 0) {
                     pageAspectRatio = (bmp.width.toFloat() / bmp.height.toFloat()).coerceIn(0.35f, 2.5f)
                 }
+            } else if (bmp == null) {
+                hasRenderError = true
             }
         } else {
             // Release reference when page scrolls far away so LruCache can reclaim memory
@@ -1912,6 +2110,21 @@ private fun LazyPdfPageCard(
                     contentScale = ContentScale.FillBounds,
                     modifier = Modifier.fillMaxSize()
                 )
+            } else if (hasRenderError) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFFF8FAFC))
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Sayfa ${pageIndex + 1} yüklenemedi (Bellek koruma aktif)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF475569),
+                        textAlign = TextAlign.Center
+                    )
+                }
             } else {
                 Box(
                     modifier = Modifier

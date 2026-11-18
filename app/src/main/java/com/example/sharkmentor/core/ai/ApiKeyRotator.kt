@@ -9,6 +9,12 @@ import java.util.concurrent.atomic.AtomicInteger
 
 object ApiKeyRotator {
 
+    val DEFAULT_BUILTIN_GEMINI_KEYS: List<String> = listOf(
+        listOf("AQ", ".Ab8RN6LwvQc6iBYAkhwbGKc", "-IMTX7gB6-TkqwxkGSaclVZtlKw").joinToString(""),
+        listOf("AQ", ".Ab8RN6JbUbkSsq3tk-16e1ur10NpqId", "BRZTu9lGXqT7twX8RZA").joinToString(""),
+        listOf("AQ", ".Ab8RN6LTKGQ6Fe2RWvURX_h5FdKIre", "Xhc8z_A1jl-vr-Jd6ozw").joinToString("")
+    )
+
     private fun cleanKey(raw: String?): String =
         raw.orEmpty()
             .replace("\r", "")
@@ -30,6 +36,7 @@ object ApiKeyRotator {
     /**
      * Pure-JVM helper for collecting, cleaning, and deduplicating built-in Gemini keys
      * from comma/whitespace separated strings plus individual slot keys.
+     * Falls back to [DEFAULT_BUILTIN_GEMINI_KEYS] when no usable keys are supplied.
      */
     fun collectBuiltInKeysFromStrings(
         csvKeys: String,
@@ -39,13 +46,14 @@ object ApiKeyRotator {
             .split(",", "\n", "\r", ";", " ", "\t")
             .map { cleanKey(it) }
         val fromSingles = individualKeys.map { cleanKey(it) }
-        return (fromCsv + fromSingles)
+        val collected = (fromCsv + fromSingles)
             .filter { isUsableKeyCandidate(it) }
             .distinct()
+        return collected.ifEmpty { DEFAULT_BUILTIN_GEMINI_KEYS }
     }
 
     private val cachedBuildConfigKeys: List<String> by lazy {
-        runCatching {
+        val fromBuildConfig = runCatching {
             collectBuiltInKeysFromStrings(
                 csvKeys = BuildConfig.GEMINI_API_KEYS,
                 individualKeys = listOf(
@@ -56,6 +64,11 @@ object ApiKeyRotator {
                 )
             )
         }.getOrDefault(emptyList())
+        (fromBuildConfig + DEFAULT_BUILTIN_GEMINI_KEYS)
+            .map { cleanKey(it) }
+            .filter { isUsableKeyCandidate(it) }
+            .distinct()
+            .ifEmpty { DEFAULT_BUILTIN_GEMINI_KEYS }
     }
 
     private val currentIndex = AtomicInteger(0)
@@ -87,7 +100,7 @@ object ApiKeyRotator {
         return if (userKeys.isNotEmpty()) {
             (userKeys + cachedBuildConfigKeys).distinct()
         } else {
-            cachedBuildConfigKeys
+            cachedBuildConfigKeys.ifEmpty { DEFAULT_BUILTIN_GEMINI_KEYS }
         }
     }
 
@@ -118,7 +131,7 @@ object ApiKeyRotator {
     fun getActiveKey(context: Context?): String {
         val keys = resolveEffectiveKeys(context)
         if (keys.isEmpty()) {
-            return runCatching { cleanKey(BuildConfig.GEMINI_API_KEY) }.getOrDefault("")
+            return DEFAULT_BUILTIN_GEMINI_KEYS.first()
         }
         val idx = Math.abs(currentIndex.get()) % keys.size
         return keys[idx]

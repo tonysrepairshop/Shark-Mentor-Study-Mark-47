@@ -82,10 +82,11 @@ enum class ShapeKind {
 @Immutable
 data class DrawingPoint(
     val x: Float,
-    val y: Float
+    val y: Float,
+    val pressure: Float = 1.0f
 ) {
     fun distanceTo(other: DrawingPoint): Float = hypot(x - other.x, y - other.y)
-    fun offset(dx: Float, dy: Float): DrawingPoint = DrawingPoint(x + dx, y + dy)
+    fun offset(dx: Float, dy: Float): DrawingPoint = DrawingPoint(x + dx, y + dy, pressure)
 }
 
 @Immutable
@@ -128,7 +129,8 @@ data class DrawingStroke(
     val alpha: Float = 1.0f,
     val points: List<DrawingPoint> = emptyList(),
     val canvasWidth: Float = 1080f,
-    val canvasHeight: Float = 1920f
+    val canvasHeight: Float = 1920f,
+    val pressureSensitive: Boolean = true
 ) {
     val composeColor: Color
         get() = Color(colorArgb).copy(alpha = alpha.coerceIn(0.05f, 1.0f))
@@ -184,7 +186,8 @@ data class DrawingStroke(
                         out.add(
                             DrawingPoint(
                                 x = a.x + (b.x - a.x) * t,
-                                y = a.y + (b.y - a.y) * t
+                                y = a.y + (b.y - a.y) * t,
+                                pressure = a.pressure + (b.pressure - a.pressure) * t
                             )
                         )
                     }
@@ -291,8 +294,11 @@ data class DrawingStroke(
 @Stable
 class DrawingController(
     val maxHistorySteps: Int = 60,
+    context: Context? = null,
     private val onStrokesChanged: (List<DrawingStroke>) -> Unit = {}
 ) {
+    private var appContext: Context? = context?.applicationContext
+
     var strokes by mutableStateOf<List<DrawingStroke>>(emptyList())
         private set
 
@@ -306,6 +312,40 @@ class DrawingController(
     var stylusOnlyMode by mutableStateOf(false)
         private set
     var smartPalmRejectionEnabled by mutableStateOf(true)
+    var pressureSensitivityEnabled by mutableStateOf(true)
+
+    init {
+        appContext?.let { bindPreferencesContext(it) }
+    }
+
+    fun bindPreferencesContext(context: Context) {
+        val ctx = context.applicationContext
+        appContext = ctx
+        runCatching {
+            val prefs = ctx.getSharedPreferences(PREFS_DRAWING_STUDIO, Context.MODE_PRIVATE)
+            if (prefs.contains(KEY_PRESSURE_SENSITIVITY)) {
+                pressureSensitivityEnabled = prefs.getBoolean(KEY_PRESSURE_SENSITIVITY, true)
+            }
+        }
+    }
+
+    fun updatePressureSensitivity(enabled: Boolean, context: Context? = null) {
+        pressureSensitivityEnabled = enabled
+        val ctx = context?.applicationContext ?: appContext
+        if (ctx != null) {
+            appContext = ctx
+            runCatching {
+                ctx.getSharedPreferences(PREFS_DRAWING_STUDIO, Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(KEY_PRESSURE_SENSITIVITY, enabled)
+                    .apply()
+            }
+        }
+    }
+
+    fun togglePressureSensitivity(context: Context? = null) {
+        updatePressureSensitivity(!pressureSensitivityEnabled, context)
+    }
 
     // Per-tool saved settings so switching between Fountain Pen, Highlighter, and Technical Pen preserves user preferences
     private val toolWidths = mutableMapOf(
@@ -825,6 +865,9 @@ class DrawingController(
     }
 
     companion object {
+        private const val PREFS_DRAWING_STUDIO = "shark_drawing_studio_prefs"
+        private const val KEY_PRESSURE_SENSITIVITY = "pressure_sensitivity_enabled"
+
         private fun computePointsBounds(points: List<DrawingPoint>): DrawingBounds? {
             if (points.isEmpty()) return null
             var minX = Float.MAX_VALUE
@@ -856,7 +899,13 @@ class DrawingController(
                     val steps = (dist / stepPx).toInt().coerceIn(1, 100)
                     for (s in 1..steps) {
                         val t = s.toFloat() / steps.toFloat()
-                        out.add(DrawingPoint(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t))
+                        out.add(
+                            DrawingPoint(
+                                x = a.x + (b.x - a.x) * t,
+                                y = a.y + (b.y - a.y) * t,
+                                pressure = a.pressure + (b.pressure - a.pressure) * t
+                            )
+                        )
                     }
                 } else {
                     out.add(b)

@@ -37,9 +37,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,10 +59,12 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 val STUDIO_COLOR_PALETTE = listOf(
     Color(0xFF0F172A), // Deep Ink Black
@@ -512,6 +517,11 @@ fun PenStrokeSettingsPanel(
     modifier: Modifier = Modifier,
     onDismiss: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
+    LaunchedEffect(controller, context) {
+        controller.bindPreferencesContext(context)
+    }
+
     val colorScheme = MaterialTheme.colorScheme
     val onSurfaceColor = colorScheme.onSurface
     val primaryColor = colorScheme.primary
@@ -638,6 +648,92 @@ fun PenStrokeSettingsPanel(
                     fontWeight = FontWeight.Bold,
                     color = onSurfaceColor,
                     modifier = Modifier.width(38.dp)
+                )
+            }
+
+            // Basınç Hassasiyeti (Pressure Sensitivity) toggle + live tapered stroke preview
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Column(modifier = Modifier.width(112.dp)) {
+                    Text(
+                        text = "Basınç Hassasiyeti",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = onSurfaceColor
+                    )
+                    Text(
+                        text = if (controller.pressureSensitivityEnabled) "Aktif (Kalem/Hız)" else "Sabit Çizgi",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = onSurfaceColor.copy(alpha = 0.6f)
+                    )
+                }
+
+                // Live pressure-tapered stroke preview canvas
+                val previewColor = controller.penColor.copy(
+                    alpha = controller.alpha.coerceIn(0.2f, 1.0f)
+                )
+                val basePreviewWidth = controller.strokeWidth.coerceIn(1.5f, 28f)
+                val isPressureOn = controller.pressureSensitivityEnabled
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(30.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(onSurfaceColor.copy(alpha = 0.05f))
+                        .border(1.dp, onSurfaceColor.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(modifier = Modifier.fillMaxWidth().height(22.dp)) {
+                        val segments = 24
+                        val startX = 6f
+                        val endX = (size.width - 6f).coerceAtLeast(startX + 10f)
+                        val midY = size.height / 2f
+                        val amplitude = (size.height * 0.26f).coerceAtLeast(2f)
+
+                        var prevX = startX
+                        var prevY = midY
+                        for (i in 1..segments) {
+                            val t = i.toFloat() / segments.toFloat()
+                            val x = startX + (endX - startX) * t
+                            val y = midY - sin(t * Math.PI.toFloat() * 2f) * amplitude
+                            val pressureFactor = if (isPressureOn) {
+                                // Smooth taper: thin at ends, fuller in middle
+                                val bell = sin(t * Math.PI.toFloat()).coerceIn(0.05f, 1.0f)
+                                0.35f + 0.95f * bell
+                            } else {
+                                1.0f
+                            }
+                            val segWidth = (basePreviewWidth * pressureFactor).coerceIn(1.2f, size.height * 0.85f)
+                            drawLine(
+                                color = previewColor,
+                                start = Offset(prevX, prevY),
+                                end = Offset(x, y),
+                                strokeWidth = segWidth,
+                                cap = StrokeCap.Round
+                            )
+                            prevX = x
+                            prevY = y
+                        }
+                    }
+                }
+
+                Switch(
+                    checked = controller.pressureSensitivityEnabled,
+                    onCheckedChange = { enabled ->
+                        controller.updatePressureSensitivity(enabled, context)
+                    },
+                    modifier = Modifier.height(26.dp),
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = primaryColor
+                    )
                 )
             }
         }

@@ -100,8 +100,13 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
         }.getOrDefault("")
     }
 
+    fun getGrokApiKey(context: Context? = null): String =
+        MultiProviderAiClient.getGrokApiKey(context)
+
     fun hasAnyOpenAiProviderKey(context: Context? = null): Boolean =
-        getDeepSeekApiKey(context).isNotBlank() || getKimiApiKey(context).isNotBlank()
+        getDeepSeekApiKey(context).isNotBlank() ||
+            getKimiApiKey(context).isNotBlank() ||
+            getGrokApiKey(context).isNotBlank()
 
     fun isLongContextPrompt(userPrompt: String, systemPrompt: String = ""): Boolean {
         val lower = userPrompt.lowercase()
@@ -117,7 +122,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
 
     /**
      * Streams tokens emitted incrementally as a Kotlin Flow<String>.
-     * Honors `UserAiPreferences.selectedAiProvider` (`CLAUDE`, `OPENAI`, `DEEPSEEK`, `KIMI`, or `AUTO`)
+     * Honors `UserAiPreferences.selectedAiProvider` (`CLAUDE`, `OPENAI`, `GROK`, `DEEPSEEK`, `KIMI`, or `AUTO`)
      * and the user's selected model for each provider, with automatic fallback between configured external providers.
      */
     fun streamChatCompletionFlow(
@@ -136,10 +141,19 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             AiProviderChoice.CLAUDE -> listOf(
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.OPENAI,
+                AiProviderChoice.GROK,
                 AiProviderChoice.DEEPSEEK,
                 AiProviderChoice.KIMI
             )
             AiProviderChoice.OPENAI -> listOf(
+                AiProviderChoice.OPENAI,
+                AiProviderChoice.GROK,
+                AiProviderChoice.CLAUDE,
+                AiProviderChoice.DEEPSEEK,
+                AiProviderChoice.KIMI
+            )
+            AiProviderChoice.GROK -> listOf(
+                AiProviderChoice.GROK,
                 AiProviderChoice.OPENAI,
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.DEEPSEEK,
@@ -148,12 +162,14 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             AiProviderChoice.KIMI -> listOf(
                 AiProviderChoice.KIMI,
                 AiProviderChoice.DEEPSEEK,
+                AiProviderChoice.GROK,
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.OPENAI
             )
             AiProviderChoice.DEEPSEEK -> listOf(
                 AiProviderChoice.DEEPSEEK,
                 AiProviderChoice.KIMI,
+                AiProviderChoice.GROK,
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.OPENAI
             )
@@ -163,12 +179,14 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
                         AiProviderChoice.KIMI,
                         AiProviderChoice.CLAUDE,
                         AiProviderChoice.OPENAI,
+                        AiProviderChoice.GROK,
                         AiProviderChoice.DEEPSEEK
                     )
                 } else {
                     listOf(
                         AiProviderChoice.CLAUDE,
                         AiProviderChoice.OPENAI,
+                        AiProviderChoice.GROK,
                         AiProviderChoice.DEEPSEEK,
                         AiProviderChoice.KIMI
                     )
@@ -178,6 +196,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             when (candidate) {
                 AiProviderChoice.CLAUDE -> MultiProviderAiClient.getClaudeApiKey(context).isNotBlank()
                 AiProviderChoice.OPENAI -> MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank()
+                AiProviderChoice.GROK -> getGrokApiKey(context).isNotBlank()
                 AiProviderChoice.DEEPSEEK -> getDeepSeekApiKey(context).isNotBlank()
                 AiProviderChoice.KIMI -> getKimiApiKey(context).isNotBlank()
                 AiProviderChoice.AUTO, AiProviderChoice.GEMINI -> false
@@ -250,10 +269,19 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             AiProviderChoice.CLAUDE -> listOf(
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.OPENAI,
+                AiProviderChoice.GROK,
                 AiProviderChoice.DEEPSEEK,
                 AiProviderChoice.KIMI
             )
             AiProviderChoice.OPENAI -> listOf(
+                AiProviderChoice.OPENAI,
+                AiProviderChoice.GROK,
+                AiProviderChoice.CLAUDE,
+                AiProviderChoice.DEEPSEEK,
+                AiProviderChoice.KIMI
+            )
+            AiProviderChoice.GROK -> listOf(
+                AiProviderChoice.GROK,
                 AiProviderChoice.OPENAI,
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.DEEPSEEK,
@@ -262,12 +290,14 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             AiProviderChoice.KIMI -> listOf(
                 AiProviderChoice.KIMI,
                 AiProviderChoice.DEEPSEEK,
+                AiProviderChoice.GROK,
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.OPENAI
             )
             AiProviderChoice.DEEPSEEK -> listOf(
                 AiProviderChoice.DEEPSEEK,
                 AiProviderChoice.KIMI,
+                AiProviderChoice.GROK,
                 AiProviderChoice.CLAUDE,
                 AiProviderChoice.OPENAI
             )
@@ -277,12 +307,14 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
                         AiProviderChoice.KIMI,
                         AiProviderChoice.CLAUDE,
                         AiProviderChoice.OPENAI,
+                        AiProviderChoice.GROK,
                         AiProviderChoice.DEEPSEEK
                     )
                 } else {
                     listOf(
                         AiProviderChoice.CLAUDE,
                         AiProviderChoice.OPENAI,
+                        AiProviderChoice.GROK,
                         AiProviderChoice.DEEPSEEK,
                         AiProviderChoice.KIMI
                     )
@@ -292,6 +324,7 @@ KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
             when (candidate) {
                 AiProviderChoice.CLAUDE -> MultiProviderAiClient.getClaudeApiKey(context).isNotBlank()
                 AiProviderChoice.OPENAI -> MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank()
+                AiProviderChoice.GROK -> getGrokApiKey(context).isNotBlank()
                 AiProviderChoice.DEEPSEEK -> getDeepSeekApiKey(context).isNotBlank()
                 AiProviderChoice.KIMI -> getKimiApiKey(context).isNotBlank()
                 AiProviderChoice.AUTO, AiProviderChoice.GEMINI -> false

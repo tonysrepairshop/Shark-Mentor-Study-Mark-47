@@ -10,7 +10,7 @@ interface NotificationState {
   streakDaysCount: number;
 }
 
-const NUDGE_COOLDOWN_HOURS = 12;
+const NUDGE_PAIR_COOLDOWN_MINUTES = 15;
 
 // ─── ANTI-SPAM & QUIET HOURS ─────────────────────────────────────────────
 
@@ -242,14 +242,12 @@ export const onExamUpdated = functions.firestore
     }
   });
 
-// ─── SHARK LEAGUE NUDGE ("DÜRTME") PUSH NOTIFICATION RULE ───────────────────
+// ─── SHARK LEAGUE NUDGE ("DÜRTME" / ÇALIŞMAYA DAVET ET) PUSH NOTIFICATION RULE ─
 
 /**
  * Triggered when a student nudges a friend or study group member via `nudges/{nudgeId}`.
- * Enforces:
- * - Quiet hours (23:00 - 08:30 UTC+3)
- * - 12-hour per-pair anti-spam rate limit (`senderId -> receiverId`)
- * - Receiver global rate limit (12h window for nudges)
+ * Dispatches IMMEDIATELY as a high-priority FCM notification (bypassing global rate limit and quiet hours)
+ * with only a 15-minute per-pair (`fromUid -> toUid`) anti-spam cooldown.
  */
 export const onNudgeCreated = functions.firestore
   .document('nudges/{nudgeId}')
@@ -257,64 +255,96 @@ export const onNudgeCreated = functions.firestore
     const data = snap.data();
     if (!data) return;
 
-    const senderId = (data.senderId as string | undefined)?.trim() || "";
-    const receiverId = (data.receiverId as string | undefined)?.trim() || "";
-    const senderName = (data.senderName as string | undefined)?.trim() || "Arkadaşın";
+    const fromUid = ((data.fromUid || data.senderId) as string | undefined)?.trim() || "";
+    const toUid = ((data.toUid || data.receiverId) as string | undefined)?.trim() || "";
+    const fromName = ((data.fromName || data.senderName) as string | undefined)?.trim() || "Arkadaşın";
     const groupId = (data.groupId as string | undefined)?.trim() || "GLOBAL_INDIVIDUAL";
 
-    if (!senderId || !receiverId || senderId === receiverId) {
-      console.log(`[onNudgeCreated] Invalid sender/receiver on nudge ${context.params.nudgeId}`);
+    if (!fromUid || !toUid || fromUid === toUid) {
+      console.log(`[onNudgeCreated] Invalid fromUid/toUid on nudge ${context.params.nudgeId}`);
+      await snap.ref.set({
+        delivered: false,
+        processedAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: "INVALID_PARTICIPANTS"
+      }, { merge: true });
       return;
     }
 
-    if (isQuietHours()) {
-      console.log(`[Quiet Hours] Suppressed nudge from ${senderId} to ${receiverId}`);
-      return;
-    }
-
-    // Check 12-hour per-pair (sender -> receiver) rate limit
-    const pairMetaRef = db.doc(`students/${receiverId}/meta/nudge_${senderId}`);
+    // Check 15-minute per-pair (fromUid -> toUid) anti-spam rate limit
+    const pairMetaRef = db.doc(`students/${toUid}/meta/nudge_${fromUid}`);
     const pairMetaSnap = await pairMetaRef.get();
     if (pairMetaSnap.exists) {
       const lastNudgeTs = pairMetaSnap.data()?.lastNudgeTimestamp as admin.firestore.Timestamp | undefined;
       if (lastNudgeTs) {
-        const hoursElapsed = (Date.now() - lastNudgeTs.toDate().getTime()) / (1000 * 60 * 60);
-        if (hoursElapsed < NUDGE_COOLDOWN_HOURS) {
-          console.log(`[Rate Limit] Suppressed duplicate nudge from ${senderId} to ${receiverId} (${hoursElapsed.toFixed(1)}h < 12h)`);
+        const minutesElapsed = (Date.now() - lastNudgeTs.toDate().getTime()) / (1000 * 60);
+        if (minutesElapsed < NUDGE_PAIR_COOLDOWN_MINUTES) {
+          console.log(
+            `[Rate Limit] Suppressed duplicate nudge from ${fromUid} to ${toUid} (${minutesElapsed.toFixed(1)}m < ${NUDGE_PAIR_COOLDOWN_MINUTES}m)`
+          );
+          await snap.ref.set({
+            delivered: false,
+            processedAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: "PAIR_COOLDOWN"
+          }, { merge: true });
           return;
         }
       }
     }
 
-    const title = `🦈 ${senderName} Seni Masaya Çağırıyor!`;
-    const body = (data.message as string | undefined)?.trim() ||
-      `${senderName} seni dürttü! Kronometreni başlat ve odak yarışında geri kalma.`;
+    const title = `🦈 ${fromName} seni çalışmaya çağırıyor!`;
+    const body = "Masaya geç ve odak seansını başlat! Arkadaşın çalışma grubunda seni bekliyor.";
 
-    const sent = await dispatchPushNotification(
-      receiverId,
-      title,
-      body,
-      "NUDGE",
-      NUDGE_COOLDOWN_HOURS,
-      {
-        senderId,
-        senderName,
-        groupId,
-        nudgeId: context.params.nudgeId
+    const fcmTokens = await resolveStudentFcmTokens(toUid);
+    let delivered = false;
+
+    if (fcmTokens.length > 0) {
+      try {
+        const multicastResp = await messaging.sendEachForMulticast({
+          tokens: fcmTokens,
+          notification: { title, body },
+          data: {
+            type: "STUDY_INVITE_NUDGE",
+            triggerType: "NUDGE",
+            fromUid,
+            fromName,
+            senderId: fromUid,
+            senderName: fromName,
+            toUid,
+            groupId,
+            nudgeId: context.params.nudgeId
+          },
+          android: {
+            priority: "high"
+          }
+        });
+        delivered = multicastResp.successCount > 0;
+        console.log(
+          `[onNudgeCreated] Dispatched STUDY_INVITE_NUDGE from ${fromUid} to ${toUid} (success=${multicastResp.successCount}/${fcmTokens.length})`
+        );
+      } catch (err) {
+        console.error(`[onNudgeCreated] Failed to send FCM nudge from ${fromUid} to ${toUid}`, err);
+        delivered = false;
       }
-    );
+    } else {
+      console.log(`[onNudgeCreated] No FCM tokens found for recipient ${toUid}`);
+    }
 
-    if (sent) {
+    if (delivered) {
       await pairMetaRef.set({
-        senderId,
-        senderName,
+        fromUid,
+        fromName,
+        senderId: fromUid,
+        senderName: fromName,
         lastNudgeTimestamp: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
-
-      await snap.ref.set({
-        deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
-        status: "DELIVERED"
-      }, { merge: true });
     }
+
+    await snap.ref.set({
+      delivered,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      deliveredAt: delivered ? admin.firestore.FieldValue.serverTimestamp() : null,
+      status: delivered ? "DELIVERED" : "UNDELIVERED"
+    }, { merge: true });
   });
+
 
