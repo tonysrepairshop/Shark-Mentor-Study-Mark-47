@@ -441,7 +441,13 @@ service cloud.firestore {
 
     match /institution_codes/{code} {
       allow read: if isAuthenticated();
-      allow write: if false;
+      allow create, delete: if false;
+      allow update: if isAuthenticated() &&
+        resource != null &&
+        (!('isUsed' in resource.data) || resource.data.isUsed != true) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isUsed', 'usedByStudentId']) &&
+        request.resource.data.isUsed == true &&
+        request.resource.data.usedByStudentId == request.auth.uid;
     }
 
     match /coach_codes/{code} {
