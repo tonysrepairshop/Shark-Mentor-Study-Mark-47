@@ -107,7 +107,7 @@ val QUESTION_ANNOTATOR_COLORS = listOf(
 @Stable
 class QuestionAnnotatorState(
     val drawingController: DrawingController = DrawingController(maxHistorySteps = 60).apply {
-        activeTool = DrawingTool.FOUNTAIN_PEN
+        selectTool(DrawingTool.FOUNTAIN_PEN)
         penColor = Color(0xFFE53935)
         strokeWidth = 4.5f
         alpha = 1.0f

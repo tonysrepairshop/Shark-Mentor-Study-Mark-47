@@ -369,7 +369,7 @@ fun NoteDetailScreen(
             ).also { ctrl ->
                 ctrl.bindPreferencesContext(context)
                 if (template != null) {
-                    ctrl.activeTool = template.activeTool
+                    ctrl.selectTool(template.activeTool)
                     ctrl.penColor = template.penColor
                     ctrl.strokeWidth = template.strokeWidth
                     ctrl.alpha = template.alpha
@@ -402,7 +402,7 @@ fun NoteDetailScreen(
     ) {
         pageDrawingControllers.values.forEach { ctrl ->
             if (ctrl !== drawingController) {
-                ctrl.activeTool = drawingController.activeTool
+                ctrl.selectTool(drawingController.activeTool)
                 ctrl.penColor = drawingController.penColor
                 ctrl.strokeWidth = drawingController.strokeWidth
                 ctrl.alpha = drawingController.alpha
@@ -558,7 +558,7 @@ fun NoteDetailScreen(
                 context = context,
                 noteId = vmNoteId,
                 deletedPageIndex = targetIdx,
-                oldTotalPageCount = oldTotalCount
+                totalPagesBeforeDelete = oldTotalCount
             )
         }
     }
