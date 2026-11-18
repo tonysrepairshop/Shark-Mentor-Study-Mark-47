@@ -1,16 +1,28 @@
 package com.example.sharkmentor.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.sharkmentor.core.badges.SharkBadgeCatalog
+import com.example.sharkmentor.core.service.FocusTimerService
+import com.example.sharkmentor.core.timer.TimerMode
+import com.example.sharkmentor.core.timer.TimerPhase
 import com.example.sharkmentor.core.util.AvatarHelper
 import com.example.sharkmentor.core.util.GoogleServicesHelper
+import com.example.sharkmentor.core.util.SessionManager
+import com.example.sharkmentor.data.focus.FocusSessionManager
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.example.sharkmentor.service.sync.SyncWorker
+import com.example.sharkmentor.services.SharkMessagingService
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import java.text.SimpleDateFormat
@@ -35,10 +47,12 @@ private const val CEKICBAS_THRESHOLD    = 20 * 3600L  // 20 saat
 private const val KAPLAN_THRESHOLD      = 30 * 3600L  // 30 saat
 private const val BUYUK_BEYAZ_THRESHOLD = 45 * 3600L  // 45 saat
 
-/** 12-hour anti-spam cooldown for nudging the same friend/group member. */
-const val NUDGE_COOLDOWN_MS: Long = 12L * 60L * 60L * 1_000L
+/** 15-minute anti-spam cooldown for sending a study invite to the same friend/group member. */
+const val NUDGE_COOLDOWN_MS: Long = 15L * 60L * 1_000L
 
 const val GLOBAL_LEAGUE_BUCKET = "GLOBAL_INDIVIDUAL"
+
+private const val INVITE_STALENESS_MS = 24L * 60L * 60L * 1_000L
 
 // ─── Data models ─────────────────────────────────────────────────────────────
 
@@ -89,6 +103,16 @@ data class StudyGroupSummary(
 )
 
 @Immutable
+data class IncomingStudyInvite(
+    val id: String,
+    val fromUid: String,
+    val fromName: String,
+    val message: String,
+    val groupId: String?,
+    val createdAtMillis: Long
+)
+
+@Immutable
 data class LeagueEntry(
     val studentId: String = "",
     val displayName: String = "",
@@ -103,7 +127,9 @@ data class LeagueEntry(
     val activeSubject: String? = null,
     val lastNudgeSentMillis: Long = 0L,
     val avatarBase64: String = "",
-    val avatarPresetId: String = ""
+    val avatarPresetId: String = "",
+    val mentorPoints: Int = 0,
+    val showcaseBadges: List<String> = emptyList()
 ) {
     fun canBeNudged(nowMillis: Long = System.currentTimeMillis()): Boolean {
         if (isCurrentUser || studentId.isBlank()) return false
@@ -112,7 +138,7 @@ data class LeagueEntry(
 
     fun remainingNudgeCooldownLabel(nowMillis: Long = System.currentTimeMillis()): String {
         val remMs = (NUDGE_COOLDOWN_MS - (nowMillis - lastNudgeSentMillis)).coerceAtLeast(0L)
-        if (remMs <= 0L) return "Dürt"
+        if (remMs <= 0L) return "Davet Et"
         val remHours = remMs / (3600L * 1000L)
         val remMins = (remMs % (3600L * 1000L)) / (60L * 1000L)
         return if (remHours > 0L) "${remHours}s ${remMins}dk" else "${remMins.coerceAtLeast(1L)}dk"
@@ -134,7 +160,14 @@ data class SharkLeagueUiState(
     val groupName: String? = null,
     val isActionInProgress: Boolean = false,
     val statusMessage: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    val needsNameSetup: Boolean = false,
+    val incomingStudyInvite: IncomingStudyInvite? = null,
+    val pendingDmRequestCount: Int = 0,
+    val dmStatusByPeerId: Map<String, String> = emptyMap(),
+    val myShowcaseBadges: List<String> = emptyList(),
+    val myUnlockedBadges: Set<String> = emptySet(),
+    val myMentorPoints: Int = 0
 )
 
 // ─── ViewModel ───────────────────────────────────────────────────────────────
@@ -152,10 +185,21 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         SharkLeagueUiState(
             myFriendCode = userPrefs.getOrCreateFriendCode(
                 GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid
-            )
+            ),
+            myShowcaseBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext),
+            myUnlockedBadges = SharkBadgeCatalog.getUnlockedBadgeIds(appContext),
+            myMentorPoints = SharkBadgeCatalog.getMentorPoints(appContext)
         )
     )
     val uiState: StateFlow<SharkLeagueUiState> = _uiState.asStateFlow()
+
+    private var incomingInvitesListener: ListenerRegistration? = null
+    private var incomingDmListener: ListenerRegistration? = null
+    private var observedUid: String? = null
+    private val notifiedInviteIds = mutableSetOf<String>()
+
+    /** Union of all friend IDs + joined study group member IDs eligible for Study Invites. */
+    private var eligibleSocialMemberIds: Set<String> = emptySet()
 
     fun selectTab(tab: LeagueTab) {
         _uiState.value = _uiState.value.copy(activeTab = tab, statusMessage = null, error = null)
@@ -173,6 +217,297 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
     fun clearStatusMessage() {
         _uiState.value = _uiState.value.copy(statusMessage = null)
+    }
+
+    // ─── Name Resolution & Quick Name Update (Task 1) ────────────────────────
+
+    private fun isMeaningfulName(candidate: String?): Boolean {
+        val clean = SyncWorker.sanitizeTurkishText(candidate).trim()
+        if (clean.length < 2) return false
+        val lower = clean.lowercase(Locale("tr"))
+        return lower != "öğrenci" &&
+            lower != "ogrenci" &&
+            lower != "kayıtlı öğrenci" &&
+            lower != "kayitli ogrenci" &&
+            lower != "arkadaş" &&
+            lower != "arkadas" &&
+            lower != "student" &&
+            lower != "null"
+    }
+
+    private fun persistStudentNameLocally(cleanName: String) {
+        appContext.getSharedPreferences("user_preferences", Context.MODE_PRIVATE)
+            .edit()
+            .putString("student_name", cleanName)
+            .apply()
+    }
+
+    private suspend fun resolveStudentDisplayName(
+        uid: String,
+        database: FirebaseFirestore?,
+        studentDoc: DocumentSnapshot?
+    ): String {
+        // 1. UserPreferences studentName
+        val prefName = SyncWorker.sanitizeTurkishText(userPrefs.studentName).trim()
+        if (isMeaningfulName(prefName)) return prefName
+
+        // 2. FirebaseAuth currentUser.displayName
+        val firebaseUser = GoogleServicesHelper.getCurrentUser(auth, appContext)
+        val authDisplayName = SyncWorker.sanitizeTurkishText(firebaseUser?.displayName).trim()
+        if (isMeaningfulName(authDisplayName)) {
+            persistStudentNameLocally(authDisplayName)
+            return authDisplayName
+        }
+
+        // 3. Firestore students/{uid} -> users/{uid} (name, displayName, fullName, username)
+        val studentDocName = extractPreferredName(studentDoc, fallback = "")
+        if (isMeaningfulName(studentDocName)) {
+            persistStudentNameLocally(studentDocName)
+            return studentDocName
+        }
+
+        if (database != null && uid.isNotBlank() && uid != "local_student" && uid != "student_default") {
+            val usersDoc = runCatching { database.collection("users").document(uid).get().await() }.getOrNull()
+            val usersDocName = extractPreferredName(usersDoc, fallback = "")
+            if (isMeaningfulName(usersDocName)) {
+                persistStudentNameLocally(usersDocName)
+                return usersDocName
+            }
+        }
+
+        // 4. Fallback: email prefix with capitalized initial
+        val emailPrefix = firebaseUser?.email?.substringBefore("@")?.trim().orEmpty()
+        if (emailPrefix.isNotBlank()) {
+            val formattedEmailName = emailPrefix
+                .replace(".", " ")
+                .replace("_", " ")
+                .replace("-", " ")
+                .split(" ")
+                .filter { it.isNotBlank() }
+                .joinToString(" ") { part ->
+                    part.replaceFirstChar { ch -> ch.titlecase(Locale("tr")) }
+                }
+                .trim()
+            if (isMeaningfulName(formattedEmailName)) {
+                persistStudentNameLocally(formattedEmailName)
+                return formattedEmailName
+            }
+        }
+
+        return "Öğrenci"
+    }
+
+    private fun extractPreferredName(
+        vararg snapshots: DocumentSnapshot?,
+        fallback: String
+    ): String {
+        val fields = listOf("name", "displayName", "fullName", "username")
+        for (snap in snapshots) {
+            if (snap == null || !snap.exists()) continue
+            for (field in fields) {
+                val candidate = SyncWorker.sanitizeTurkishText(snap.getString(field)).trim()
+                if (isMeaningfulName(candidate)) {
+                    return candidate
+                }
+            }
+        }
+        return fallback
+    }
+
+    fun updateStudentDisplayName(rawName: String) {
+        val cleanName = SyncWorker.sanitizeTurkishText(rawName.trim())
+        if (!isMeaningfulName(cleanName)) {
+            _uiState.value = _uiState.value.copy(
+                statusMessage = "Lütfen en az 2 karakterli gerçek bir ad girin."
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isActionInProgress = true)
+            persistStudentNameLocally(cleanName)
+
+            val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: "local_student"
+            val database = db
+            val myFriendCode = _uiState.value.myFriendCode.ifBlank { userPrefs.getOrCreateFriendCode(uid) }
+
+            if (database != null && uid.isNotBlank() && uid != "local_student" && uid != "student_default") {
+                runCatching {
+                    database.collection("students").document(uid)
+                        .set(
+                            mapOf("name" to cleanName, "displayName" to cleanName),
+                            SetOptions.merge()
+                        )
+                        .await()
+                }
+                runCatching {
+                    database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
+                        .collection("weeklyLeague").document(uid)
+                        .set(mapOf("displayName" to cleanName), SetOptions.merge())
+                        .await()
+                }
+                val instCode = _uiState.value.institutionCode
+                if (instCode.isNotBlank() && instCode != GLOBAL_LEAGUE_BUCKET) {
+                    runCatching {
+                        database.collection("institutions").document(instCode)
+                            .collection("weeklyLeague").document(uid)
+                            .set(mapOf("displayName" to cleanName), SetOptions.merge())
+                            .await()
+                    }
+                }
+                runCatching {
+                    database.collection("friend_codes").document(myFriendCode)
+                        .set(mapOf("displayName" to cleanName), SetOptions.merge())
+                        .await()
+                }
+                for (groupCode in userPrefs.joinedGroupCodes) {
+                    runCatching {
+                        database.collection("study_groups").document(groupCode)
+                            .set(
+                                mapOf("memberNames" to mapOf(uid to cleanName)),
+                                SetOptions.merge()
+                            )
+                            .await()
+                    }
+                }
+            }
+
+            _uiState.value = _uiState.value.copy(
+                isActionInProgress = false,
+                needsNameSetup = false,
+                statusMessage = "Adın \"$cleanName\" olarak güncellendi!"
+            )
+            loadLeague(preserveTab = true)
+        }
+    }
+
+    // ─── Live Incoming Study Invites & DM Count Listeners ────────────────────
+
+    private fun ensureSocialListeners(uid: String) {
+        if (uid.isBlank() || uid == "local_student" || uid == "student_default") return
+        val database = db ?: return
+        if (observedUid == uid && incomingInvitesListener != null && incomingDmListener != null) return
+
+        incomingInvitesListener?.remove()
+        incomingDmListener?.remove()
+        observedUid = uid
+
+        incomingInvitesListener = database.collection("nudges")
+            .whereEqualTo("toUid", uid)
+            .whereEqualTo("seen", false)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.w("SharkLeagueVM", "Incoming invites listener warning: ${error.message}")
+                    return@addSnapshotListener
+                }
+                val now = System.currentTimeMillis()
+                val latest = snap?.documents
+                    ?.mapNotNull { doc ->
+                        val createdMs = doc.getLong("createdAtMillis")
+                            ?: doc.getTimestamp("createdAt")?.toDate()?.time
+                            ?: 0L
+                        if (createdMs > 0L && now - createdMs > INVITE_STALENESS_MS) {
+                            return@mapNotNull null
+                        }
+                        val fromUid = doc.getString("fromUid") ?: doc.getString("senderId").orEmpty()
+                        if (fromUid == uid) return@mapNotNull null
+                        val fromName = SyncWorker.sanitizeTurkishText(
+                            doc.getString("fromName") ?: doc.getString("senderName") ?: "Arkadaşın"
+                        ).ifBlank { "Arkadaşın" }
+                        val msg = SyncWorker.sanitizeTurkishText(
+                            doc.getString("message").orEmpty()
+                        ).ifBlank {
+                            "$fromName seni birlikte çalışmaya davet ediyor! Hadi masaya geç ve odak seansını başlat 🦈"
+                        }
+                        IncomingStudyInvite(
+                            id = doc.id,
+                            fromUid = fromUid,
+                            fromName = fromName,
+                            message = msg,
+                            groupId = doc.getString("groupId")?.takeIf { it.isNotBlank() },
+                            createdAtMillis = createdMs
+                        )
+                    }
+                    ?.maxByOrNull { it.createdAtMillis }
+
+                _uiState.value = _uiState.value.copy(incomingStudyInvite = latest)
+
+                if (latest != null && notifiedInviteIds.add(latest.id)) {
+                    SharkMessagingService.showStudyInviteNotification(
+                        context = appContext,
+                        fromName = latest.fromName,
+                        message = latest.message,
+                        groupId = latest.groupId,
+                        nudgeId = latest.id
+                    )
+                }
+            }
+
+        incomingDmListener = database.collection("dm_threads")
+            .whereArrayContains("participantIds", uid)
+            .addSnapshotListener { snap, error ->
+                if (error != null) return@addSnapshotListener
+                var pendingCount = 0
+                val statusMap = mutableMapOf<String, String>()
+                snap?.documents?.forEach { doc ->
+                    val participants = (doc.get("participantIds") as? List<*>)
+                        ?.mapNotNull { it?.toString() }
+                        .orEmpty()
+                    val peerUid = participants.firstOrNull { it != uid }
+                    val status = doc.getString("status").orEmpty().ifBlank { "PENDING" }
+                    val requesterId = doc.getString("requesterId").orEmpty()
+                    if (!peerUid.isNullOrBlank()) {
+                        statusMap[peerUid] = status
+                    }
+                    if (status == "PENDING" && requesterId.isNotBlank() && requesterId != uid) {
+                        pendingCount++
+                    }
+                }
+                _uiState.value = _uiState.value.copy(
+                    pendingDmRequestCount = pendingCount,
+                    dmStatusByPeerId = statusMap
+                )
+            }
+    }
+
+    fun dismissIncomingInvite(inviteId: String) {
+        if (_uiState.value.incomingStudyInvite?.id == inviteId) {
+            _uiState.value = _uiState.value.copy(incomingStudyInvite = null)
+        }
+        val database = db ?: return
+        if (inviteId.isBlank()) return
+        runCatching {
+            database.collection("nudges").document(inviteId)
+                .set(mapOf("seen" to true), SetOptions.merge())
+        }
+    }
+
+    fun acceptIncomingInviteAndStartFocus(inviteId: String) {
+        dismissIncomingInvite(inviteId)
+        val timerState = FocusTimerService.timerStateFlow.value
+        if (timerState.timerPhase == TimerPhase.IDLE) {
+            val modeToStart = timerState.currentMode.takeIf { it != TimerMode.BREAK } ?: TimerMode.POMODORO
+            val startIntent = Intent(appContext, FocusTimerService::class.java).apply {
+                action = FocusTimerService.ACTION_START
+                putExtra(FocusTimerService.EXTRA_MODE, modeToStart.name)
+                putExtra(FocusTimerService.EXTRA_POMODORO_MINUTES, timerState.customPomodoroDurationMinutes)
+                putExtra(FocusTimerService.EXTRA_BREAK_MINUTES, timerState.breakDurationMinutes)
+                putExtra(FocusTimerService.EXTRA_SUBJECT, "Birlikte Odak")
+            }
+            val started = runCatching { appContext.startForegroundService(startIntent) }.isSuccess
+            if (started) {
+                val durationMin = if (modeToStart == TimerMode.BLOCK_90) 90 else timerState.customPomodoroDurationMinutes
+                FocusSessionManager(appContext).startSession(durationMinutes = durationMin, subject = "Birlikte Odak")
+                SessionManager.setTimerRunning(true)
+            }
+            _uiState.value = _uiState.value.copy(
+                statusMessage = if (started) "🦈 Odak seansın başlatıldı! İyi çalışmalar!" else "Odak sayacı ana ekranda başlatılabilir."
+            )
+        } else {
+            _uiState.value = _uiState.value.copy(
+                statusMessage = "🦈 Davet onaylandı — odak sayacın zaten aktif!"
+            )
+        }
     }
 
     // ─── Load League (Individual + Optional Institution + Groups & Friends) ──
@@ -195,33 +530,41 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     computeLocalWeeklyStats()
                 }
 
-                val localName = SyncWorker.sanitizeTurkishText(
-                    userPrefs.studentName?.takeIf { it.isNotBlank() } ?: "Öğrenci"
-                )
-
                 val database = db
                 if (database == null || uid == "local_student" || uid == "student_default") {
+                    val offlineName = resolveStudentDisplayName(uid, null, null)
+                    val localBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
+                    val localUnlocked = SharkBadgeCatalog.getUnlockedBadgeIds(appContext)
+                    val localPoints = SharkBadgeCatalog.getMentorPoints(appContext)
                     val fallbackMe = buildMyLeagueEntry(
                         uid = uid,
-                        name = localName,
+                        name = offlineName,
                         friendCode = myFriendCode,
                         weeklySeconds = localWeeklySeconds,
-                        streakDays = localStreakDays
+                        streakDays = localStreakDays,
+                        mentorPoints = localPoints,
+                        showcaseBadges = localBadges
                     )
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         myEntry = fallbackMe,
                         myFriendCode = myFriendCode,
                         leaderboard = listOf(fallbackMe),
-                        friendsAndGroupMembers = listOf(fallbackMe)
+                        friendsAndGroupMembers = listOf(fallbackMe),
+                        needsNameSetup = !isMeaningfulName(offlineName),
+                        myShowcaseBadges = localBadges,
+                        myUnlockedBadges = localUnlocked,
+                        myMentorPoints = localPoints
                     )
                     return@launch
                 }
 
+                ensureSocialListeners(uid)
+
                 // 2. Read student doc from Firestore (without requiring branchCode!)
                 val studentDoc = try {
                     database.collection("students").document(uid).get().await()
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     null
                 }
 
@@ -231,9 +574,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     ?.takeIf { it.isNotBlank() && it != "INDIVIDUAL" }
                     ?: ""
 
-                val myName = SyncWorker.sanitizeTurkishText(
-                    studentDoc?.getString("name")?.takeIf { it.isNotBlank() } ?: localName
-                )
+                val myName = resolveStudentDisplayName(uid, database, studentDoc)
                 val remoteFriendCode = studentDoc?.getString("friendCode")
                     ?.takeIf { it.startsWith("SHK-") && it.length == 8 }
                 val effectiveFriendCode = remoteFriendCode ?: myFriendCode
@@ -265,39 +606,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     AvatarHelper.saveLocalAvatar(appContext, myAvatarBase64, myAvatarPresetId)
                 }
 
-                // 4. Register friendCode & upsert into GLOBAL_INDIVIDUAL (and institution league if any)
-                registerFriendCodeAndProfile(
-                    uid = uid,
-                    name = myName,
-                    friendCode = effectiveFriendCode,
-                    weeklyFocusSeconds = weeklySeconds,
-                    streakDays = streakDays,
-                    branchCode = branchCode,
-                    avatarBase64 = myAvatarBase64,
-                    avatarPresetId = myAvatarPresetId
-                )
-
-                val myEntry = buildMyLeagueEntry(
-                    uid = uid,
-                    name = myName,
-                    friendCode = effectiveFriendCode,
-                    weeklySeconds = weeklySeconds,
-                    streakDays = streakDays,
-                    avatarBase64 = myAvatarBase64,
-                    avatarPresetId = myAvatarPresetId
-                )
-
-                // 5. Fetch Global Individual League (or Institution League if user toggled it)
-                val useInst = _uiState.value.useInstitutionFilter && branchCode.isNotBlank()
-                val targetBucket = if (useInst) branchCode else GLOBAL_LEAGUE_BUCKET
-
-                val globalEntries = fetchLeaderboardBucket(
-                    bucketId = targetBucket,
-                    currentUid = uid,
-                    myEntry = myEntry
-                )
-
-                // 6. Fetch User's Joined Study Groups & Friends comparison list
+                // Sync groups & friends first so badge auto-unlocks know group creator status
                 val remoteGroups = (studentDoc?.get("joinedGroupCodes") as? List<*>)
                     ?.mapNotNull { it?.toString()?.trim()?.uppercase() }
                     ?.filter { it.isNotBlank() }
@@ -323,6 +632,87 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     userPrefs.addedFriendIds = allFriendIds
                 }
 
+                // Badges & Mentor Points sync
+                val remotePoints = studentDoc?.getLong("mentorPoints")?.toInt() ?: 0
+                val mergedPoints = maxOf(remotePoints, SharkBadgeCatalog.getMentorPoints(appContext))
+                SharkBadgeCatalog.saveMentorPoints(appContext, mergedPoints)
+
+                val remoteUnlocked = (studentDoc?.get("unlockedBadges") as? List<*>)
+                    ?.mapNotNull { it?.toString()?.trim() }
+                    ?.filter { it.isNotBlank() }
+                    .orEmpty()
+                SharkBadgeCatalog.mergeUnlockedBadges(appContext, remoteUnlocked)
+
+                val remoteShowcase = (studentDoc?.get("showcaseBadges") as? List<*>)
+                    ?.mapNotNull { it?.toString()?.trim() }
+                    ?.filter { it.isNotBlank() }
+                    ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                    .orEmpty()
+                if (remoteShowcase.isNotEmpty() && SharkBadgeCatalog.getShowcaseBadgeIds(appContext).isEmpty()) {
+                    SharkBadgeCatalog.saveShowcaseBadgeIds(appContext, remoteShowcase)
+                }
+
+                val approvedSolutionsCloud = studentDoc?.getLong("approvedSolutionsCount")?.toInt() ?: 0
+                val provisionalGroupCreator = allGroupCodes.isNotEmpty() &&
+                    _uiState.value.joinedGroups.any { it.creatorId == uid }
+                SharkBadgeCatalog.evaluateAutomaticUnlocks(
+                    context = appContext,
+                    mentorPoints = mergedPoints,
+                    approvedSolutions = approvedSolutionsCloud,
+                    isGroupCreator = provisionalGroupCreator
+                )
+
+                val myShowcase = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
+                val myUnlocked = SharkBadgeCatalog.getUnlockedBadgeIds(appContext)
+
+                // 4. Register friendCode & upsert into GLOBAL_INDIVIDUAL (and institution league if any)
+                registerFriendCodeAndProfile(
+                    uid = uid,
+                    name = myName,
+                    friendCode = effectiveFriendCode,
+                    weeklyFocusSeconds = weeklySeconds,
+                    streakDays = streakDays,
+                    branchCode = branchCode,
+                    avatarBase64 = myAvatarBase64,
+                    avatarPresetId = myAvatarPresetId,
+                    mentorPoints = mergedPoints,
+                    showcaseBadges = myShowcase,
+                    unlockedBadges = myUnlocked
+                )
+
+                // Sync real name into joined study_groups memberNames map if meaningful
+                if (isMeaningfulName(myName)) {
+                    for (code in allGroupCodes) {
+                        runCatching {
+                            database.collection("study_groups").document(code)
+                                .set(mapOf("memberNames" to mapOf(uid to myName)), SetOptions.merge())
+                        }
+                    }
+                }
+
+                val myEntry = buildMyLeagueEntry(
+                    uid = uid,
+                    name = myName,
+                    friendCode = effectiveFriendCode,
+                    weeklySeconds = weeklySeconds,
+                    streakDays = streakDays,
+                    avatarBase64 = myAvatarBase64,
+                    avatarPresetId = myAvatarPresetId,
+                    mentorPoints = mergedPoints,
+                    showcaseBadges = myShowcase
+                )
+
+                // 5. Fetch Global Individual League (or Institution League if user toggled it)
+                val useInst = _uiState.value.useInstitutionFilter && branchCode.isNotBlank()
+                val targetBucket = if (useInst) branchCode else GLOBAL_LEAGUE_BUCKET
+
+                val globalEntries = fetchLeaderboardBucket(
+                    bucketId = targetBucket,
+                    currentUid = uid,
+                    myEntry = myEntry
+                )
+
+                // 6. Fetch User's Joined Study Groups & Friends comparison list
                 val (groupSummaries, socialEntries) = fetchGroupsAndFriendsEntries(
                     uid = uid,
                     myEntry = myEntry,
@@ -331,19 +721,35 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     selectedGroupCode = _uiState.value.selectedGroupCode
                 )
 
+                // Re-evaluate Grup Kaptanı after group summaries load
+                val finalUnlocked = if (groupSummaries.any { it.creatorId == uid }) {
+                    SharkBadgeCatalog.unlockBadge(appContext, SharkBadgeCatalog.BADGE_GRUP_KAPTANI)
+                } else {
+                    myUnlocked
+                }
+                val finalShowcase = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
+
+                eligibleSocialMemberIds = (allFriendIds + socialEntries.map { it.studentId })
+                    .filter { it.isNotBlank() && it != uid }
+                    .toSet()
+
                 val activeGroupSummary = groupSummaries.firstOrNull {
                     it.inviteCode == _uiState.value.selectedGroupCode
                 }
 
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    myEntry = myEntry,
+                    myEntry = myEntry.copy(showcaseBadges = finalShowcase),
                     myFriendCode = effectiveFriendCode,
                     leaderboard = globalEntries,
                     friendsAndGroupMembers = socialEntries,
                     joinedGroups = groupSummaries,
                     institutionCode = branchCode,
                     groupName = activeGroupSummary?.name,
+                    needsNameSetup = !isMeaningfulName(myName),
+                    myShowcaseBadges = finalShowcase,
+                    myUnlockedBadges = finalUnlocked,
+                    myMentorPoints = mergedPoints,
                     error = null
                 )
             } catch (e: Exception) {
@@ -353,12 +759,15 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 }
                 val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: "local_student"
                 val myFriendCode = userPrefs.getOrCreateFriendCode(uid)
+                val fallbackName = resolveStudentDisplayName(uid, null, null)
                 val fallbackMe = buildMyLeagueEntry(
                     uid = uid,
-                    name = SyncWorker.sanitizeTurkishText(userPrefs.studentName ?: "Öğrenci"),
+                    name = fallbackName,
                     friendCode = myFriendCode,
                     weeklySeconds = localWeeklySeconds,
-                    streakDays = localStreakDays
+                    streakDays = localStreakDays,
+                    mentorPoints = SharkBadgeCatalog.getMentorPoints(appContext),
+                    showcaseBadges = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
                 )
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
@@ -366,6 +775,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     myFriendCode = myFriendCode,
                     leaderboard = _uiState.value.leaderboard.ifEmpty { listOf(fallbackMe) },
                     friendsAndGroupMembers = _uiState.value.friendsAndGroupMembers.ifEmpty { listOf(fallbackMe) },
+                    needsNameSetup = !isMeaningfulName(fallbackName),
                     error = null
                 )
             }
@@ -393,14 +803,21 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 val updatedCodes = userPrefs.joinedGroupCodes + inviteCode
                 userPrefs.joinedGroupCodes = updatedCodes
 
+                val unlockedNow = SharkBadgeCatalog.unlockBadge(appContext, SharkBadgeCatalog.BADGE_GRUP_KAPTANI)
+                val showcaseNow = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
+
                 if (database != null && !uid.isNullOrBlank() && uid != "student_default") {
-                    val myName = _uiState.value.myEntry?.rawName?.ifBlank { "Öğrenci" } ?: "Öğrenci"
+                    val myName = _uiState.value.myEntry?.rawName
+                        ?.takeIf { isMeaningfulName(it) }
+                        ?: resolveStudentDisplayName(uid, database, null)
+
                     val groupData = hashMapOf<String, Any>(
                         "inviteCode" to inviteCode,
                         "name" to cleanName,
                         "creatorId" to uid,
                         "creatorName" to myName,
                         "memberIds" to listOf(uid),
+                        "memberNames" to mapOf(uid to myName),
                         "createdAt" to FieldValue.serverTimestamp(),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -414,6 +831,14 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             SetOptions.merge()
                         )
                         .await()
+
+                    SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(
+                        context = appContext,
+                        uid = uid,
+                        showcaseIds = showcaseNow,
+                        unlockedIds = unlockedNow,
+                        mentorPoints = SharkBadgeCatalog.getMentorPoints(appContext)
+                    )
                 }
 
                 val newGroupSummary = StudyGroupSummary(
@@ -428,6 +853,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     selectedGroupCode = inviteCode,
                     joinedGroups = (_uiState.value.joinedGroups + newGroupSummary).distinctBy { it.inviteCode },
                     groupName = cleanName,
+                    myShowcaseBadges = showcaseNow,
+                    myUnlockedBadges = unlockedNow,
                     statusMessage = "\"$cleanName\" grubu oluşturuldu! Davet Kodu: $inviteCode"
                 )
                 loadLeague(preserveTab = true)
@@ -487,7 +914,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     }
                     if (codeDoc != null && codeDoc.exists()) {
                         friendUid = codeDoc.getString("studentId")
-                        friendName = codeDoc.getString("displayName")
+                        friendName = extractPreferredName(codeDoc, fallback = "")
                     }
 
                     if (friendUid.isNullOrBlank()) {
@@ -499,8 +926,13 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         val doc = querySnap.documents.firstOrNull()
                         if (doc != null) {
                             friendUid = doc.id
-                            friendName = doc.getString("name") ?: doc.getString("displayName")
+                            friendName = extractPreferredName(doc, fallback = "")
                         }
+                    } else if (!isMeaningfulName(friendName)) {
+                        val friendStudentDoc = runCatching {
+                            database.collection("students").document(friendUid).get().await()
+                        }.getOrNull()
+                        friendName = extractPreferredName(friendStudentDoc, codeDoc, fallback = "")
                     }
 
                     if (friendUid.isNullOrBlank()) {
@@ -520,6 +952,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     }
 
                     userPrefs.addedFriendIds = userPrefs.addedFriendIds + friendUid
+                    eligibleSocialMemberIds = eligibleSocialMemberIds + friendUid
                     database.collection("students").document(uid)
                         .set(mapOf("friendIds" to FieldValue.arrayUnion(friendUid)), SetOptions.merge())
                         .await()
@@ -529,7 +962,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             .await()
                     } catch (_: Exception) {}
 
-                    val cleanFriendName = SyncWorker.sanitizeTurkishText(friendName ?: "Arkadaş")
+                    val cleanFriendName = SyncWorker.sanitizeTurkishText(
+                        friendName?.takeIf { isMeaningfulName(it) } ?: "Arkadaş"
+                    )
                     _uiState.value = _uiState.value.copy(
                         isActionInProgress = false,
                         activeTab = LeagueTab.GROUPS_AND_FRIENDS,
@@ -552,16 +987,21 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     val groupTitle = SyncWorker.sanitizeTurkishText(
                         groupDoc.getString("name") ?: "Çalışma Grubu"
                     )
+                    val myName = _uiState.value.myEntry?.rawName
+                        ?.takeIf { isMeaningfulName(it) }
+                        ?: resolveStudentDisplayName(uid, database, null)
+
                     userPrefs.joinedGroupCodes = userPrefs.joinedGroupCodes + groupCode
 
+                    val groupUpdate = hashMapOf<String, Any>(
+                        "memberIds" to FieldValue.arrayUnion(uid),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                    if (isMeaningfulName(myName)) {
+                        groupUpdate["memberNames"] = mapOf(uid to myName)
+                    }
                     database.collection("study_groups").document(groupCode)
-                        .set(
-                            mapOf(
-                                "memberIds" to FieldValue.arrayUnion(uid),
-                                "updatedAt" to FieldValue.serverTimestamp()
-                            ),
-                            SetOptions.merge()
-                        )
+                        .set(groupUpdate, SetOptions.merge())
                         .await()
 
                     database.collection("students").document(uid)
@@ -590,17 +1030,33 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // ─── Nudge ("Dürt") with 12-Hour Anti-Spam Protection ────────────────────
+    // ─── Study Invite ("Çalışmaya Davet Et") — Friends & Groups ONLY, 15m Cooldown ──
 
     fun sendNudge(target: LeagueEntry) {
+        nudgeLeagueMember(target)
+    }
+
+    fun nudgeLeagueMember(target: LeagueEntry) {
         if (target.isCurrentUser || target.studentId.isBlank()) return
+
+        val isSocialMember = eligibleSocialMemberIds.contains(target.studentId) ||
+            userPrefs.addedFriendIds.contains(target.studentId) ||
+            _uiState.value.friendsAndGroupMembers.any { !it.isCurrentUser && it.studentId == target.studentId }
+
+        if (!isSocialMember) {
+            _uiState.value = _uiState.value.copy(
+                statusMessage = "Çalışma daveti yalnızca arkadaşlarına veya grup üyelerine gönderilebilir."
+            )
+            return
+        }
+
         val now = System.currentTimeMillis()
         val lastLocalNudge = maxOf(target.lastNudgeSentMillis, userPrefs.getLastNudgeMillis(target.studentId))
 
         if (now - lastLocalNudge < NUDGE_COOLDOWN_MS) {
             val waitLabel = target.copy(lastNudgeSentMillis = lastLocalNudge).remainingNudgeCooldownLabel(now)
             _uiState.value = _uiState.value.copy(
-                statusMessage = "${target.displayName} için dürtme koruması aktif. $waitLabel sonra tekrar dürtebilirsin."
+                statusMessage = "${target.displayName} yakın zamanda davet edildi. $waitLabel sonra tekrar davet edebilirsin."
             )
             return
         }
@@ -609,14 +1065,14 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             try {
                 val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid
                 val database = db
-                if (database == null || uid.isNullOrBlank() || uid == "student_default") {
+                if (database == null || uid.isNullOrBlank() || uid == "local_student" || uid == "student_default") {
                     _uiState.value = _uiState.value.copy(
-                        statusMessage = "Dürtme göndermek için internet bağlantısı gereklidir."
+                        statusMessage = "Çalışma daveti göndermek için internet bağlantısı ve oturum gereklidir."
                     )
                     return@launch
                 }
 
-                // Check server-side 12h rate limit record if available
+                // Check server-side 15m cooldown record if available
                 val sentNudgeRef = database.collection("students").document(uid)
                     .collection("sent_nudges").document(target.studentId)
                 val existingSnap = try { sentNudgeRef.get().await() } catch (_: Exception) { null }
@@ -626,26 +1082,38 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     updateEntryNudgeTimestamp(target.studentId, remoteLastMs)
                     val waitLabel = target.copy(lastNudgeSentMillis = remoteLastMs).remainingNudgeCooldownLabel(now)
                     _uiState.value = _uiState.value.copy(
-                        statusMessage = "${target.displayName} yakın zamanda dürtüldü ($waitLabel kaldı)."
+                        statusMessage = "${target.displayName} yakın zamanda davet edildi ($waitLabel kaldı)."
                     )
                     return@launch
                 }
 
                 val myName = SyncWorker.sanitizeTurkishText(
-                    _uiState.value.myEntry?.rawName?.ifBlank { userPrefs.studentName ?: "Arkadaşın" }
-                        ?: "Arkadaşın"
+                    _uiState.value.myEntry?.rawName?.takeIf { isMeaningfulName(it) }
+                        ?: resolveStudentDisplayName(uid, database, null)
+                )
+                val targetCleanName = SyncWorker.sanitizeTurkishText(
+                    target.rawName.ifBlank { target.displayName }
                 )
                 val nudgeDocId = "${uid}_${target.studentId}_${now / NUDGE_COOLDOWN_MS}"
+                val activeGroupId = _uiState.value.selectedGroupCode
+                    ?: _uiState.value.joinedGroups.firstOrNull()?.inviteCode
+
                 val nudgePayload = hashMapOf<String, Any?>(
                     "id" to nudgeDocId,
+                    "fromUid" to uid,
+                    "fromName" to myName,
                     "senderId" to uid,
                     "senderName" to myName,
+                    "toUid" to target.studentId,
+                    "toName" to targetCleanName,
                     "receiverId" to target.studentId,
-                    "receiverName" to target.rawName.ifBlank { target.displayName },
-                    "groupId" to (_uiState.value.selectedGroupCode ?: GLOBAL_LEAGUE_BUCKET),
-                    "message" to "🦈 $myName seni masaya çağırıyor! Kronometreni başlat ve odak yarışında geri kalma!",
+                    "receiverName" to targetCleanName,
+                    "groupId" to activeGroupId,
+                    "type" to "STUDY_INVITE",
+                    "message" to "🦈 $myName seni birlikte çalışmaya davet ediyor! Masaya geçip odak seansını başlat.",
                     "createdAt" to FieldValue.serverTimestamp(),
-                    "createdAtMillis" to now
+                    "createdAtMillis" to now,
+                    "seen" to false
                 )
 
                 database.collection("nudges").document(nudgeDocId)
@@ -667,12 +1135,131 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 updateEntryNudgeTimestamp(target.studentId, now)
 
                 _uiState.value = _uiState.value.copy(
-                    statusMessage = "🦈 ${target.displayName} dürtüldü! Bildirim gönderildi."
+                    statusMessage = "🦈 $targetCleanName çalışma davetiyle çağrıldı!"
                 )
             } catch (e: Exception) {
-                Log.e("SharkLeagueVM", "sendNudge error", e)
+                Log.e("SharkLeagueVM", "nudgeLeagueMember error", e)
                 _uiState.value = _uiState.value.copy(
-                    statusMessage = "Dürtme gönderilemedi: ${e.localizedMessage ?: "Bağlantıyı kontrol edin"}"
+                    statusMessage = "Çalışma daveti gönderilemedi: ${e.localizedMessage ?: "Bağlantıyı kontrol edin"}"
+                )
+            }
+        }
+    }
+
+    // ─── Showcase Badges & Request-Approved DM ───────────────────────────────
+
+    fun updateMyShowcaseBadges(selectedBadgeIds: List<String>) {
+        val saved = SharkBadgeCatalog.saveShowcaseBadgeIds(appContext, selectedBadgeIds)
+        val current = _uiState.value
+        _uiState.value = current.copy(
+            myShowcaseBadges = saved,
+            myEntry = current.myEntry?.copy(showcaseBadges = saved),
+            leaderboard = current.leaderboard.map {
+                if (it.isCurrentUser) it.copy(showcaseBadges = saved) else it
+            },
+            friendsAndGroupMembers = current.friendsAndGroupMembers.map {
+                if (it.isCurrentUser) it.copy(showcaseBadges = saved) else it
+            },
+            statusMessage = "3 rozet vitrinin güncellendi!"
+        )
+
+        val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: return
+        viewModelScope.launch {
+            SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(
+                context = appContext,
+                uid = uid,
+                showcaseIds = saved,
+                unlockedIds = SharkBadgeCatalog.getUnlockedBadgeIds(appContext),
+                mentorPoints = SharkBadgeCatalog.getMentorPoints(appContext)
+            )
+        }
+    }
+
+    fun sendDmRequest(target: LeagueEntry, note: String) {
+        if (target.isCurrentUser || target.studentId.isBlank()) return
+        viewModelScope.launch {
+            val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid
+            val database = db
+            if (database == null || uid.isNullOrBlank() || uid == "local_student" || uid == "student_default") {
+                _uiState.value = _uiState.value.copy(
+                    statusMessage = "Mesaj isteği göndermek için oturum ve internet bağlantısı gerekir."
+                )
+                return@launch
+            }
+
+            try {
+                val threadId = listOf(uid.trim(), target.studentId.trim()).sorted().joinToString("_")
+                val existingDoc = runCatching {
+                    database.collection("dm_threads").document(threadId).get().await()
+                }.getOrNull()
+                val existingStatus = existingDoc?.getString("status").orEmpty()
+
+                if (existingStatus == "ACCEPTED") {
+                    _uiState.value = _uiState.value.copy(
+                        dmStatusByPeerId = _uiState.value.dmStatusByPeerId + (target.studentId to "ACCEPTED"),
+                        statusMessage = "Bu öğrenciyle direkt sohbetin zaten onaylı."
+                    )
+                    return@launch
+                }
+                if (existingStatus == "PENDING") {
+                    _uiState.value = _uiState.value.copy(
+                        dmStatusByPeerId = _uiState.value.dmStatusByPeerId + (target.studentId to "PENDING"),
+                        statusMessage = "Mesaj isteği zaten beklemede."
+                    )
+                    return@launch
+                }
+
+                val myName = SyncWorker.sanitizeTurkishText(
+                    _uiState.value.myEntry?.rawName?.takeIf { isMeaningfulName(it) }
+                        ?: resolveStudentDisplayName(uid, database, null)
+                )
+                val peerName = SyncWorker.sanitizeTurkishText(
+                    target.rawName.ifBlank { target.displayName }
+                )
+                val cleanNote = SyncWorker.sanitizeTurkishText(note.trim()).ifBlank {
+                    "Soru & çalışma hakkında direkt mesaj isteği"
+                }
+                val now = System.currentTimeMillis()
+                val payload = hashMapOf<String, Any>(
+                    "threadId" to threadId,
+                    "participantIds" to listOf(uid, target.studentId).sorted(),
+                    "participantNames" to mapOf(
+                        uid to myName,
+                        target.studentId to peerName
+                    ),
+                    "participantAvatarsBase64" to mapOf(
+                        uid to AvatarHelper.getSavedAvatarBase64(appContext),
+                        target.studentId to target.avatarBase64
+                    ),
+                    "participantAvatarPresets" to mapOf(
+                        uid to AvatarHelper.getSavedAvatarPresetId(appContext),
+                        target.studentId to target.avatarPresetId
+                    ),
+                    "requesterId" to uid,
+                    "requesterName" to myName,
+                    "recipientId" to target.studentId,
+                    "recipientName" to peerName,
+                    "status" to "PENDING",
+                    "requestNote" to cleanNote,
+                    "lastMessageText" to cleanNote,
+                    "createdAtMillis" to now,
+                    "updatedAtMillis" to now,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+
+                database.collection("dm_threads").document(threadId)
+                    .set(payload, SetOptions.merge())
+                    .await()
+
+                _uiState.value = _uiState.value.copy(
+                    dmStatusByPeerId = _uiState.value.dmStatusByPeerId + (target.studentId to "PENDING"),
+                    statusMessage = "$peerName için direkt mesaj isteği gönderildi!"
+                )
+            } catch (e: Exception) {
+                Log.w("SharkLeagueVM", "sendDmRequest warning: ${e.message}")
+                _uiState.value = _uiState.value.copy(
+                    statusMessage = "Mesaj isteği gönderilemedi: ${e.localizedMessage ?: "Bağlantıyı kontrol edin"}"
                 )
             }
         }
@@ -699,7 +1286,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         weeklySeconds: Long,
         streakDays: Int,
         avatarBase64: String = AvatarHelper.getSavedAvatarBase64(appContext),
-        avatarPresetId: String = AvatarHelper.getSavedAvatarPresetId(appContext)
+        avatarPresetId: String = AvatarHelper.getSavedAvatarPresetId(appContext),
+        mentorPoints: Int = SharkBadgeCatalog.getMentorPoints(appContext),
+        showcaseBadges: List<String> = SharkBadgeCatalog.getShowcaseBadgeIds(appContext)
     ): LeagueEntry {
         val cleanName = SyncWorker.sanitizeTurkishText(name.ifBlank { "Öğrenci" })
         val dailyAvgMin = ((weeklySeconds / 60L) / 7L).toInt()
@@ -715,7 +1304,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             tier = weeklySeconds.toTier(),
             isCurrentUser = true,
             avatarBase64 = avatarBase64,
-            avatarPresetId = effectivePresetId
+            avatarPresetId = effectivePresetId,
+            mentorPoints = mentorPoints,
+            showcaseBadges = showcaseBadges
         )
     }
 
@@ -799,7 +1390,10 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         streakDays: Int,
         branchCode: String,
         avatarBase64: String = "",
-        avatarPresetId: String = ""
+        avatarPresetId: String = "",
+        mentorPoints: Int = 0,
+        showcaseBadges: List<String> = emptyList(),
+        unlockedBadges: Set<String> = emptySet()
     ) {
         try {
             val database = db ?: return
@@ -815,6 +1409,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 "tier" to weeklyFocusSeconds.toTier().name,
                 "avatarBase64" to avatarBase64,
                 "avatarPresetId" to effectivePresetId,
+                "mentorPoints" to mentorPoints,
+                "showcaseBadges" to showcaseBadges,
                 "lastSessionAt" to FieldValue.serverTimestamp()
             )
 
@@ -848,18 +1444,22 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             } catch (_: Exception) {}
 
             // 4. Mirror summary stats on students/{uid} so friends & groups can read them
+            val studentPayload = hashMapOf<String, Any>(
+                "id" to uid,
+                "friendCode" to friendCode,
+                "weeklyFocusSeconds" to weeklyFocusSeconds,
+                "streakDays" to streakDays,
+                "mentorPoints" to mentorPoints,
+                "showcaseBadges" to showcaseBadges,
+                "unlockedBadges" to unlockedBadges.toList(),
+                "lastActiveAt" to FieldValue.serverTimestamp()
+            )
+            if (isMeaningfulName(name)) {
+                studentPayload["name"] = name
+                studentPayload["displayName"] = name
+            }
             database.collection("students").document(uid)
-                .set(
-                    mapOf(
-                        "id" to uid,
-                        "name" to name,
-                        "friendCode" to friendCode,
-                        "weeklyFocusSeconds" to weeklyFocusSeconds,
-                        "streakDays" to streakDays,
-                        "lastActiveAt" to FieldValue.serverTimestamp()
-                    ),
-                    SetOptions.merge()
-                )
+                .set(studentPayload, SetOptions.merge())
                 .await()
         } catch (e: Exception) {
             Log.w("SharkLeagueVM", "registerFriendCodeAndProfile warning: ${e.message}")
@@ -888,17 +1488,27 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         val isMe = (id == currentUid)
                         val secs = if (isMe) maxOf(myEntry.weeklyFocusSeconds, doc.getLong("weeklyFocusSeconds") ?: 0L)
                         else (doc.getLong("weeklyFocusSeconds") ?: 0L)
-                        val rawName = SyncWorker.sanitizeTurkishText(doc.getString("displayName") ?: "Öğrenci")
                         val streak = if (isMe) maxOf(myEntry.streakDays, doc.getLong("streakDays")?.toInt() ?: 0)
                         else (doc.getLong("streakDays")?.toInt() ?: 0)
                         val fCode = doc.getString("friendCode") ?: ""
 
+                        val studentSnap = if (isMe) {
+                            null
+                        } else {
+                            runCatching {
+                                database.collection("students").document(id).get().await()
+                            }.getOrNull()
+                        }
+
+                        val rawName = if (isMe) {
+                            myEntry.rawName
+                        } else {
+                            extractPreferredName(studentSnap, doc, fallback = "Öğrenci")
+                        }
+
                         val studentAvatarPair = if (isMe) {
                             myEntry.avatarBase64 to myEntry.avatarPresetId
                         } else {
-                            val studentSnap = runCatching {
-                                database.collection("students").document(id).get().await()
-                            }.getOrNull()
                             val docBase64 = doc.getString("avatarBase64").orEmpty()
                             val docPreset = doc.getString("avatarPresetId").orEmpty()
                             val studentBase64 = studentSnap?.getString("avatarBase64").orEmpty()
@@ -912,9 +1522,37 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             resolvedBase64 to resolvedPreset
                         }
 
+                        val points = if (isMe) {
+                            myEntry.mentorPoints
+                        } else {
+                            maxOf(
+                                studentSnap?.getLong("mentorPoints")?.toInt() ?: 0,
+                                doc.getLong("mentorPoints")?.toInt() ?: 0
+                            )
+                        }
+
+                        val badges = if (isMe) {
+                            myEntry.showcaseBadges
+                        } else {
+                            val fromStudent = (studentSnap?.get("showcaseBadges") as? List<*>)
+                                ?.mapNotNull { it?.toString()?.trim() }
+                                ?.filter { it.isNotBlank() }
+                                ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                                .orEmpty()
+                            if (fromStudent.isNotEmpty()) {
+                                fromStudent
+                            } else {
+                                (doc.get("showcaseBadges") as? List<*>)
+                                    ?.mapNotNull { it?.toString()?.trim() }
+                                    ?.filter { it.isNotBlank() }
+                                    ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                                    .orEmpty()
+                            }
+                        }
+
                         LeagueEntry(
                             studentId = id,
-                            displayName = formatLeaderboardCallSign(rawName, idx + 1, isMe, showFullForFriends = false),
+                            displayName = formatLeaderboardCallSign(rawName, idx + 1, isMe, showFullForFriends = true),
                             rawName = rawName,
                             friendCode = fCode,
                             weeklyFocusSeconds = secs,
@@ -922,9 +1560,13 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                             streakDays = streak,
                             tier = secs.toTier(),
                             isCurrentUser = isMe,
+                            isStudyingNow = if (isMe) myEntry.isStudyingNow else (studentSnap?.getBoolean("isStudying") ?: false),
+                            activeSubject = if (isMe) myEntry.activeSubject else studentSnap?.getString("activeSubject"),
                             lastNudgeSentMillis = userPrefs.getLastNudgeMillis(id),
                             avatarBase64 = studentAvatarPair.first,
-                            avatarPresetId = studentAvatarPair.second
+                            avatarPresetId = studentAvatarPair.second,
+                            mentorPoints = points,
+                            showcaseBadges = badges
                         )
                     }
                 }.awaitAll()
@@ -940,10 +1582,10 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 .mapIndexed { idx, entry ->
                     entry.copy(
                         displayName = formatLeaderboardCallSign(
-                            entry.rawName,
-                            idx + 1,
-                            entry.isCurrentUser,
-                            showFullForFriends = false
+                            name = entry.rawName,
+                            rank = idx + 1,
+                            isCurrentUser = entry.isCurrentUser,
+                            showFullForFriends = true
                         )
                     )
                 }
@@ -963,6 +1605,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         val database = db ?: return emptyList<StudyGroupSummary>() to listOf(myEntry)
         val groupSummaries = mutableListOf<StudyGroupSummary>()
         val groupMemberMap = mutableMapOf<String, Set<String>>()
+        val memberNamesLookup = mutableMapOf<String, String>()
 
         for (code in groupCodes) {
             try {
@@ -974,6 +1617,14 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         ?.filter { it.isNotBlank() }
                         ?.toSet()
                         ?: setOf(uid)
+                    val namesMap = doc.get("memberNames") as? Map<*, *>
+                    namesMap?.forEach { (k, v) ->
+                        val memberKey = k?.toString()?.trim().orEmpty()
+                        val memberVal = SyncWorker.sanitizeTurkishText(v?.toString()).trim()
+                        if (memberKey.isNotBlank() && isMeaningfulName(memberVal)) {
+                            memberNamesLookup[memberKey] = memberVal
+                        }
+                    }
                     groupSummaries.add(
                         StudyGroupSummary(
                             inviteCode = code,
@@ -1002,7 +1653,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         for (memberId in targetMemberIds) {
             if (memberId == uid || memberId.isBlank()) continue
             try {
-                // First check GLOBAL_INDIVIDUAL weeklyLeague or students/{memberId}
+                // Check students/{memberId} and GLOBAL_INDIVIDUAL weeklyLeague
                 val studentSnap = database.collection("students").document(memberId).get().await()
                 val globalLeagueSnap = try {
                     database.collection("institutions").document(GLOBAL_LEAGUE_BUCKET)
@@ -1011,10 +1662,14 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     null
                 }
 
+                val extracted = extractPreferredName(studentSnap, globalLeagueSnap, fallback = "")
+                val mapFallback = memberNamesLookup[memberId]
                 val rawName = SyncWorker.sanitizeTurkishText(
-                    studentSnap.getString("name")
-                        ?: globalLeagueSnap?.getString("displayName")
-                        ?: "Arkadaş"
+                    when {
+                        isMeaningfulName(extracted) -> extracted
+                        isMeaningfulName(mapFallback) -> mapFallback!!
+                        else -> extractPreferredName(studentSnap, globalLeagueSnap, fallback = "Arkadaş")
+                    }
                 )
                 val weeklySecs = maxOf(
                     studentSnap.getLong("weeklyFocusSeconds") ?: 0L,
@@ -1037,6 +1692,24 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     studentSnap.getString("avatarPresetId")?.takeIf { it.isNotBlank() }
                         ?: globalLeagueSnap?.getString("avatarPresetId").orEmpty()
                 }
+                val points = maxOf(
+                    studentSnap.getLong("mentorPoints")?.toInt() ?: 0,
+                    globalLeagueSnap?.getLong("mentorPoints")?.toInt() ?: 0
+                )
+                val studentShowcase = (studentSnap.get("showcaseBadges") as? List<*>)
+                    ?.mapNotNull { it?.toString()?.trim() }
+                    ?.filter { it.isNotBlank() }
+                    ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                    .orEmpty()
+                val showcaseBadges = if (studentShowcase.isNotEmpty()) {
+                    studentShowcase
+                } else {
+                    (globalLeagueSnap?.get("showcaseBadges") as? List<*>)
+                        ?.mapNotNull { it?.toString()?.trim() }
+                        ?.filter { it.isNotBlank() }
+                        ?.take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
+                        .orEmpty()
+                }
 
                 entries.add(
                     LeagueEntry(
@@ -1053,7 +1726,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                         activeSubject = activeSubj,
                         lastNudgeSentMillis = userPrefs.getLastNudgeMillis(memberId),
                         avatarBase64 = avatarBase64,
-                        avatarPresetId = avatarPresetId
+                        avatarPresetId = avatarPresetId,
+                        mentorPoints = points,
+                        showcaseBadges = showcaseBadges
                     )
                 )
             } catch (e: Exception) {
@@ -1092,23 +1767,24 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
-     * In the Global League, non-current users get privacy-friendly call-signs (e.g., "A.K. #3"),
-     * whereas in Friends & Study Groups (`showFullForFriends = true`), full names are displayed.
+     * Renders full resolved names cleanly in both Global League and Groups & Friends
+     * (never masking to initials like "Ö. #1").
      */
     private fun formatLeaderboardCallSign(
         name: String,
-        rank: Int,
+        @Suppress("UNUSED_PARAMETER") rank: Int,
         isCurrentUser: Boolean,
-        showFullForFriends: Boolean
+        @Suppress("UNUSED_PARAMETER") showFullForFriends: Boolean
     ): String {
         val clean = SyncWorker.sanitizeTurkishText(name.ifBlank { "Öğrenci" })
-        if (isCurrentUser) return "Sen ($clean)"
-        if (showFullForFriends) return clean
-        val initials = clean.split(" ")
-            .filter { it.isNotBlank() }
-            .take(2)
-            .mapNotNull { it.firstOrNull()?.uppercase() }
-            .joinToString(".")
-        return if (initials.isNotBlank()) "$initials. #$rank" else "Shark #$rank"
+        return if (isCurrentUser) "Sen ($clean)" else clean
+    }
+
+    override fun onCleared() {
+        incomingInvitesListener?.remove()
+        incomingInvitesListener = null
+        incomingDmListener?.remove()
+        incomingDmListener = null
+        super.onCleared()
     }
 }

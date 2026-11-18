@@ -3,6 +3,7 @@ package com.example.sharkmentor.ui.screens
 import android.content.Intent
 import android.content.res.Configuration
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -19,12 +20,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
@@ -45,13 +51,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharkmentor.core.badges.SharkBadgeShowcaseRow
 import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.core.util.SharkVisualKit
+import com.example.sharkmentor.ui.screens.leaguechat.BadgeShowcaseSelectorSheet
+import com.example.sharkmentor.ui.screens.leaguechat.LeagueChatDestination
+import com.example.sharkmentor.ui.screens.leaguechat.LeagueChatScreen
+import com.example.sharkmentor.ui.screens.leaguechat.LeagueMemberProfileSheet
+import com.example.sharkmentor.ui.viewmodel.IncomingStudyInvite
 import com.example.sharkmentor.ui.viewmodel.LeagueEntry
 import com.example.sharkmentor.ui.viewmodel.LeagueTab
+import com.example.sharkmentor.ui.viewmodel.QuestionCardUi
 import com.example.sharkmentor.ui.viewmodel.SharkLeagueUiState
 import com.example.sharkmentor.ui.viewmodel.SharkLeagueViewModel
 import com.example.sharkmentor.ui.viewmodel.SharkTier
+import com.example.sharkmentor.ui.viewmodel.StudyGroupSummary
 import com.example.sharkmentor.ui.viewmodel.nextThreshold
 import com.example.sharkmentor.ui.viewmodel.previousThreshold
 
@@ -73,7 +87,8 @@ private fun SharkTier.themeAwareAccentColor(): Color {
 @Composable
 fun SharkLeagueScreen(
     onBackClick: () -> Unit,
-    viewModel: SharkLeagueViewModel = viewModel()
+    viewModel: SharkLeagueViewModel = viewModel(),
+    onOpenQuestionSolve: ((QuestionCardUi) -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -81,6 +96,28 @@ fun SharkLeagueScreen(
 
     var showCreateGroupDialog by rememberSaveable { mutableStateOf(false) }
     var showJoinByCodeDialog by rememberSaveable { mutableStateOf(false) }
+    var showBadgeShowcaseSheet by rememberSaveable { mutableStateOf(false) }
+    var showNameEditDialog by rememberSaveable { mutableStateOf(false) }
+    var selectedMemberForProfile by remember { mutableStateOf<LeagueEntry?>(null) }
+    var activeChatDestination by remember { mutableStateOf<LeagueChatDestination?>(null) }
+
+    BackHandler(enabled = activeChatDestination != null) {
+        activeChatDestination = null
+        viewModel.loadLeague(preserveTab = true)
+    }
+
+    if (activeChatDestination != null) {
+        LeagueChatScreen(
+            destination = activeChatDestination!!,
+            myDisplayNameHint = uiState.myEntry?.rawName.orEmpty(),
+            onBackClick = {
+                activeChatDestination = null
+                viewModel.loadLeague(preserveTab = true)
+            },
+            onOpenQuestionSolveScreen = onOpenQuestionSolve
+        )
+        return
+    }
 
     LaunchedEffect(Unit) {
         viewModel.loadLeague(preserveTab = true)
@@ -105,6 +142,23 @@ fun SharkLeagueScreen(
             putExtra(Intent.EXTRA_TEXT, text)
         }
         context.startActivity(Intent.createChooser(sendIntent, "Paylaş"))
+    }
+
+    fun openActiveGroupChat() {
+        val targetGroup = uiState.joinedGroups.firstOrNull { it.inviteCode == uiState.selectedGroupCode }
+            ?: uiState.joinedGroups.firstOrNull()
+        if (targetGroup != null) {
+            activeChatDestination = LeagueChatDestination.GroupChat(
+                groupCode = targetGroup.inviteCode,
+                groupName = targetGroup.name
+            )
+        } else {
+            Toast.makeText(
+                context,
+                "Sohbet için önce bir çalışma grubu oluştur veya grup koduyla katıl.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     Scaffold(
@@ -151,6 +205,33 @@ fun SharkLeagueScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { activeChatDestination = LeagueChatDestination.DmInbox }) {
+                            Box(contentAlignment = Alignment.TopEnd) {
+                                Icon(
+                                    imageVector = Icons.Default.Email,
+                                    contentDescription = "Mesaj İstekleri",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                if (uiState.pendingDmRequestCount > 0) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(16.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = uiState.pendingDmRequestCount.coerceAtMost(9).toString(),
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Black
+                                                ),
+                                                color = MaterialTheme.colorScheme.onError
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         IconButton(onClick = { viewModel.loadLeague(preserveTab = true) }) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
@@ -204,24 +285,52 @@ fun SharkLeagueScreen(
             }
         }
     ) { innerPadding ->
-        when {
-            uiState.isLoading -> LoadingIndicator(Modifier.padding(innerPadding))
-            uiState.error != null -> ErrorCard(
-                message = uiState.error!!,
-                onRetry = { viewModel.loadLeague(preserveTab = true) },
-                modifier = Modifier.padding(innerPadding)
-            )
-            else -> LeagueContent(
-                uiState = uiState,
-                onCopyCode = ::copyToClipboard,
-                onShareText = ::shareInviteText,
-                onOpenCreateGroup = { showCreateGroupDialog = true },
-                onOpenJoinByCode = { showJoinByCodeDialog = true },
-                onSelectGroupFilter = { viewModel.selectGroupFilter(it) },
-                onToggleInstitutionFilter = { viewModel.toggleInstitutionLeague(it) },
-                onNudgeMember = { viewModel.sendNudge(it) },
-                modifier = Modifier.padding(innerPadding)
-            )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            uiState.incomingStudyInvite?.let { invite ->
+                IncomingStudyInviteBanner(
+                    invite = invite,
+                    onAcceptAndStartFocus = { viewModel.acceptIncomingInviteAndStartFocus(invite.id) },
+                    onDismiss = { viewModel.dismissIncomingInvite(invite.id) }
+                )
+            }
+
+            if (uiState.needsNameSetup && !uiState.isLoading) {
+                InlineNameSetupCard(
+                    isSaving = uiState.isActionInProgress,
+                    onSaveName = { viewModel.updateStudentDisplayName(it) }
+                )
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
+                when {
+                    uiState.isLoading -> LoadingIndicator(Modifier.fillMaxSize())
+                    uiState.error != null -> ErrorCard(
+                        message = uiState.error!!,
+                        onRetry = { viewModel.loadLeague(preserveTab = true) },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    else -> LeagueContent(
+                        uiState = uiState,
+                        onCopyCode = ::copyToClipboard,
+                        onShareText = ::shareInviteText,
+                        onOpenCreateGroup = { showCreateGroupDialog = true },
+                        onOpenJoinByCode = { showJoinByCodeDialog = true },
+                        onOpenGroupChat = ::openActiveGroupChat,
+                        onOpenDmInbox = { activeChatDestination = LeagueChatDestination.DmInbox },
+                        onOpenBadgeShowcase = { showBadgeShowcaseSheet = true },
+                        onOpenEditName = { showNameEditDialog = true },
+                        onSelectGroupFilter = { viewModel.selectGroupFilter(it) },
+                        onToggleInstitutionFilter = { viewModel.toggleInstitutionLeague(it) },
+                        onNudgeMember = { viewModel.nudgeLeagueMember(it) },
+                        onMemberClick = { selectedMemberForProfile = it },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
         }
     }
 
@@ -245,6 +354,209 @@ fun SharkLeagueScreen(
             }
         )
     }
+
+    if (showNameEditDialog) {
+        EditStudentNameDialog(
+            currentName = uiState.myEntry?.rawName.orEmpty(),
+            onDismiss = { showNameEditDialog = false },
+            onSaveName = { updated ->
+                showNameEditDialog = false
+                viewModel.updateStudentDisplayName(updated)
+            }
+        )
+    }
+
+    if (showBadgeShowcaseSheet) {
+        BadgeShowcaseSelectorSheet(
+            unlockedBadgeIds = uiState.myUnlockedBadges,
+            initialSelectedIds = uiState.myShowcaseBadges,
+            mentorPoints = uiState.myMentorPoints,
+            onDismiss = { showBadgeShowcaseSheet = false },
+            onSaveShowcase = { selected ->
+                viewModel.updateMyShowcaseBadges(selected)
+            }
+        )
+    }
+
+    selectedMemberForProfile?.let { member ->
+        LeagueMemberProfileSheet(
+            entry = member,
+            existingDmStatus = uiState.dmStatusByPeerId[member.studentId],
+            onDismiss = { selectedMemberForProfile = null },
+            onSendDmRequest = { entry, note -> viewModel.sendDmRequest(entry, note) },
+            onOpenAcceptedDm = { entry ->
+                selectedMemberForProfile = null
+                val peerRealName = entry.rawName.ifBlank {
+                    entry.displayName.removePrefix("Sen (").removeSuffix(")")
+                }
+                activeChatDestination = LeagueChatDestination.PeerDm(
+                    peerUid = entry.studentId,
+                    peerName = peerRealName,
+                    peerAvatarBase64 = entry.avatarBase64,
+                    peerAvatarPresetId = entry.avatarPresetId
+                )
+            }
+        )
+    }
+}
+
+@Composable
+private fun IncomingStudyInviteBanner(
+    invite: IncomingStudyInvite,
+    onAcceptAndStartFocus: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        ),
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "🦈 ${invite.fromName} seni çalışmaya davet ediyor!",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    text = invite.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Button(
+                onClick = onAcceptAndStartFocus,
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text("Odak Başlat", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+            }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.size(30.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Kapat",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InlineNameSetupCard(
+    isSaving: Boolean,
+    onSaveName: (String) -> Unit
+) {
+    var nameInput by rememberSaveable { mutableStateOf("") }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Adını Belirle",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Text(
+                text = "Arkadaşların ve lig üyelerin seni \"Öğrenci\" yerine gerçek adınla görsün.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it.take(36) },
+                    label = { Text("Adın veya Takma Adın") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    onClick = { onSaveName(nameInput) },
+                    enabled = nameInput.trim().length >= 2 && !isSaving,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.height(52.dp)
+                ) {
+                    Text("Kaydet", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditStudentNameDialog(
+    currentName: String,
+    onDismiss: () -> Unit,
+    onSaveName: (String) -> Unit
+) {
+    var nameInput by rememberSaveable(currentName) {
+        mutableStateOf(if (currentName.equals("Öğrenci", ignoreCase = true)) "" else currentName)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = {
+            Text(
+                text = "Adını Güncelle",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        },
+        text = {
+            OutlinedTextField(
+                value = nameInput,
+                onValueChange = { nameInput = it.take(36) },
+                label = { Text("Görünecek Adın") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSaveName(nameInput) },
+                enabled = nameInput.trim().length >= 2
+            ) {
+                Text("Kaydet")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("İptal")
+            }
+        }
+    )
 }
 
 @Composable
@@ -254,9 +566,14 @@ private fun LeagueContent(
     onShareText: (String) -> Unit,
     onOpenCreateGroup: () -> Unit,
     onOpenJoinByCode: () -> Unit,
+    onOpenGroupChat: () -> Unit,
+    onOpenDmInbox: () -> Unit,
+    onOpenBadgeShowcase: () -> Unit,
+    onOpenEditName: () -> Unit,
     onSelectGroupFilter: (String?) -> Unit,
     onToggleInstitutionFilter: (Boolean) -> Unit,
     onNudgeMember: (LeagueEntry) -> Unit,
+    onMemberClick: (LeagueEntry) -> Unit,
     modifier: Modifier
 ) {
     val configuration = LocalConfiguration.current
@@ -267,6 +584,8 @@ private fun LeagueContent(
     } else {
         uiState.friendsAndGroupMembers
     }
+
+    val isGroupsTab = uiState.activeTab == LeagueTab.GROUPS_AND_FRIENDS
 
     val listHeaderTitle = when (uiState.activeTab) {
         LeagueTab.GLOBAL_INDIVIDUAL -> {
@@ -303,19 +622,27 @@ private fun LeagueContent(
                     MyTierCard(
                         entry = me,
                         myFriendCode = uiState.myFriendCode,
+                        unlockedBadgeCount = uiState.myUnlockedBadges.size,
                         onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) },
                         onShareFriendCode = {
                             onShareText(
                                 "SharkMentor'da odak yarışına katıl! Arkadaş Kodum: ${uiState.myFriendCode}"
                             )
-                        }
+                        },
+                        onEditBadgesClick = onOpenBadgeShowcase,
+                        onEditNameClick = onOpenEditName
                     )
                 }
                 SocialCodeActionCard(
                     myFriendCode = uiState.myFriendCode,
+                    isGroupsTab = isGroupsTab,
+                    hasJoinedGroup = uiState.joinedGroups.isNotEmpty(),
+                    pendingDmCount = uiState.pendingDmRequestCount,
                     onOpenCreateGroup = onOpenCreateGroup,
                     onOpenJoinByCode = onOpenJoinByCode,
-                    onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) }
+                    onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) },
+                    onOpenGroupChat = onOpenGroupChat,
+                    onOpenDmInbox = onOpenDmInbox
                 )
             }
 
@@ -336,7 +663,8 @@ private fun LeagueContent(
                             onShareText(
                                 "SharkMentor'da \"${group.name}\" çalışma grubuma katıl! 6 Haneli Grup Kodu: ${group.inviteCode}"
                             )
-                        }
+                        },
+                        onOpenGroupChat = onOpenGroupChat
                     )
                 }
 
@@ -352,7 +680,7 @@ private fun LeagueContent(
                 if (activeList.isEmpty()) {
                     item {
                         EmptyLeagueStateCard(
-                            isGroupsTab = uiState.activeTab == LeagueTab.GROUPS_AND_FRIENDS,
+                            isGroupsTab = isGroupsTab,
                             onOpenCreateGroup = onOpenCreateGroup,
                             onOpenJoinByCode = onOpenJoinByCode
                         )
@@ -362,8 +690,9 @@ private fun LeagueContent(
                         LeaderboardRow(
                             rank = index + 1,
                             entry = entry,
-                            showNudgeButton = !entry.isCurrentUser,
-                            onNudgeClick = { onNudgeMember(entry) }
+                            showNudgeButton = isGroupsTab && !entry.isCurrentUser,
+                            onNudgeClick = { onNudgeMember(entry) },
+                            onMemberClick = { onMemberClick(entry) }
                         )
                     }
                 }
@@ -382,12 +711,15 @@ private fun LeagueContent(
                     MyTierCard(
                         entry = me,
                         myFriendCode = uiState.myFriendCode,
+                        unlockedBadgeCount = uiState.myUnlockedBadges.size,
                         onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) },
                         onShareFriendCode = {
                             onShareText(
                                 "SharkMentor'da odak yarışına katıl! Arkadaş Kodum: ${uiState.myFriendCode}"
                             )
-                        }
+                        },
+                        onEditBadgesClick = onOpenBadgeShowcase,
+                        onEditNameClick = onOpenEditName
                     )
                 }
             }
@@ -395,9 +727,14 @@ private fun LeagueContent(
             item {
                 SocialCodeActionCard(
                     myFriendCode = uiState.myFriendCode,
+                    isGroupsTab = isGroupsTab,
+                    hasJoinedGroup = uiState.joinedGroups.isNotEmpty(),
+                    pendingDmCount = uiState.pendingDmRequestCount,
                     onOpenCreateGroup = onOpenCreateGroup,
                     onOpenJoinByCode = onOpenJoinByCode,
-                    onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) }
+                    onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) },
+                    onOpenGroupChat = onOpenGroupChat,
+                    onOpenDmInbox = onOpenDmInbox
                 )
             }
 
@@ -411,7 +748,8 @@ private fun LeagueContent(
                         onShareText(
                             "SharkMentor'da \"${group.name}\" çalışma grubuma katıl! 6 Haneli Grup Kodu: ${group.inviteCode}"
                         )
-                    }
+                    },
+                    onOpenGroupChat = onOpenGroupChat
                 )
             }
 
@@ -441,7 +779,7 @@ private fun LeagueContent(
             if (activeList.isEmpty()) {
                 item {
                     EmptyLeagueStateCard(
-                        isGroupsTab = uiState.activeTab == LeagueTab.GROUPS_AND_FRIENDS,
+                        isGroupsTab = isGroupsTab,
                         onOpenCreateGroup = onOpenCreateGroup,
                         onOpenJoinByCode = onOpenJoinByCode
                     )
@@ -451,8 +789,9 @@ private fun LeagueContent(
                     LeaderboardRow(
                         rank = index + 1,
                         entry = entry,
-                        showNudgeButton = !entry.isCurrentUser,
-                        onNudgeClick = { onNudgeMember(entry) }
+                        showNudgeButton = isGroupsTab && !entry.isCurrentUser,
+                        onNudgeClick = { onNudgeMember(entry) },
+                        onMemberClick = { onMemberClick(entry) }
                     )
                 }
             }
@@ -466,7 +805,8 @@ private fun LeagueFilterSection(
     onSelectGroupFilter: (String?) -> Unit,
     onToggleInstitutionFilter: (Boolean) -> Unit,
     onCopyGroupCode: (String) -> Unit,
-    onShareGroupCode: (com.example.sharkmentor.ui.viewmodel.StudyGroupSummary) -> Unit
+    onShareGroupCode: (StudyGroupSummary) -> Unit,
+    onOpenGroupChat: () -> Unit
 ) {
     if (uiState.activeTab == LeagueTab.GLOBAL_INDIVIDUAL) {
         if (uiState.institutionCode.isNotBlank()) {
@@ -552,7 +892,14 @@ private fun LeagueFilterSection(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                IconButton(onClick = onOpenGroupChat) {
+                                    Icon(
+                                        imageVector = Icons.Default.Forum,
+                                        contentDescription = "Grup Sohbeti",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
                                 IconButton(onClick = { onCopyGroupCode(selectedGroup.inviteCode) }) {
                                     Icon(
                                         imageVector = Icons.Default.ContentCopy,
@@ -579,9 +926,14 @@ private fun LeagueFilterSection(
 @Composable
 private fun SocialCodeActionCard(
     myFriendCode: String,
+    isGroupsTab: Boolean,
+    hasJoinedGroup: Boolean,
+    pendingDmCount: Int,
     onOpenCreateGroup: () -> Unit,
     onOpenJoinByCode: () -> Unit,
-    onCopyFriendCode: () -> Unit
+    onCopyFriendCode: () -> Unit,
+    onOpenGroupChat: () -> Unit,
+    onOpenDmInbox: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -667,6 +1019,57 @@ private fun SocialCodeActionCard(
                     Text("Grup Oluştur", fontWeight = FontWeight.Bold)
                 }
             }
+
+            if (isGroupsTab || hasJoinedGroup || pendingDmCount > 0) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = onOpenGroupChat,
+                        modifier = Modifier.weight(1.25f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Forum,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "💬 Grup & Soru Sohbeti",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = onOpenDmInbox,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Email,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = if (pendingDmCount > 0) "İstekler ($pendingDmCount)" else "DM Kutusu",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -675,8 +1078,11 @@ private fun SocialCodeActionCard(
 private fun MyTierCard(
     entry: LeagueEntry,
     myFriendCode: String,
+    unlockedBadgeCount: Int,
     onCopyFriendCode: () -> Unit,
-    onShareFriendCode: () -> Unit
+    onShareFriendCode: () -> Unit,
+    onEditBadgesClick: () -> Unit,
+    onEditNameClick: () -> Unit
 ) {
     val tier = entry.tier
     val accentColor = tier.themeAwareAccentColor()
@@ -706,7 +1112,8 @@ private fun MyTierCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Image(
                         painter = painterResource(id = SharkVisualKit.getTierBadge((currentSecs / 60).toInt())),
@@ -714,11 +1121,25 @@ private fun MyTierCard(
                         modifier = Modifier.size(44.dp)
                     )
                     Column {
-                        Text(
-                            text = "SHARK RÜTBEN",
-                            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.clickable { onEditNameClick() }
+                        ) {
+                            Text(
+                                text = entry.rawName.ifBlank { "Öğrenci" },
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Adı Düzenle",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
                         Spacer(Modifier.height(2.dp))
                         Text(
                             text = "${tier.emoji} ${tier.label}",
@@ -782,7 +1203,7 @@ private fun MyTierCard(
                     modifier = Modifier.weight(1f)
                 )
                 MetricStatBox(
-                    title = "Günlük Ortalama",
+                    title = "Günlük Ort.",
                     value = "${entry.dailyAverageMinutes} dk",
                     modifier = Modifier.weight(1f)
                 )
@@ -792,6 +1213,67 @@ private fun MyTierCard(
                     highlight = entry.streakDays > 0,
                     modifier = Modifier.weight(1f)
                 )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Mentor Puanı & 3 Rozet Vitrini Satırı
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "${entry.mentorPoints} Mentor Puanı • $unlockedBadgeCount Rozet",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        TextButton(
+                            onClick = onEditBadgesClick,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.height(28.dp)
+                        ) {
+                            Text(
+                                text = "Vitrin Seç",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                    }
+
+                    if (entry.showcaseBadges.isNotEmpty()) {
+                        SharkBadgeShowcaseRow(
+                            badgeIds = entry.showcaseBadges,
+                            compact = true
+                        )
+                    } else {
+                        Text(
+                            text = "Soru çözerek veya grup kurarak rozet kazanıp 3 rozet vitrinini sergile!",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.height(14.dp))
@@ -880,7 +1362,8 @@ private fun LeaderboardRow(
     rank: Int,
     entry: LeagueEntry,
     showNudgeButton: Boolean,
-    onNudgeClick: () -> Unit
+    onNudgeClick: () -> Unit,
+    onMemberClick: () -> Unit
 ) {
     val accentColor = entry.tier.themeAwareAccentColor()
     val hours = entry.weeklyFocusSeconds / 3600
@@ -903,7 +1386,9 @@ private fun LeaderboardRow(
                 else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
             }
         ),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onMemberClick() }
     ) {
         Row(
             modifier = Modifier
@@ -934,7 +1419,7 @@ private fun LeaderboardRow(
             SharkAvatar(
                 avatarBase64 = entry.avatarBase64,
                 avatarPresetId = entry.avatarPresetId,
-                displayName = entry.displayName,
+                displayName = entry.rawName.ifBlank { entry.displayName },
                 size = 38.dp
             )
 
@@ -954,7 +1439,8 @@ private fun LeaderboardRow(
                             MaterialTheme.colorScheme.onSurface
                         },
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     if (entry.isStudyingNow) {
                         Surface(
@@ -973,12 +1459,14 @@ private fun LeaderboardRow(
                 Spacer(Modifier.height(2.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "${entry.tier.label} • Günlük ort. ${entry.dailyAverageMinutes} dk",
+                        text = "${entry.tier.label} • ${entry.mentorPoints} P",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     if (entry.streakDays > 0) {
                         Row(
@@ -992,12 +1480,19 @@ private fun LeaderboardRow(
                                 modifier = Modifier.size(13.dp)
                             )
                             Text(
-                                text = "${entry.streakDays}g seri",
+                                text = "${entry.streakDays}g",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
+                }
+                if (entry.showcaseBadges.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    SharkBadgeShowcaseRow(
+                        badgeIds = entry.showcaseBadges,
+                        compact = true
+                    )
                 }
             }
 
@@ -1031,12 +1526,12 @@ private fun LeaderboardRow(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.NotificationsActive,
-                                contentDescription = "Dürt",
+                                contentDescription = "Çalışmaya Davet Et",
                                 tint = if (canNudge) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(12.dp)
                             )
                             Text(
-                                text = if (canNudge) "Dürt" else entry.remainingNudgeCooldownLabel(nowMs),
+                                text = if (canNudge) "Davet Et" else entry.remainingNudgeCooldownLabel(nowMs),
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = if (canNudge) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
