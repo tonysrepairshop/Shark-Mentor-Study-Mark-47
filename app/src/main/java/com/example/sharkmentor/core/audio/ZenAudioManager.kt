@@ -20,17 +20,17 @@ import kotlinx.coroutines.withContext
 
 enum class ZenSound(val id: String, val displayName: String, val rawResName: String, val emoji: String = "") {
     NONE("none", "Kapalı", "", ""),
-    RAIN("rain", "Yağmur", "zen_rain", "🌧️"),
-    FOREST("forest", "Orman", "zen_forest", "🌲"),
-    OCEAN("ocean", "Okyanus", "zen_ocean", "🌊"),
-    TRAIN("train", "Tren Yolculuğu", "zen_train", "🚂"),
-    CAFE("cafe", "Kafe Uğultusu", "zen_cafe", "☕"),
-    FIRE("fire", "Kamp Ateşi", "zen_fire", "🔥"),
-    AIRPLANE("airplane", "Uçak Kabini", "zen_airplane", "✈️"),
-    WATERFALL("waterfall", "Şelale", "zen_waterfall", "🌊"),
-    CHICAGO_WALK("chicago_walk", "Chicago'da Yürüyüş", "zen_chicago_walk", "🚶"),
-    LONDON_RAIN("london_rain", "Londra'da Yağmur", "zen_london_rain", "🌧️"),
-    NORTHWEST_RAIN("northwest_rain", "Northwest'te Yağmur", "zen_northwest_rain", "🌧️");
+    RAIN("rain", "Yağmur", "zen_rain", ""),
+    FOREST("forest", "Orman", "zen_forest", ""),
+    OCEAN("ocean", "Okyanus", "zen_ocean", ""),
+    TRAIN("train", "Tren Yolculuğu", "zen_train", ""),
+    CAFE("cafe", "Kafe Uğultusu", "zen_cafe", ""),
+    FIRE("fire", "Kamp Ateşi", "zen_fire", ""),
+    AIRPLANE("airplane", "Uçak Kabini", "zen_airplane", ""),
+    WATERFALL("waterfall", "Şelale", "zen_waterfall", ""),
+    CHICAGO_WALK("chicago_walk", "Chicago'da Yürüyüş", "zen_chicago_walk", ""),
+    LONDON_RAIN("london_rain", "Londra'da Yağmur", "zen_london_rain", ""),
+    NORTHWEST_RAIN("northwest_rain", "Northwest'te Yağmur", "zen_northwest_rain", "");
 
     companion object {
         fun fromId(id: String?): ZenSound {

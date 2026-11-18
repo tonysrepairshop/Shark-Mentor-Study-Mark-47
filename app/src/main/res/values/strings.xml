@@ -36,7 +36,7 @@
 
     <!-- Dialogs: App Blocker -->
     <string name="blocker_title">Uygulama Engelleyici</string>
-    <string name="blocker_overlay_msg">Odak Seansı Devam Ediyor!\nMasana Dön</string>
+    <string name="blocker_overlay_msg">Odak Seansı Devam Ediyor\nÇalışmanıza Dönün</string>
     <string name="blocker_overlay_btn">SharkMentor\'a Dön</string>
     
     <!-- Analytics / Score -->

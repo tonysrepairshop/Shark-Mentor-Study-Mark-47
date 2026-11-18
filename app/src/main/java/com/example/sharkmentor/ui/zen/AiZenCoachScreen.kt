@@ -142,7 +142,7 @@ fun AiZenCoachScreen(
                     val m = remainingSeconds / 60
                     val s = remainingSeconds % 60
                     Text(
-                        text = "⏳ Yeni seans için bekleme süresi: ${m} dk ${s} sn (Zihnini dinlendir)",
+                        text = "Yeni seans için bekleme süresi: ${m} dk ${s} sn (Zihinsel dinlenme)",
                         color = Color(0xFFAAAAAA),
                         fontSize = 11.sp,
                         modifier = Modifier.padding(bottom = 8.dp)

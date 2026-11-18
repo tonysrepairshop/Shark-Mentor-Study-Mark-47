@@ -39,6 +39,9 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
@@ -184,107 +187,77 @@ class SyncWorker(
             val defaultInstitution = userPrefs.institutionId.takeIf { !it.isNullOrBlank() } ?: "INDIVIDUAL"
             val studentName = sanitizeTurkishText(userPrefs.studentName ?: "Öğrenci")
 
-            // 1. Ingest Active Study Plan (Map inside students/{uid})
-            try {
-                pullActiveStudyPlan(db, firestore, syncTag, uid)
-            } catch (e: Exception) {
-                if (e is com.google.firebase.firestore.FirebaseFirestoreException &&
-                    e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED
-                ) {
-                    Log.w(syncTag, "Permission denied pulling activeStudyPlan for uid $uid")
-                } else {
-                    Log.w(syncTag, "Err pull activeStudyPlan directly: ${e.message}")
-                }
+            // 1a. Outbound Deletions FIRST (prevents deleted items from being restored by pulls)
+            var uploadedCount = coroutineScope {
+                listOf(
+                    async { syncPendingDeletions(db, firestore, syncTag, defaultInstitution, uid) },
+                    async { syncPendingDeletedTargets(db, firestore, syncTag, uid) },
+                    async { syncPendingDeletedResources(db, firestore, syncTag, uid) },
+                    async { syncPendingDeletedTopics(db, firestore, syncTag, uid) }
+                ).awaitAll().sum()
             }
 
-            // 2. Inbound Downstream Pulls (Resources, Topics, Goals, Assigned Plans)
-            try { pullRemoteResources(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull res", e) }
-            try { pullRemoteTopics(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull topics", e) }
-            try { pullRemoteGoals(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull goals", e) }
-
-            // 3. Ingest Coach-Assigned Timetable into InstitutionScheduleDao (Haftalik Programim)
-            try {
-                val studentDoc2 = firestore.collection("students").document(uid).get(Source.DEFAULT).await()
-                if (studentDoc2.exists()) {
-                    val scheduleMap = studentDoc2.get("customScheduleData") as? Map<*, *>
-                    val scheduleDao = db.institutionScheduleDao()
-                    val planDao2 = db.planDao()
-
-                    // PURGE misrouted timetable items from planDao (one-time cleanup)
-                    planDao2.purgeMisroutedScheduleTasks()
-                    planDao2.purgeWeeklyScheduleFolder()
-
-                    if (scheduleMap != null) {
-                        val rawDays = scheduleMap["days"] as? List<*> ?: emptyList<Any>()
-                        val dayNames = listOf("Pazartesi", "Sal\u0131", "\u00c7ar\u015famba", "Per\u015fembe", "Cuma", "Cumartesi", "Pazar")
-                        val entitiesToInsert = mutableListOf<InstitutionScheduleEntity>()
-
-                        rawDays.forEachIndexed { defaultDayIdx, dayObj ->
-                            val dayMap = dayObj as? Map<*, *> ?: return@forEachIndexed
-                            val dayName = dayMap["day"] as? String ?: dayNames.getOrElse(defaultDayIdx) { "Pazartesi" }
-                            val dayOfWeek = dayNames.indexOf(dayName).let { if (it == -1) defaultDayIdx + 1 else it + 1 }
-                            val slots = (dayMap["classes"] ?: dayMap["slots"] ?: dayMap["tasks"]) as? List<*> ?: emptyList<Any>()
-
-                            slots.forEachIndexed { slotIdx, slotObj ->
-                                val slotMap = slotObj as? Map<*, *> ?: return@forEachIndexed
-                                val subject = slotMap["subject"] as? String ?: "Ders"
-                                val teacher = slotMap["teacher"] as? String ?: ""
-                                val period = (slotMap["period"] as? Number)?.toInt() ?: (slotIdx + 1)
-                                val rawTime = slotMap["time"] as? String ?: slotMap["startTime"] as? String ?: "08:00"
-                                val timeParts = rawTime.split("-").map { it.trim() }
-                                val startTime = timeParts.getOrElse(0) { "08:00" }
-                                val endTime = if (timeParts.size >= 2) timeParts[1] else try {
-                                    val (h, m) = startTime.split(":").map { it.toInt() }
-                                    val total = h * 60 + m + 45
-                                    "%02d:%02d".format(total / 60, total % 60)
-                                } catch (e: Exception) { "09:00" }
-                                val stableId = "CUSTOM_SCHED_${dayOfWeek}_${period}_${startTime.replace(":", "")}"
-                                entitiesToInsert.add(InstitutionScheduleEntity(
-                                    id = stableId, dayOfWeek = dayOfWeek, startTime = startTime, endTime = endTime,
-                                    subject = subject, type = "DERSHANE", teacherName = teacher, period = period, isSynced = true
-                                ))
-                            }
-                        }
-                        scheduleDao.deleteAll()
-                        if (entitiesToInsert.isNotEmpty()) {
-                            scheduleDao.insertAll(entitiesToInsert)
-                            Log.d(syncTag, "Synced ${entitiesToInsert.size} slots into InstitutionScheduleDao.")
-                        }
-                    } else {
-                        scheduleDao.deleteAll()
-                    }
-                }
-            } catch (e: Exception) {
-                if (e is com.google.firebase.firestore.FirebaseFirestoreException &&
-                    e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED
-                ) {
-                    Log.w(syncTag, "Permission denied pulling customScheduleData for $uid: ${e.message}")
-                } else {
-                    Log.e(syncTag, "Err pull customScheduleData", e)
-                }
+            // 1b. Outbound Upstream Pushes BEFORE pulls (prevents remote snapshots overwriting offline mutations)
+            uploadedCount += coroutineScope {
+                listOf(
+                    async { syncLocalSessions(db, firestore, syncTag, defaultInstitution, studentName, uid) },
+                    async { syncLocalPlans(db, firestore, syncTag, defaultInstitution, studentName, uid) },
+                    async { syncLocalTopics(db, firestore, syncTag, uid) },
+                    async { syncLocalResources(db, firestore, syncTag, uid) }
+                ).awaitAll().sum()
             }
 
-
-            try { pullRemoteAssignedPlans(db, firestore, syncTag, defaultInstitution, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull plans", e) }
-
-            // 3. Outbound Upstream Pushes
-            var uploadedCount = 0
-            uploadedCount += syncPendingDeletions(db, firestore, syncTag, defaultInstitution, uid)
-            uploadedCount += syncLocalSessions(db, firestore, syncTag, defaultInstitution, studentName, uid)
-            uploadedCount += syncPendingDeletedTargets(db, firestore, syncTag, uid)
-            uploadedCount += syncPendingDeletedResources(db, firestore, syncTag, uid)
-            uploadedCount += syncLocalPlans(db, firestore, syncTag, defaultInstitution, studentName, uid)
-            uploadedCount += syncLocalTopics(db, firestore, syncTag, uid)
-            uploadedCount += syncLocalResources(db, firestore, syncTag, uid)
-
+            // 1c. Remaining domain pushes (questions, schedules, simulations, training)
             try {
                 val repository = CloudSyncRepository(context)
-                if (repository.getPendingSyncCount() > 0) repository.syncAll()
+                uploadedCount += repository.syncAll()
             } catch (e: Exception) {
-                Log.e(syncTag, "Fallback sync err", e)
+                Log.e(syncTag, "CloudSyncRepository fallback err", e)
             }
 
-            Log.d(syncTag, ">>> SYNC CYCLE FINISHED <<<")
+            // 2. Single fetch of students/{uid} + parallel Inbound Downstream Pulls
+            val studentDoc = try {
+                firestore.collection("students").document(uid).get(Source.DEFAULT).await()
+            } catch (e: Exception) {
+                if (e is com.google.firebase.firestore.FirebaseFirestoreException &&
+                    e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED
+                ) {
+                    Log.w(syncTag, "Permission denied reading students/$uid")
+                } else {
+                    Log.w(syncTag, "Err reading students/$uid: ${e.message}")
+                }
+                null
+            }
+
+            coroutineScope {
+                val planAndScheduleJob = async {
+                    try {
+                        pullActiveStudyPlan(db, studentDoc, syncTag)
+                    } catch (e: Exception) {
+                        Log.w(syncTag, "Err pull activeStudyPlan: ${e.message}")
+                    }
+                    try {
+                        ingestCustomScheduleData(db, studentDoc, syncTag, uid)
+                    } catch (e: Exception) {
+                        Log.e(syncTag, "Err pull customScheduleData", e)
+                    }
+                }
+                val resourcesJob = async {
+                    try { pullRemoteResources(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull res", e) }
+                }
+                val topicsJob = async {
+                    try { pullRemoteTopics(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull topics", e) }
+                }
+                val goalsJob = async {
+                    try { pullRemoteGoals(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull goals", e) }
+                }
+                awaitAll(planAndScheduleJob, resourcesJob, topicsJob, goalsJob)
+            }
+
+            // 3. Assigned plans/targets pull (after target/plan tables finish above)
+            try { pullRemoteAssignedPlans(db, firestore, syncTag, defaultInstitution, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull plans", e) }
+
+            Log.d(syncTag, ">>> SYNC CYCLE FINISHED (uploaded=$uploadedCount) <<<")
             Result.success()
         } catch (e: Exception) {
             Log.e(syncTag, "SyncWorker failed: ${e.message}", e)
@@ -292,15 +265,13 @@ class SyncWorker(
         }
     }
 
-    // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 1. Ingest Active Study Plan Directly To Room ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+    // ── 1. Ingest Active Study Plan & Custom Timetable Directly To Room ──
     private suspend fun pullActiveStudyPlan(
         db: com.example.sharkmentor.data.local.SharkMentorDatabase,
-        firestore: FirebaseFirestore,
-        syncTag: String,
-        uid: String
+        studentDoc: DocumentSnapshot?,
+        syncTag: String
     ) = withContext(Dispatchers.IO) {
-        val studentDoc = firestore.collection("students").document(uid).get(Source.DEFAULT).await()
-        if (!studentDoc.exists()) return@withContext
+        if (studentDoc == null || !studentDoc.exists()) return@withContext
 
         val rawPlan = studentDoc.get("activeStudyPlan") as? Map<*, *>
         val studyPlanDao = try { db.studyPlanDao() } catch (e: Exception) { null }
@@ -360,7 +331,7 @@ class SyncWorker(
             try {
                 val planFolderDao = db.planFolderDao()
                 val planDao = db.planDao()
-                
+
                 var defaultFolderId = getFirstActiveFolderIdOrNull(planFolderDao)
                 if (defaultFolderId == null) {
                     val newFolder = com.example.sharkmentor.data.local.entity.PlanFolderEntity(
@@ -375,7 +346,7 @@ class SyncWorker(
                 }
 
                 val legacyPlanTasks = mutableListOf<com.example.sharkmentor.data.local.entity.PlanEntity>()
-                
+
                 rawDays.forEachIndexed { defaultIdx, dayObj ->
                     val dayMap = dayObj as? Map<*, *> ?: return@forEachIndexed
                     val rawDayName = dayMap["day"] as? String
@@ -388,7 +359,7 @@ class SyncWorker(
                         val rawTaskTitle = taskMap["topic"] as? String ?: taskMap["goal"] as? String ?: "Görev"
                         legacyPlanTasks.add(
                             PlanEntity(
-                                id = "ACTIVE_PLAN_TASK_${dayIdx}_${taskIdx}_${System.currentTimeMillis() % 10000}",
+                                id = "ACTIVE_PLAN_TASK_${dayIdx}_${taskIdx}",
                                 folderId = defaultFolderId,
                                 title = sanitizeTurkishText(rawTaskTitle),
                                 subject = sanitizeTurkishText(taskMap["subject"] as? String ?: "Genel"),
@@ -401,7 +372,7 @@ class SyncWorker(
                         )
                     }
                 }
-                
+
                 // Perform transactional wipe and insert to ensure the UI updates instantly
                 db.withTransaction {
                     planDao.deleteTasksByFolder(defaultFolderId)
@@ -418,6 +389,69 @@ class SyncWorker(
             studyPlanDao.clearPlan()
             studyPlanDao.clearTasks()
             Log.d(syncTag, "Active study plan removed from Firestore, wiped locally.")
+        }
+    }
+
+    private suspend fun ingestCustomScheduleData(
+        db: com.example.sharkmentor.data.local.SharkMentorDatabase,
+        studentDoc: DocumentSnapshot?,
+        syncTag: String,
+        uid: String
+    ) = withContext(Dispatchers.IO) {
+        if (studentDoc == null || !studentDoc.exists()) return@withContext
+        val scheduleMap = studentDoc.get("customScheduleData") as? Map<*, *>
+        val scheduleDao = db.institutionScheduleDao()
+        val planDao2 = db.planDao()
+
+        // Purge misrouted timetable items from planDao (one-time cleanup)
+        planDao2.purgeMisroutedScheduleTasks()
+        planDao2.purgeWeeklyScheduleFolder()
+
+        if (scheduleMap != null) {
+            val rawDays = scheduleMap["days"] as? List<*> ?: emptyList<Any>()
+            val dayNames = listOf("Pazartesi", "Sal\u0131", "\u00c7ar\u015famba", "Per\u015fembe", "Cuma", "Cumartesi", "Pazar")
+            val entitiesToInsert = mutableListOf<InstitutionScheduleEntity>()
+
+            rawDays.forEachIndexed { defaultDayIdx, dayObj ->
+                val dayMap = dayObj as? Map<*, *> ?: return@forEachIndexed
+                val dayName = dayMap["day"] as? String ?: dayNames.getOrElse(defaultDayIdx) { "Pazartesi" }
+                val dayOfWeek = dayNames.indexOf(dayName).let { if (it == -1) defaultDayIdx + 1 else it + 1 }
+                val slots = (dayMap["classes"] ?: dayMap["slots"] ?: dayMap["tasks"]) as? List<*> ?: emptyList<Any>()
+
+                slots.forEachIndexed { slotIdx, slotObj ->
+                    val slotMap = slotObj as? Map<*, *> ?: return@forEachIndexed
+                    val subject = sanitizeTurkishText(slotMap["subject"] as? String ?: "Ders")
+                    val teacher = sanitizeTurkishText(slotMap["teacher"] as? String ?: "")
+                    val period = (slotMap["period"] as? Number)?.toInt() ?: (slotIdx + 1)
+                    val rawTime = slotMap["time"] as? String ?: slotMap["startTime"] as? String ?: "08:00"
+                    val timeParts = rawTime.split("-").map { it.trim() }
+                    val startTime = timeParts.getOrElse(0) { "08:00" }
+                    val endTime = if (timeParts.size >= 2) timeParts[1] else try {
+                        val (h, m) = startTime.split(":").map { it.toInt() }
+                        val total = h * 60 + m + 45
+                        "%02d:%02d".format(total / 60, total % 60)
+                    } catch (e: Exception) { "09:00" }
+                    val stableId = "CUSTOM_SCHED_${dayOfWeek}_${period}_${startTime.replace(":", "")}"
+                    entitiesToInsert.add(
+                        InstitutionScheduleEntity(
+                            id = stableId,
+                            dayOfWeek = dayOfWeek,
+                            startTime = startTime,
+                            endTime = endTime,
+                            subject = subject,
+                            type = "DERSHANE",
+                            teacherName = teacher,
+                            period = period,
+                            isSynced = true
+                        )
+                    )
+                }
+            }
+            // Replace ONLY CUSTOM_SCHED_* slots so user/institution schedules are preserved
+            scheduleDao.replaceCustomSchedules(entitiesToInsert)
+            Log.d(syncTag, "Synced ${entitiesToInsert.size} custom schedule slots for $uid.")
+        } else {
+            scheduleDao.deleteCustomSchedules()
         }
     }
 
@@ -461,69 +495,82 @@ class SyncWorker(
             }
 
             val goalsDao = db.goalsDao()
-            val remoteIds = snapshot.documents.mapNotNull { doc ->
-                doc.getSafeLong("id") ?: doc.id.toLongOrNull() ?: abs(doc.id.hashCode().toLong())
+            val resolvedDocs = snapshot.documents.map { doc ->
+                val byCloudId = goalsDao.getResourceByCloudId(doc.id)?.id
+                val resolvedId = byCloudId
+                    ?: doc.getSafeLong("localId")
+                    ?: doc.getSafeLong("id")
+                    ?: doc.id.removePrefix("res_").removePrefix("${uid}_").toLongOrNull()
+                    ?: abs(doc.id.hashCode().toLong())
+                resolvedId to doc
             }
 
-            if (remoteIds.isEmpty()) {
+            val activeRemoteIds = resolvedDocs
+                .filterNot { (_, doc) -> doc.getSafeBoolean("isDeleted") ?: false }
+                .map { it.first }
+
+            if (activeRemoteIds.isEmpty()) {
                 goalsDao.clearAllResources()
-                Log.d(syncTag, "No remote resources found. Purged all local Room resources.")
+                Log.d(syncTag, "No active remote resources found. Purged synced Room resources.")
             } else {
-                goalsDao.deleteOrphanedResources(remoteIds)
+                goalsDao.deleteOrphanedResources(activeRemoteIds)
             }
 
-            for (doc in snapshot.documents) {
+            for ((remoteId, doc) in resolvedDocs) {
                 val isDeleted = doc.getSafeBoolean("isDeleted") ?: false
-                // ID can be a Firestore-generated string like "res_1234567890" or a numeric string
-                val remoteId = doc.id.let { docId ->
-                    docId.removePrefix("res_").toLongOrNull()
-                        ?: doc.getSafeLong("id")
-                        ?: abs(docId.hashCode().toLong())
-                }
-
                 if (isDeleted) {
                     goalsDao.deleteResourcePermanently(remoteId)
                     continue
                 }
 
+                val existing = goalsDao.getResourceById(remoteId)
+                if (existing != null && !existing.isSynced) {
+                    continue
+                }
+
                 // Web writes totalUnits + unitType directly; fall back to totalTarget for legacy docs
-                val totalTarget = doc.getSafeInt("totalUnits")
+                val totalTarget = (doc.getSafeInt("totalUnits")
                     ?: doc.getSafeInt("totalTarget")
                     ?: doc.getSafeInt("totalCount")
-                    ?: 100
-                val completedCount = doc.getSafeInt("completedUnits")
+                    ?: 100).coerceAtLeast(1)
+                val completedCount = (doc.getSafeInt("completedUnits")
+                    ?: doc.getSafeInt("currentUnits")
                     ?: doc.getSafeInt("completedCount")
-                    ?: 0
-                // Web writes unitType = "Sayfa" or "Soru" directly; also support legacy targetType
+                    ?: 0).coerceIn(0, totalTarget)
                 val unitType = doc.getSafeString("unitType")?.takeIf { it.isNotBlank() }
+                    ?: doc.getSafeString("unit")?.takeIf { it.isNotBlank() }
                     ?: run {
                         val targetType = doc.getSafeString("targetType") ?: doc.getSafeString("resourceType") ?: ""
                         if (targetType.contains("QUESTION", ignoreCase = true) || targetType == "Soru") "Soru" else "Sayfa"
                     }
-                val rawTitle = doc.getSafeString("title") ?: "Kaynak Kitap"
-                val publisher = doc.getSafeString("publisher")
-                val finalTitle = if (publisher.isNullOrBlank()) rawTitle else "$publisher - $rawTitle"
+                val rawTitle = sanitizeTurkishText(doc.getSafeString("title") ?: "Kaynak Kitap")
+                val publisher = sanitizeTurkishText(doc.getSafeString("publisher"))
+                val finalTitle = if (publisher.isBlank()) rawTitle else "$publisher - $rawTitle"
+
+                val remoteUpdated = doc.getTimestamp("updatedAt")?.toDate()?.time
+                    ?: doc.getSafeLong("updatedAt")
+                    ?: System.currentTimeMillis()
 
                 val resourceEntity = ResourceEntity(
                     id = remoteId,
                     title = finalTitle,
-                    subject = doc.getSafeString("subject") ?: "Genel",
+                    subject = sanitizeTurkishText(doc.getSafeString("subject") ?: "Genel"),
                     unitType = unitType,
                     totalUnits = totalTarget,
                     completedUnits = completedCount,
+                    updatedAtMillis = remoteUpdated,
                     colorHex = doc.getSafeString("colorHex") ?: "#3B82F6",
                     isAssignedByCoach = doc.getSafeBoolean("isAssignedByCoach")
                         ?: doc.getSafeBoolean("isCoachAssigned")
                         ?: true,
                     isDeleted = false,
                     isSynced = true,
-                    lastModifiedMillis = doc.getTimestamp("updatedAt")?.toDate()?.time
-                        ?: doc.getSafeLong("updatedAt")
-                        ?: System.currentTimeMillis()
+                    cloudId = doc.id,
+                    lastModifiedMillis = remoteUpdated
                 )
 
                 goalsDao.upsertResource(resourceEntity)
-                Log.d(syncTag, "Successfully saved remote resource to Room: id=$remoteId, title=${resourceEntity.title}")
+                Log.d(syncTag, "Successfully saved remote resource to Room: id=$remoteId, cloudId=${doc.id}")
             }
         } catch (e: Exception) {
             Log.e(syncTag, "Error in pullRemoteResources: ${e.message}", e)
@@ -572,31 +619,40 @@ class SyncWorker(
             val syncDao = db.syncDao()
             val goalsDao = db.goalsDao()
 
-            val remoteIds = snapshot.documents.mapNotNull { doc ->
-                doc.getSafeLong("id") ?: doc.id.toLongOrNull() ?: abs(doc.id.hashCode().toLong())
+            val resolvedDocs = snapshot.documents.map { doc ->
+                val resolvedId = doc.getSafeLong("localId")
+                    ?: doc.getSafeLong("id")
+                    ?: doc.id.removePrefix("${uid}_").toLongOrNull()
+                    ?: abs(doc.id.hashCode().toLong())
+                resolvedId to doc
             }
 
-            if (remoteIds.isEmpty()) {
+            val activeRemoteIds = resolvedDocs
+                .filterNot { (_, doc) -> doc.getSafeBoolean("isDeleted") ?: false }
+                .map { it.first }
+
+            if (activeRemoteIds.isEmpty()) {
                 goalsDao.clearAllTopics()
             } else {
-                goalsDao.deleteOrphanedTopics(remoteIds)
+                goalsDao.deleteOrphanedTopics(activeRemoteIds)
             }
 
-            for (doc in snapshot.documents) {
+            for ((remoteId, doc) in resolvedDocs) {
                 val isDeleted = doc.getSafeBoolean("isDeleted") ?: false
-                val remoteId = doc.getSafeLong("id")
-                    ?: doc.id.toLongOrNull()
-                    ?: abs(doc.id.hashCode().toLong())
-
                 if (isDeleted) {
                     syncDao.deleteTopicPermanently(remoteId)
                     continue
                 }
 
+                val existing = goalsDao.getTopicById(remoteId)
+                if (existing != null && !existing.isSynced) {
+                    continue
+                }
+
                 val topicEntity = com.example.sharkmentor.data.local.entity.TopicGoalEntity(
                     id = remoteId,
-                    subject = doc.getSafeString("subject") ?: doc.getSafeString("subjectName") ?: "Genel",
-                    topic = doc.getSafeString("topicName") ?: doc.getSafeString("topic") ?: "Konu",
+                    subject = sanitizeTurkishText(doc.getSafeString("subject") ?: doc.getSafeString("subjectName") ?: "Genel"),
+                    topic = sanitizeTurkishText(doc.getSafeString("topicName") ?: doc.getSafeString("topic") ?: "Konu"),
                     currentLevel = doc.getSafeInt("masteryLevel") ?: doc.getSafeInt("masteryScore") ?: 0,
                     targetLevel = doc.getSafeInt("targetMasteryScore") ?: 5,
                     notes = "",
@@ -657,24 +713,27 @@ class SyncWorker(
             val targetDao = db.targetDao()
             val concreteTargetDao = db.concreteTargetDao()
 
-            val remoteGoalIds = goalsSnapshot.documents.mapNotNull { doc ->
-                doc.getSafeLong("id") ?: doc.id.toLongOrNull() ?: abs(doc.id.hashCode().toLong())
+            val resolvedGoalDocs = goalsSnapshot.documents.map { doc ->
+                val remoteId = doc.getSafeLong("localId")
+                    ?: doc.getSafeLong("id")
+                    ?: doc.id.removePrefix("${uid}_").toLongOrNull()
+                    ?: abs(doc.id.hashCode().toLong())
+                remoteId to doc
             }
+            val activeGoalIds = resolvedGoalDocs
+                .filterNot { (_, doc) -> doc.getSafeBoolean("isDeleted") ?: false }
+                .map { it.first }
 
-            if (remoteGoalIds.isNotEmpty()) {
-                targetDao.deleteOrphanedTargets(remoteGoalIds)
+            if (activeGoalIds.isNotEmpty()) {
+                targetDao.deleteOrphanedTargets(activeGoalIds)
             } else {
                 targetDao.clearAllTargets()
             }
 
             var latestMacroGoal: com.google.firebase.firestore.DocumentSnapshot? = null
 
-            for (doc in goalsSnapshot.documents) {
+            for ((remoteId, doc) in resolvedGoalDocs) {
                 val isDeleted = doc.getSafeBoolean("isDeleted") ?: false
-                val remoteId = doc.getSafeLong("id")
-                    ?: doc.id.toLongOrNull()
-                    ?: abs(doc.id.hashCode().toLong())
-
                 if (isDeleted) {
                     targetDao.purgeTarget(remoteId)
                     continue
@@ -692,14 +751,19 @@ class SyncWorker(
                     }
                 }
 
-                val title = doc.getSafeString("title") ?: "Hedef"
+                val existingTarget = targetDao.getTargetById(remoteId)
+                if (existingTarget != null && !existingTarget.isSynced) {
+                    continue
+                }
+
+                val title = sanitizeTurkishText(doc.getSafeString("title") ?: "Hedef")
                 val category = doc.getSafeString("category") ?: "CUSTOM"
                 val isCompleted = doc.getSafeBoolean("isCompleted") ?: false
 
                 val targetEntity = TargetEntity(
                     id = remoteId,
                     title = title,
-                    description = doc.getSafeString("description") ?: "",
+                    description = sanitizeTurkishText(doc.getSafeString("description") ?: ""),
                     deadlineMillis = System.currentTimeMillis() + (7L * 24 * 60 * 60 * 1000),
                     type = TargetType.LONG_TERM,
                     period = TargetPeriod.MONTHLY,
@@ -712,6 +776,7 @@ class SyncWorker(
                     date = "",
                     isSynced = true,
                     isDeleted = false,
+                    cloudId = doc.id,
                     lastModifiedMillis = System.currentTimeMillis()
                 )
 
@@ -743,7 +808,7 @@ class SyncWorker(
         }
     }
 
-    // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 5. Inbound Downstream Pull: Legacy Plans / Targets ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+    // ── 5. Inbound Downstream Pull: Legacy Plans / Targets ─────────────────
     private suspend fun pullRemoteAssignedPlans(
         db: com.example.sharkmentor.data.local.SharkMentorDatabase,
         firestore: FirebaseFirestore,
@@ -791,8 +856,9 @@ class SyncWorker(
                         if (docStudentId != null && docStudentId != uid) continue
 
                         val isDeleted = doc.getSafeBoolean("isDeleted") ?: false
-                        val remoteId = doc.getSafeLong("id")
-                            ?: doc.id.toLongOrNull()
+                        val remoteId = doc.getSafeLong("localId")
+                            ?: doc.getSafeLong("id")
+                            ?: doc.id.removePrefix("${uid}_").toLongOrNull()
                             ?: abs(doc.id.hashCode().toLong())
 
                         val folderId = doc.getSafeString("folderId") ?: ""
@@ -859,7 +925,7 @@ class SyncWorker(
                         val targetEntity = TargetEntity(
                             id = remoteId,
                             title = title,
-                            description = doc.getSafeString("coachNote") ?: doc.getSafeString("description") ?: "",
+                            description = sanitizeTurkishText(doc.getSafeString("coachNote") ?: doc.getSafeString("description") ?: ""),
                             deadlineMillis = deadlineMillis,
                             type = targetType,
                             period = targetPeriod,
@@ -872,6 +938,7 @@ class SyncWorker(
                             date = dateStr,
                             isSynced = true,
                             isDeleted = false,
+                            cloudId = doc.id,
                             lastModifiedMillis = System.currentTimeMillis()
                         )
 
@@ -900,8 +967,11 @@ class SyncWorker(
                         }
 
                         if (colName == "targets") {
-                            targetDao.upsertTarget(targetEntity.copy(isSynced = true))
-                            targetDao.deleteTasksByTargetId(remoteId)
+                            val existingTarget = targetDao.getTargetById(remoteId)
+                            if (existingTarget == null || existingTarget.isSynced) {
+                                targetDao.upsertTarget(targetEntity.copy(isSynced = true))
+                                targetDao.deleteTasksByTargetId(remoteId)
+                            }
                         } else {
                             targetDao.syncRemotePlan(targetEntity, taskEntities)
                         }
@@ -920,7 +990,7 @@ class SyncWorker(
         }
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Outbound Deletions & Sync Helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Outbound Deletions & Sync Helpers ──────────────────────────────────
     private suspend fun syncPendingDeletions(
         db: com.example.sharkmentor.data.local.SharkMentorDatabase,
         firestore: FirebaseFirestore,
@@ -933,14 +1003,30 @@ class SyncWorker(
         val pendingDeletions = pendingDeletionDao.getAllPendingDeletions()
         for (deletion in pendingDeletions) {
             try {
-                val fullDocPath = if (deletion.collectionName.startsWith("hedeflerim/")) {
-                    "${deletion.collectionName}/${deletion.entityId}"
+                if (deletion.collectionName == "topics" || deletion.collectionName.startsWith("hedeflerim/")) {
+                    val docIds = linkedSetOf("${uid}_${deletion.entityId}", deletion.entityId)
+                    var anyDeleted = false
+                    for (docId in docIds) {
+                        runCatching {
+                            firestore.collection("topics").document(docId).delete().await()
+                            anyDeleted = true
+                        }
+                        runCatching {
+                            firestore.collection("students").document(uid)
+                                .collection("topics").document(docId).delete().await()
+                            anyDeleted = true
+                        }
+                    }
+                    if (anyDeleted) {
+                        pendingDeletionDao.deleteById(deletion.id)
+                        count++
+                    }
                 } else {
-                    "${getCollectionPath(defaultInstitution, uid, deletion.collectionName)}/${deletion.entityId}"
+                    val fullDocPath = "${getCollectionPath(defaultInstitution, uid, deletion.collectionName)}/${deletion.entityId}"
+                    firestore.document(fullDocPath).delete().await()
+                    pendingDeletionDao.deleteById(deletion.id)
+                    count++
                 }
-                firestore.document(fullDocPath).delete().await()
-                pendingDeletionDao.deleteById(deletion.id)
-                count++
             } catch (e: Exception) {
                 Log.e(syncTag, "Failed delete ${deletion.entityId}", e)
             }
@@ -1062,6 +1148,38 @@ class SyncWorker(
         return count
     }
 
+    private suspend fun syncPendingDeletedTopics(
+        db: com.example.sharkmentor.data.local.SharkMentorDatabase,
+        firestore: FirebaseFirestore,
+        syncTag: String,
+        uid: String
+    ): Int {
+        var count = 0
+        for (deleted in db.goalsDao().getPendingDeletedTopics()) {
+            try {
+                val docId = "${uid}_${deleted.id}"
+                val deleteData = mapOf("isDeleted" to true, "updatedAt" to FieldValue.serverTimestamp())
+                var updatedRemote = false
+                runCatching {
+                    firestore.collection("topics").document(docId).set(deleteData, SetOptions.merge()).await()
+                    updatedRemote = true
+                }
+                runCatching {
+                    firestore.collection("students").document(uid)
+                        .collection("topics").document(docId).set(deleteData, SetOptions.merge()).await()
+                    updatedRemote = true
+                }
+                if (updatedRemote) {
+                    db.goalsDao().deleteTopicPermanently(deleted.id)
+                    count++
+                }
+            } catch (e: Exception) {
+                Log.e(syncTag, "Topic del err", e)
+            }
+        }
+        return count
+    }
+
     private suspend fun syncLocalPlans(
         db: com.example.sharkmentor.data.local.SharkMentorDatabase,
         firestore: FirebaseFirestore,
@@ -1081,7 +1199,7 @@ class SyncWorker(
                 val docId = plan.cloudId?.takeIf { it.isNotBlank() } ?: "${uid}_${plan.id}"
 
                 val planData = hashMapOf(
-                    "id" to docId, "studentId" to uid, "title" to plan.title, "date" to plan.date,
+                    "id" to docId, "localId" to plan.id, "studentId" to uid, "title" to plan.title, "date" to plan.date,
                     "deadlineMillis" to plan.deadlineMillis, "isCompleted" to plan.isCompleted, "completed" to plan.isCompleted,
                     "totalTasks" to tasks.size, "completedTasks" to tasks.count { it.isCompleted }, "studentName" to studentName,
                     "institutionId" to instId, "isIndividual" to (instId == "INDIVIDUAL"), "isCoachTask" to plan.isAssignedByCoach,
@@ -1115,24 +1233,35 @@ class SyncWorker(
     ): Int {
         var count = 0
         val pendingTopics = db.syncDao().getUnsyncedTopics()
+        val succeededIds = mutableListOf<Long>()
         for (topic in pendingTopics) {
             try {
                 val docId = "${uid}_${topic.id}"
                 val rootTopicData = hashMapOf<String, Any?>(
                     "id" to docId,
+                    "localId" to topic.id,
                     "studentId" to uid,
+                    "userId" to uid,
                     "subject" to topic.subject,
+                    "topic" to topic.topic,
                     "topicName" to topic.topic,
                     "masteryLevel" to topic.currentLevel,
+                    "targetMasteryScore" to topic.targetLevel,
+                    "isDeleted" to false,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 firestore.collection("topics").document(docId).set(rootTopicData, SetOptions.merge()).await()
+                runCatching {
+                    firestore.collection("students").document(uid).collection("topics").document(docId)
+                        .set(rootTopicData, SetOptions.merge()).await()
+                }
+                succeededIds.add(topic.id)
                 count++
             } catch (e: Exception) {
                 Log.e(syncTag, "Topic err", e)
             }
         }
-        if (pendingTopics.isNotEmpty()) db.syncDao().markTopicsAsSynced(pendingTopics.map { it.id })
+        if (succeededIds.isNotEmpty()) db.syncDao().markTopicsAsSynced(succeededIds)
         return count
     }
 
@@ -1147,16 +1276,21 @@ class SyncWorker(
         for (resource in pendingResources) {
             try {
                 val docId = resource.cloudId?.takeIf { it.isNotBlank() } ?: "${uid}_${resource.id}"
+                val isCompleted = resource.completedUnits >= resource.totalUnits
                 val resourceData = hashMapOf<String, Any?>(
                     "id" to docId,
+                    "localId" to resource.id,
                     "title" to resource.title,
                     "subject" to resource.subject,
+                    "unitType" to resource.unitType,
                     "currentUnits" to resource.completedUnits,
                     "completedUnits" to resource.completedUnits,
                     "totalUnits" to resource.totalUnits,
-                    "isCompleted" to (resource.completedUnits >= resource.totalUnits),
+                    "isCompleted" to isCompleted,
+                    "completed" to isCompleted,
                     "colorHex" to (resource.colorHex ?: "#0ea5e9"),
                     "studentId" to uid,
+                    "userId" to uid,
                     "origin" to "APP",
                     "isDeleted" to false,
                     "isAssignedByCoach" to resource.isAssignedByCoach,
@@ -1172,7 +1306,6 @@ class SyncWorker(
                 Log.e(syncTag, "Res err", e)
             }
         }
-        if (pendingResources.isNotEmpty()) db.syncDao().markResourcesAsSynced(pendingResources.map { it.id })
         return count
     }
 
@@ -1231,7 +1364,7 @@ class SyncWorker(
     }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ DocumentSnapshot Safety Extensions Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ── DocumentSnapshot Safety Extensions ──────────────────────────────────────
 
 private fun DocumentSnapshot.getSafeString(field: String): String? {
     val value = get(field) ?: return null

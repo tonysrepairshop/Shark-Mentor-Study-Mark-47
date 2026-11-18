@@ -215,7 +215,7 @@ class ZenAudioService : Service() {
     }
 
     private fun buildNotification(sound: ZenSound, isPlaying: Boolean): Notification {
-        val title = if (sound.emoji.isNotEmpty()) "${sound.emoji} ${sound.displayName}" else sound.displayName
+        val title = sound.displayName
         val statusText = if (isPlaying) "Odak sesi çalıyor • SharkMentor" else "Duraklatıldı • SharkMentor"
 
         val openPi = PendingIntent.getActivity(

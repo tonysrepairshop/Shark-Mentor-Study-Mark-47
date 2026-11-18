@@ -8,6 +8,12 @@ import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.data.repository.SharkAiEngine
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 data class PersistedAiChatMessageDto(
@@ -119,9 +125,9 @@ data class PersistedChatSession(
             }
 
             val cleaned = lastRelevant.text
-                .replace("#ACTION:.*".toRegex(), "")
-                .replace("```[\\s\\S]*?```".toRegex(), "")
-                .replace("\\s+".toRegex(), " ")
+                .replace(ACTION_LINE_REGEX, "")
+                .replace(CODE_BLOCK_REGEX, "")
+                .replace(WHITESPACE_REGEX, " ")
                 .trim()
 
             if (cleaned.isBlank()) {
@@ -130,6 +136,10 @@ data class PersistedChatSession(
             return if (cleaned.length > 68) "${cleaned.take(68).trimEnd()}…" else cleaned
         }
 }
+
+private val ACTION_LINE_REGEX = Regex("#ACTION:.*")
+private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```")
+private val WHITESPACE_REGEX = Regex("\\s+")
 
 data class PersistedChatSessionSnapshot(
     val activeSessionId: String = "",
@@ -160,8 +170,13 @@ object SharkAiChatSessionStore {
     const val MAX_PERSISTED_MESSAGES_PER_SESSION = 60
     private const val MAX_PERSISTED_SESSIONS = 30
     private const val MAX_TITLE_LENGTH = 36
+    private const val DRAFT_FLUSH_DEBOUNCE_MS = 400L
 
     private val gson = Gson()
+    private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var pendingDraftFlushJob: Job? = null
 
     @Volatile
     private var inMemorySessions: MutableList<PersistedChatSession>? = null
@@ -173,8 +188,8 @@ object SharkAiChatSessionStore {
         val firstUserMsg = messages.firstOrNull { it.sender == "user" && it.text.isNotBlank() }
         if (firstUserMsg != null) {
             val cleaned = firstUserMsg.text
-                .replace("#ACTION:.*".toRegex(), "")
-                .replace("\\s+".toRegex(), " ")
+                .replace(ACTION_LINE_REGEX, "")
+                .replace(WHITESPACE_REGEX, " ")
                 .trim()
             if (cleaned.isNotBlank()) {
                 return if (cleaned.length > MAX_TITLE_LENGTH) {
@@ -254,22 +269,51 @@ object SharkAiChatSessionStore {
 
         inMemorySessions = sorted
         inMemoryActiveSessionId = resolvedActiveId
-        flushToPrefs(context)
+        if (rawMultiJson.isNullOrBlank()) {
+            flushAsync(context)
+        }
     }
 
     @Synchronized
-    private fun flushToPrefs(context: Context) {
-        val list = inMemorySessions ?: return
+    private fun captureDtosAndActiveId(): Pair<List<PersistedChatSessionDto>, String>? {
+        val list = inMemorySessions ?: return null
         val activeId = inMemoryActiveSessionId ?: list.firstOrNull()?.id ?: ""
+        val dtos = list.take(MAX_PERSISTED_SESSIONS).map { PersistedChatSessionDto.fromDomain(it) }
+        return dtos to activeId
+    }
+
+    private fun writeSnapshotToPrefs(
+        appContext: Context,
+        dtos: List<PersistedChatSessionDto>,
+        activeId: String
+    ) {
         runCatching {
-            val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val dtos = list.take(MAX_PERSISTED_SESSIONS).map { PersistedChatSessionDto.fromDomain(it) }
+            val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit()
                 .putString(KEY_MULTI_SESSIONS_JSON, gson.toJson(dtos))
                 .putString(KEY_ACTIVE_SESSION_ID, activeId)
                 .apply()
         }.onFailure { e ->
             Log.w("SharkAiChatSessionStore", "Failed to flush multi-sessions to prefs: ${e.message}")
+        }
+    }
+
+    private fun flushAsync(context: Context) {
+        val appContext = context.applicationContext
+        val captured = captureDtosAndActiveId() ?: return
+        pendingDraftFlushJob?.cancel()
+        persistScope.launch {
+            writeSnapshotToPrefs(appContext, captured.first, captured.second)
+        }
+    }
+
+    private fun scheduleDebouncedFlush(context: Context) {
+        val appContext = context.applicationContext
+        pendingDraftFlushJob?.cancel()
+        pendingDraftFlushJob = persistScope.launch {
+            delay(DRAFT_FLUSH_DEBOUNCE_MS)
+            val captured = captureDtosAndActiveId() ?: return@launch
+            writeSnapshotToPrefs(appContext, captured.first, captured.second)
         }
     }
 
@@ -322,7 +366,7 @@ object SharkAiChatSessionStore {
         )
         list[activeIdx] = updated
         inMemorySessions = list.sortedByDescending { it.updatedAtMillis }.toMutableList()
-        flushToPrefs(context)
+        flushAsync(context)
         return buildSnapshot(context)
     }
 
@@ -335,11 +379,14 @@ object SharkAiChatSessionStore {
         ensureLoaded(context)
         val list = inMemorySessions!!
         val activeIdx = list.indexOfFirst { it.id == inMemoryActiveSessionId }.let { if (it == -1) 0 else it }
-        list[activeIdx] = list[activeIdx].copy(
-            draftInputText = draftInputText,
-            lockedEngine = lockedEngine
-        )
-        flushToPrefs(context)
+        val current = list[activeIdx]
+        if (current.draftInputText != draftInputText || current.lockedEngine != lockedEngine) {
+            list[activeIdx] = current.copy(
+                draftInputText = draftInputText,
+                lockedEngine = lockedEngine
+            )
+            scheduleDebouncedFlush(context)
+        }
         return buildSnapshot(context)
     }
 
@@ -404,7 +451,7 @@ object SharkAiChatSessionStore {
         }
 
         inMemorySessions = list.sortedByDescending { it.updatedAtMillis }.toMutableList()
-        flushToPrefs(context)
+        flushAsync(context)
         return buildSnapshot(context)
     }
 
@@ -418,7 +465,7 @@ object SharkAiChatSessionStore {
         val target = list.firstOrNull { it.id == sessionId }
         if (target != null) {
             inMemoryActiveSessionId = target.id
-            flushToPrefs(context)
+            flushAsync(context)
         }
         return buildSnapshot(context)
     }
@@ -455,7 +502,7 @@ object SharkAiChatSessionStore {
         }
 
         inMemorySessions = list.sortedByDescending { it.updatedAtMillis }.toMutableList()
-        flushToPrefs(context)
+        flushAsync(context)
         return buildSnapshot(context)
     }
 

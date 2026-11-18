@@ -1078,7 +1078,7 @@ fun VaultBackupDialog(
                                             clipboardManager.setText(AnnotatedString(code))
                                             generatedCodePreview = code.take(64) + "..."
                                             isStatusError = false
-                                            statusMessage = "Yedek kodu panoya kopyalandı! (${summary.notesCount} not, ${summary.drawingsCount} çizim, ${summary.questionsCount} soru)"
+                                            statusMessage = "Yedek kodu panoya kopyalandı (${summary.notesCount} not, ${summary.drawingsCount} çizim, ${summary.questionsCount} soru)."
                                             Toast.makeText(context, "SHK-VAULT-1 kodu kopyalandı", Toast.LENGTH_SHORT).show()
                                         }.onFailure { err ->
                                             isStatusError = true

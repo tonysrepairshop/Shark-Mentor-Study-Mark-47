@@ -1,4 +1,4 @@
-﻿package com.example.sharkmentor.service.blocker
+package com.example.sharkmentor.service.blocker
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
@@ -12,6 +12,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.example.sharkmentor.MainActivity
@@ -91,14 +92,17 @@ class SharkBlockerAccessibilityService : AccessibilityService() {
             setBackgroundColor(Color.parseColor("#F00B1B2B"))
             setPadding(48, 48, 48, 48)
 
-            val icon = TextView(context).apply {
-                text = "\uD83E\uDD88 \uD83D\uDD12"
-                textSize = 50f
-                gravity = Gravity.CENTER
+            val iconSizePx = (48 * resources.displayMetrics.density).toInt()
+            val icon = ImageView(context).apply {
+                setImageResource(android.R.drawable.ic_lock_lock)
+                setColorFilter(Color.parseColor("#2EC4B6"))
+                layoutParams = LinearLayout.LayoutParams(iconSizePx, iconSizePx).apply {
+                    gravity = Gravity.CENTER
+                }
             }
 
             val title = TextView(context).apply {
-                text = "Odak Seansı Kilitlendi!"
+                text = "Odak Seansı Kilitlendi"
                 textSize = 22f
                 setTextColor(Color.WHITE)
                 setTypeface(null, Typeface.BOLD)

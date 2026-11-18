@@ -163,5 +163,5 @@ private fun saveExamTarget(context: Context, title: String, millis: Long) {
             )
     }
 
-    Toast.makeText(context, "Hedef sınav tarihi kaydedildi!", Toast.LENGTH_SHORT).show()
+    Toast.makeText(context, "Hedef sınav tarihi kaydedildi.", Toast.LENGTH_SHORT).show()
 }

@@ -5,15 +5,20 @@ import android.util.Log
 import com.example.sharkmentor.BuildConfig
 import java.net.ConnectException
 import java.net.UnknownHostException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 object ApiKeyRotator {
+
+    private const val DEFAULT_KEY_COOLDOWN_MS = 45_000L
 
     val DEFAULT_BUILTIN_GEMINI_KEYS: List<String> = listOf(
         listOf("AQ", ".Ab8RN6LwvQc6iBYAkhwbGKc", "-IMTX7gB6-TkqwxkGSaclVZtlKw").joinToString(""),
         listOf("AQ", ".Ab8RN6JbUbkSsq3tk-16e1ur10NpqId", "BRZTu9lGXqT7twX8RZA").joinToString(""),
         listOf("AQ", ".Ab8RN6LTKGQ6Fe2RWvURX_h5FdKIre", "Xhc8z_A1jl-vr-Jd6ozw").joinToString("")
     )
+
+    private val keyCooldownUntilMs = ConcurrentHashMap<String, Long>()
 
     private fun cleanKey(raw: String?): String =
         raw.orEmpty()
@@ -126,6 +131,31 @@ object ApiKeyRotator {
         }
     }
 
+    fun reportKeyFailure(apiKey: String, cooldownMs: Long = DEFAULT_KEY_COOLDOWN_MS) {
+        val clean = cleanKey(apiKey)
+        if (clean.isNotBlank()) {
+            keyCooldownUntilMs[clean] = System.currentTimeMillis() + cooldownMs
+        }
+    }
+
+    fun reportKeySuccess(apiKey: String) {
+        val clean = cleanKey(apiKey)
+        if (clean.isNotBlank()) {
+            keyCooldownUntilMs.remove(clean)
+        }
+    }
+
+    fun isKeyCoolingDown(apiKey: String): Boolean {
+        val clean = cleanKey(apiKey)
+        if (clean.isBlank()) return false
+        val until = keyCooldownUntilMs[clean] ?: return false
+        if (System.currentTimeMillis() >= until) {
+            keyCooldownUntilMs.remove(clean)
+            return false
+        }
+        return true
+    }
+
     fun getActiveKey(): String = getActiveKey(null)
 
     fun getActiveKey(context: Context?): String {
@@ -154,6 +184,7 @@ object ApiKeyRotator {
     fun invalidateAndReset() {
         lastUserKeySignature = null
         currentIndex.set(0)
+        keyCooldownUntilMs.clear()
     }
 
     fun getKeyCount(): Int = getKeyCount(null)

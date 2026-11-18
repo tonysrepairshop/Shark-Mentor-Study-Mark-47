@@ -60,19 +60,23 @@ class InstitutionScheduleSyncListener(
                         Log.w(TAG, "Firestore listener error: ${error.message}")
                         return@addSnapshotListener
                     }
-                    if (snapshot == null || snapshot.isEmpty) return@addSnapshotListener
+                    if (snapshot == null) return@addSnapshotListener
 
                     val entities = snapshot.documents.mapNotNull { doc ->
                         try {
                             InstitutionScheduleEntity(
-                                id         = doc.id,
-                                dayOfWeek  = (doc.getLong("dayOfWeek") ?: 1L).toInt().coerceIn(1, 7),
-                                startTime  = doc.getString("startTime") ?: "09:00",
-                                endTime    = doc.getString("endTime")   ?: "10:00",
-                                subject    = doc.getString("subject")   ?: "Ders",
-                                type       = doc.getString("type")      ?: "DERSHANE",
+                                id = doc.id,
+                                dayOfWeek = (doc.getLong("dayOfWeek") ?: 1L).toInt().coerceIn(1, 7),
+                                startTime = doc.getString("startTime") ?: "09:00",
+                                endTime = doc.getString("endTime") ?: "10:00",
+                                subject = doc.getString("subject") ?: "Ders",
+                                type = doc.getString("type") ?: "DERSHANE",
                                 teacherName = doc.getString("teacherName") ?: "",
-                                period      = (doc.getLong("period") ?: 0L).toInt()
+                                period = (doc.getLong("period") ?: 0L).toInt(),
+                                isSynced = true,
+                                lastModifiedMillis = doc.getLong("lastModifiedMillis") ?: System.currentTimeMillis(),
+                                isDeleted = false,
+                                cloudId = doc.id
                             )
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to parse document ${doc.id}: ${e.message}")
@@ -82,8 +86,7 @@ class InstitutionScheduleSyncListener(
 
                     scope.launch {
                         try {
-                            dao.deleteAll()
-                            dao.insertAll(entities)
+                            dao.replaceSyncedRemoteNonCustomSchedules(entities)
                             Log.d(TAG, "Synced ${entities.size} institution schedule rows into Room.")
                         } catch (e: Exception) {
                             Log.e(TAG, "Room upsert failed: ${e.message}", e)

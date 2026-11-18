@@ -81,16 +81,16 @@ import java.util.Locale
  */
 enum class ProfileBadgeCategoryFilter(
     val label: String,
-    val emoji: String
+    val emoji: String = ""
 ) {
-    ALL("Tümü", "🏅"),
-    MATH_GEO(CoreBadgeCategory.MATH_GEO.shortTitle, CoreBadgeCategory.MATH_GEO.emoji),
-    PHYSICS(CoreBadgeCategory.PHYSICS.shortTitle, CoreBadgeCategory.PHYSICS.emoji),
-    CHEMISTRY(CoreBadgeCategory.CHEMISTRY.shortTitle, CoreBadgeCategory.CHEMISTRY.emoji),
-    BIOLOGY(CoreBadgeCategory.BIOLOGY.shortTitle, CoreBadgeCategory.BIOLOGY.emoji),
-    TURKISH_LIT(CoreBadgeCategory.TURKISH_LIT.shortTitle, CoreBadgeCategory.TURKISH_LIT.emoji),
-    SOCIAL_LANG(CoreBadgeCategory.SOCIAL_LANG.shortTitle, CoreBadgeCategory.SOCIAL_LANG.emoji),
-    MENTORSHIP(CoreBadgeCategory.MENTORSHIP.shortTitle, CoreBadgeCategory.MENTORSHIP.emoji)
+    ALL("Tümü", ""),
+    MATH_GEO(CoreBadgeCategory.MATH_GEO.shortTitle, ""),
+    PHYSICS(CoreBadgeCategory.PHYSICS.shortTitle, ""),
+    CHEMISTRY(CoreBadgeCategory.CHEMISTRY.shortTitle, ""),
+    BIOLOGY(CoreBadgeCategory.BIOLOGY.shortTitle, ""),
+    TURKISH_LIT(CoreBadgeCategory.TURKISH_LIT.shortTitle, ""),
+    SOCIAL_LANG(CoreBadgeCategory.SOCIAL_LANG.shortTitle, ""),
+    MENTORSHIP(CoreBadgeCategory.MENTORSHIP.shortTitle, "")
 }
 
 /**
@@ -275,7 +275,7 @@ fun ProfileBadgesTab(
                             onClick = { selectedCategory = category },
                             label = {
                                 Text(
-                                    text = "${category.emoji} ${category.label}",
+                                    text = category.label,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                     fontSize = 12.sp
                                 )
@@ -428,7 +428,7 @@ fun ProfileBadgesTab(
                         onUpdateShowcaseIds(currentList)
                         Toast.makeText(
                             context,
-                            "\"${activeInspected.badge.title}\" vitrine eklendi! (${currentList.size}/${SharkBadgeCatalog.MAX_SHOWCASE_BADGES})",
+                            "\"${activeInspected.badge.title}\" vitrine eklendi (${currentList.size}/${SharkBadgeCatalog.MAX_SHOWCASE_BADGES}).",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
@@ -526,28 +526,24 @@ private fun BadgesSummaryHeaderCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 TierCounterStatBox(
-                    emoji = BadgeTier.MEGALODON.emoji,
                     label = "Megalodon",
                     count = tierCounts.megalodon,
                     color = Color(BadgeTier.MEGALODON.primaryColorHex),
                     modifier = Modifier.weight(1f)
                 )
                 TierCounterStatBox(
-                    emoji = BadgeTier.GOLD.emoji,
                     label = "Altın",
                     count = tierCounts.gold,
                     color = Color(BadgeTier.GOLD.primaryColorHex),
                     modifier = Modifier.weight(1f)
                 )
                 TierCounterStatBox(
-                    emoji = BadgeTier.SILVER.emoji,
                     label = "Gümüş",
                     count = tierCounts.silver,
                     color = Color(BadgeTier.SILVER.primaryColorHex),
                     modifier = Modifier.weight(1f)
                 )
                 TierCounterStatBox(
-                    emoji = BadgeTier.BRONZE.emoji,
                     label = "Bronz",
                     count = tierCounts.bronze,
                     color = Color(BadgeTier.BRONZE.primaryColorHex),
@@ -589,7 +585,6 @@ private fun BadgesSummaryHeaderCard(
 
 @Composable
 private fun TierCounterStatBox(
-    emoji: String,
     label: String,
     count: Int,
     color: Color,
@@ -607,10 +602,10 @@ private fun TierCounterStatBox(
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Text(
-                text = "$emoji $count",
-                style = MaterialTheme.typography.titleSmall,
+                text = "$count",
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.ExtraBold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = color
             )
             Text(
                 text = label,
@@ -707,7 +702,7 @@ private fun BadgeGridCard(
                         ) {
                             if (unlockedTier != null) {
                                 Text(
-                                    text = "${unlockedTier.emoji} ${unlockedTier.shortLabel}",
+                                    text = unlockedTier.shortLabel,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = tierColor
@@ -735,7 +730,7 @@ private fun BadgeGridCard(
                             color = Color(0xFFF59E0B).copy(alpha = 0.18f)
                         ) {
                             Text(
-                                text = "★ Vitrinde",
+                                text = "Vitrinde",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFF59E0B),
@@ -757,7 +752,7 @@ private fun BadgeGridCard(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "${category.emoji} ${category.label}",
+                    text = category.label,
                     style = MaterialTheme.typography.labelSmall,
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -794,9 +789,9 @@ private fun BadgeGridCard(
 
                     Text(
                         text = if (progressInfo.nextTier != null) {
-                            "Hedef: ${progressInfo.nextTier.emoji}"
+                            "Sonraki: ${progressInfo.nextTier.shortLabel}"
                         } else {
-                            "🦈 Maks!"
+                            "Megalodon Zirvesi"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         fontSize = 10.sp,
@@ -813,7 +808,7 @@ private fun BadgeGridCard(
  * - Büyük sembol rozet madalyonu (f'(x), ∫ vb.) ve başlık + kategori etiketi
  * - Kazanım açıklaması ve net hedef cümlesi (ör. "Türev'den 15 soru doğru çöz")
  * - Net sayısal ilerleme + kalın ilerleme çubuğu ("İlerleme: 4 / 15 (Kalan: 11 soru)")
- * - 4 Kademe yol haritası satırı: 🥉 Bronz • 🥈 Gümüş • 🥇 Altın • 🦈 Megalodon
+ * - 4 Kademe yol haritası satırı: Bronz • Gümüş • Altın • Megalodon
  * - Rozet açıksa doğrudan "Vitrine Ekle" / "Vitrinden Çıkar" aksiyon butonu
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -875,7 +870,7 @@ private fun BadgeDetailModalSheet(
                             color = primaryColor.copy(alpha = 0.15f)
                         ) {
                             Text(
-                                text = "${category.emoji} ${category.label}",
+                                text = category.label,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = primaryColor,
                                 fontWeight = FontWeight.Bold,
@@ -893,9 +888,9 @@ private fun BadgeDetailModalSheet(
                         ) {
                             Text(
                                 text = if (unlockedTier != null) {
-                                    "${unlockedTier.emoji} ${unlockedTier.label} Kademe"
+                                    "${unlockedTier.label} Kademe"
                                 } else {
-                                    "🔒 Kilitli"
+                                    "Kilitli"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (unlockedTier != null) activeColor else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -906,7 +901,7 @@ private fun BadgeDetailModalSheet(
                     }
 
                     Text(
-                        text = "${badge.emoji} ${badge.title}",
+                        text = badge.title,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.ExtraBold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -938,7 +933,7 @@ private fun BadgeDetailModalSheet(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "🎯 Hedef: ${buildClearTargetSentence(badge, progressInfo)}",
+                        text = "Hedef: ${buildClearTargetSentence(badge, progressInfo)}",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = activeColor
@@ -960,7 +955,7 @@ private fun BadgeDetailModalSheet(
                             nextTier != null ->
                                 "${nextTier.label} kademeye: ${progressInfo.count} / ${progressInfo.nextTarget} (Kalan: $remainingToNext)"
                             else ->
-                                "Megalodon Zirvesi: ${progressInfo.count} / ${progressInfo.nextTarget} (Tamamlandı!)"
+                                "Megalodon Zirvesi: ${progressInfo.count} / ${progressInfo.nextTarget} (Tamamlandı)"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.ExtraBold,
@@ -987,7 +982,7 @@ private fun BadgeDetailModalSheet(
                 )
             }
 
-            // 4 Kademe Yol Haritası Satırı: 🥉 Bronz • 🥈 Gümüş • 🥇 Altın • 🦈 Megalodon
+            // 4 Kademe Yol Haritası Satırı: Bronz • Gümüş • Altın • Megalodon
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "4 Kademe Yol Haritası",
@@ -1035,22 +1030,20 @@ private fun BadgeDetailModalSheet(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Text(
-                                        text = tier.emoji,
-                                        fontSize = 14.sp
+                                if (isTierCompleted) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = "Tamamlandı",
+                                        tint = tierCol,
+                                        modifier = Modifier.size(15.dp)
                                     )
-                                    if (isTierCompleted) {
-                                        Icon(
-                                            imageVector = Icons.Default.CheckCircle,
-                                            contentDescription = "Tamamlandı",
-                                            tint = tierCol,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                    }
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = "Kilitli",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(13.dp)
+                                    )
                                 }
                                 Text(
                                     text = tier.shortLabel,
@@ -1155,9 +1148,9 @@ private fun buildClearTargetSentence(
     val nextTier = progressInfo.nextTier
     val target = progressInfo.nextTarget
     return if (nextTier != null) {
-        "${nextTier.emoji} ${nextTier.label} kademe için ${badge.title} hedefinde toplam $target tamamla (${badge.conditionLabel})."
+        "${nextTier.label} kademe için ${badge.title} hedefinde toplam $target tamamlayın (${badge.conditionLabel})."
     } else {
-        "🦈 Megalodon kademesine ulaştın! (${badge.conditionLabel})"
+        "Megalodon kademesine ulaştınız (${badge.conditionLabel})."
     }
 }
 

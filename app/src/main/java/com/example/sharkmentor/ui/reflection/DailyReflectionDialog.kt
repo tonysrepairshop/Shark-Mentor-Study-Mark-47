@@ -144,7 +144,7 @@ fun DailyReflectionDialog(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "⚠️ Bu puan sisteme 1 kez kaydedilir ve sonradan değiştirilemez.",
+                    text = "Not: Bu puan sisteme 1 kez kaydedilir ve sonradan değiştirilemez.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onErrorContainer,
                     modifier = Modifier.padding(12.dp)

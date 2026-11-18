@@ -813,7 +813,7 @@ private fun PinnedOpenQuestionsStrip(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = "${tier.emoji} ${q.subject}",
+                                text = q.subject,
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
@@ -952,9 +952,9 @@ private fun QuestionMessageCard(
                 }
 
                 val statusLabel = when (question.status) {
-                    "RESOLVED" -> "✅ Çözüldü"
-                    "PENDING_APPROVAL" -> "⏳ Onay Bekliyor"
-                    else -> "🔥 Açık Soru"
+                    "RESOLVED" -> "Çözüldü"
+                    "PENDING_APPROVAL" -> "Onay Bekliyor"
+                    else -> "Açık Soru"
                 }
                 val statusColor = when (question.status) {
                     "RESOLVED" -> Color(0xFF10B981)
@@ -1071,7 +1071,7 @@ private fun QuestionMessageCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("✏️ Soruyu Çöz", fontWeight = FontWeight.Bold)
+                    Text("Soruyu Çöz", fontWeight = FontWeight.Bold)
                 }
             } else {
                 Surface(
@@ -1080,7 +1080,7 @@ private fun QuestionMessageCard(
                     color = Color(0xFF10B981).copy(alpha = 0.14f)
                 ) {
                     Text(
-                        text = "✅ Çözüm Onaylandı${question.solverName?.takeIf { it.isNotBlank() }?.let { " • Çözen: $it" } ?: ""}",
+                        text = "Çözüm Onaylandı${question.solverName?.takeIf { it.isNotBlank() }?.let { " • Çözen: $it" } ?: ""}",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = Color(0xFF059669),
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
@@ -1111,7 +1111,7 @@ private fun QuestionMessageCard(
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = if (isSavedToErrorBank) "✅ Hata Bankana Kaydedildi" else "📥 Hata Bankama Kaydet",
+                    text = if (isSavedToErrorBank) "Hata Bankasına Kaydedildi" else "Hata Bankama Kaydet",
                     color = if (isSavedToErrorBank) Color(0xFF059669) else MaterialTheme.colorScheme.primary,
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                 )
@@ -1140,9 +1140,9 @@ private fun SolutionReplyCard(
         else -> Color(0xFFF59E0B)
     }
     val statusLabel = when (solution.approvalStatus) {
-        "APPROVED" -> "✅ Onaylandı: +${solution.escrowPoints} Puan & +${solution.escrowBonusMinutes} dk"
-        "REJECTED" -> "❌ Reddedildi"
-        else -> "⏳ Onay Bekleyen Puan: +${solution.escrowPoints} P & +${solution.escrowBonusMinutes} dk"
+        "APPROVED" -> "Onaylandı: +${solution.escrowPoints} Puan & +${solution.escrowBonusMinutes} dk"
+        "REJECTED" -> "Reddedildi"
+        else -> "Onay Bekleyen Puan: +${solution.escrowPoints} P & +${solution.escrowBonusMinutes} dk"
     }
 
     Card(
@@ -1249,7 +1249,7 @@ private fun SolutionReplyCard(
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
-                            text = "✗ Reddet",
+                            text = "Reddet",
                             color = MaterialTheme.colorScheme.error,
                             fontWeight = FontWeight.Bold
                         )
@@ -1269,7 +1269,7 @@ private fun SolutionReplyCard(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(Modifier.width(4.dp))
-                        Text("✓ Onayla", fontWeight = FontWeight.Bold)
+                        Text("Onayla", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1485,7 +1485,7 @@ private fun DmApprovalBottomCard(
             when {
                 thread.status == "NONE" -> {
                     Text(
-                        text = "📩 İstek Onaylı Direkt Mesaj",
+                        text = "İstek Onaylı Direkt Mesaj",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
                     OutlinedTextField(
@@ -1776,7 +1776,7 @@ private fun DmInboxList(
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
                             )
                             Text(
-                                text = "⏳ Karşı tarafın onayı bekleniyor",
+                                text = "Karşı tarafın onayı bekleniyor",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

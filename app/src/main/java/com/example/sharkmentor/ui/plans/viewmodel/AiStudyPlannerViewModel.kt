@@ -25,6 +25,8 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -78,10 +80,18 @@ class AiStudyPlannerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun togglePlanCompletion(planId: String, currentStatus: Boolean) {
+        val nextStatus = !currentStatus
+        val previousPlans = _activePlans.value
+        _activePlans.value = previousPlans.map { item ->
+            if (item.id == planId) item.copy(isCompleted = nextStatus) else item
+        }
         val uid = GoogleServicesHelper.getCurrentUser(auth, getApplication())?.uid ?: return
         firestore?.collection("students")?.document(uid)
             ?.collection("plans")?.document(planId)
-            ?.update("completed", !currentStatus)
+            ?.update("completed", nextStatus)
+            ?.addOnFailureListener {
+                _activePlans.value = previousPlans
+            }
     }
 
     fun organizeWeeklyPlan() {
@@ -149,7 +159,7 @@ class AiStudyPlannerViewModel(application: Application) : AndroidViewModel(appli
                 }
 
                 batch.commit().await()
-                _uiState.value = PlannerUiState.Success("✔ Plan başarıyla organize edildi!")
+                _uiState.value = PlannerUiState.Success("Plan başarıyla organize edildi.")
             } catch (e: Exception) {
                 _uiState.value = PlannerUiState.Error("Plan organize edilirken hata: ${e.localizedMessage}")
             } finally {
@@ -203,26 +213,32 @@ class AiStudyPlannerViewModel(application: Application) : AndroidViewModel(appli
             }
 
             try {
-                // 1. Fetch competencies, goal, and past schedules from Firestore
-                val compDocs = db.collection("students").document(uid)
-                    .collection("competencies").get().await()
+                // 1. Fetch competencies, goal, and past schedules in parallel
+                val scheduleDao = database.institutionScheduleDao()
+                val (compDocs, goalDoc, currentSchedules) = coroutineScope {
+                    val compDeferred = async {
+                        db.collection("students").document(uid)
+                            .collection("competencies").get().await()
+                    }
+                    val goalDeferred = async {
+                        db.collection("students").document(uid)
+                            .collection("goals").document("active").get().await()
+                    }
+                    val schedulesDeferred = async { scheduleDao.getAllSchedules() }
+                    Triple(compDeferred.await(), goalDeferred.await(), schedulesDeferred.await())
+                }
                 val allCompetencies = compDocs.documents.mapNotNull { it.toObject(TopicCompetency::class.java) }
 
-                // Optimization: Filter to top 15 weak competencies (weakest scores first) to keep token size low and latency under 4s
+                // Optimization: Filter to top 15 weak competencies (weakest scores first) to keep token size low and latency fast
                 val prunedCompetencies = allCompetencies
                     .filter { it.level <= 3 }
                     .sortedBy { it.level }
                     .take(15)
 
-                val goalDoc = db.collection("students").document(uid)
-                    .collection("goals").document("active").get().await()
                 val activeGoal = goalDoc.toObject(UserGoal::class.java) ?: UserGoal()
 
                 // Optimization: Limit previous plan items payload context
                 val previousPlanItems = _activePlans.value.take(15)
-
-                val scheduleDao = database.institutionScheduleDao()
-                val currentSchedules = scheduleDao.getAllSchedules()
 
                 val scheduleConstraintsPrompt = (1..7).map { dayIndex ->
                     val dayName = getDayName(dayIndex)

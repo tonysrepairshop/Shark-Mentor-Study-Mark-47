@@ -29,7 +29,7 @@ class AiZenCoachViewModel(application: Application) : AndroidViewModel(applicati
     private val _messages = MutableStateFlow<List<ChatMessage>>(
         listOf(
             ChatMessage(
-                text = "Selam! Ben Shark Zen KoÃ§un. SÄ±nav yolculuÄŸunda bazen yorulmak, bunalmak veya kaygÄ±lanmak Ã§ok insani. Zihnini veya kalbini zorlayan her ne varsa buraya dÃ¶kebilirsin; seni dinliyorum.",
+                text = "Merhaba, ben Shark Zen Koçun. Sınav yolculuğunda zaman zaman yorulmak veya kaygılanmak doğaldır. Zihnini zorlayan konuları buraya yazabilirsin; seni dinliyorum.",
                 isUser = false
             )
         )
@@ -44,19 +44,19 @@ class AiZenCoachViewModel(application: Application) : AndroidViewModel(applicati
 
     private var tickerJob: Job? = null
 
-    // Empathetic & Grounded Zen Coach Prompt (Gemini 3.6 Flash)
+    // Empathetic & Grounded Zen Coach Prompt
     private val zenCoachSystemPrompt = """
-        Sen SharkMentor platformunun 'Empatik Zen KoÃ§u'sun.
+        Sen SharkMentor platformunun Empatik Zen Koçusun.
         
-        MÄ°SYONUN:
-        Ã–ÄŸrenciler sÄ±nav hazÄ±rlÄ±ÄŸÄ± sÃ¼recinde yoÄŸun stres, yetersizlik hissi, tÃ¼kenmiÅŸlik ve kaygÄ± yaÅŸayabilir. Bu alan onlarÄ±n duygularÄ±nÄ± rahatÃ§a paylaÅŸÄ±p zihinsel yÃ¼klerini hafifletebileceÄŸi gÃ¼venli bir alandÄ±r.
+        MİSYONUN:
+        Öğrenciler sınav hazırlığı sürecinde yoğun stres, yetersizlik hissi, tükenmişlik ve kaygı yaşayabilir. Bu alan onların duygularını rahatça paylaşıp zihinsel yüklerini hafifletebileceği güvenli bir alandır.
 
-        DAVRANIÅž KURALLARI:
-        1. Asla didaktik, sorgulayÄ±cÄ± veya ders veren bir tonda olma (Sokratik sorgulama yapma).
-        2. Ã–ÄŸrencinin hislerini iÃ§tenlikle onayla ve anla ("BÃ¶yle hissetmen Ã§ok doÄŸal", "BÃ¼yÃ¼k bir emek veriyorsun ve bu aÄŸÄ±rlÄ±k normal").
-        3. Samimi, insaflÄ±, ÅŸefkatli, sakinleÅŸtirici ve umut veren bir dil kullan.
-        4. CevaplarÄ±n kÄ±sa, ferahlatÄ±cÄ± ve net olsun (Maksimum 3-4 cÃ¼mle). Uzun paragraflarla Ã¶ÄŸrenciyi yorma.
-        5. Ã–ÄŸrenciye bir nefes aldÄ±r, omzundaki yÃ¼kÃ¼ hafiflet ve masaya sakin bir zihinle dÃ¶nmesi iÃ§in nazik bir cesaret ver.
+        DAVRANIŞ KURALLARI:
+        1. Asla didaktik, sorgulayıcı veya ders veren bir tonda olma (Sokratik sorgulama yapma).
+        2. Öğrencinin hislerini içtenlikle onayla ve anla ("Böyle hissetmen çok doğal", "Büyük bir emek veriyorsun ve bu ağırlık normal").
+        3. Samimi, şefkatli, sakinleştirici ve umut veren bir dil kullan.
+        4. Cevapların kısa, ferahlatıcı ve net olsun (Maksimum 3-4 cümle). Uzun paragraflarla öğrenciyi yorma.
+        5. Öğrenciye bir nefes aldır, omzundaki yükü hafiflet ve masaya sakin bir zihinle dönmesi için nazik bir cesaret ver.
     """.trimIndent()
 
     init {
@@ -95,7 +95,7 @@ class AiZenCoachViewModel(application: Application) : AndroidViewModel(applicati
         prefs.edit().putLong(PREF_LAST_QUESTION_TIME, System.currentTimeMillis()).apply()
         checkAndStartCooldownTicker()
 
-        // 3. Query Gemini 3.6 Flash
+        // 3. Query AI model
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _isLoading.value = true
             try {
@@ -114,7 +114,7 @@ class AiZenCoachViewModel(application: Application) : AndroidViewModel(applicati
             } catch (e: Exception) {
                 Log.w("AiZenCoachVM", "Zen Coach Gemini error: ${e.message}", e)
                 _messages.value = _messages.value + ChatMessage(
-                    text = "Åžu an baÄŸlantÄ± kurulamadÄ± ama unutma: YalnÄ±z deÄŸilsin. BirkaÃ§ yudum su al ve derin bir nefesle devam et.",
+                    text = "Şu an bağlantı kurulamadı ama unutma: Yalnız değilsin. Birkaç yudum su al ve derin bir nefesle devam et.",
                     isUser = false
                 )
             } finally {

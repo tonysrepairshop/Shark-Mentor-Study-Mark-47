@@ -87,7 +87,7 @@ fun StreakCelebrationDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "$streakCount günlük seriye ulaştın. Harika gidiyorsun!",
+                    text = "$streakCount günlük çalışma serisine ulaştınız.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
@@ -104,7 +104,7 @@ fun StreakCelebrationDialog(
                     )
                 ) {
                     Text(
-                        text = "Harika!",
+                        text = "Devam Et",
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(vertical = 4.dp)
                     )

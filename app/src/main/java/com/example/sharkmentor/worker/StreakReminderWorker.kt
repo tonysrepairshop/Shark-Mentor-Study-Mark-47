@@ -74,8 +74,8 @@ class StreakReminderWorker(
 
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_alert) // Fallback icon
-            .setContentTitle("Serin Tehlikede! \uD83D\uDD25")
-            .setContentText("Günü boş geçme patron! 15 dakikalık tek bir odaklanmayla serini koruyabilirsin.")
+            .setContentTitle("Günlük Çalışma Serisi Hatırlatması")
+            .setContentText("Günlük serinizi korumak için en az 15 dakikalık bir odak seansı başlatabilirsiniz.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)

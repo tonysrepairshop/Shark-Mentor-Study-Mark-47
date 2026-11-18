@@ -364,7 +364,7 @@ fun BreathingVisualizer(
 
     val safeIndex = stepIndex % phaseSteps.size
     val currentPhase = when {
-        isFinished -> "Nefes Seansı Tamamlandı! ✨"
+        isFinished -> "Nefes Seansı Tamamlandı"
         isActive -> phaseSteps[safeIndex].first
         else -> "Hazır"
     }

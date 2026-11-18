@@ -39,7 +39,7 @@ data class ChatUiState(
     val error: String?              = null
 )
 
-// â”€â”€â”€ ViewModel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── ViewModel ────────────────────────────────────────────────────────────────
 
 class ChatViewModel : ViewModel() {
 
@@ -51,7 +51,7 @@ class ChatViewModel : ViewModel() {
 
     val studentId: String? get() = GoogleServicesHelper.getCurrentUser(auth)?.uid
 
-    // â”€â”€â”€ Start real-time listener â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── Start real-time listener ─────────────────────────────────────────────
 
     fun startListening() {
         if (FirebaseAuth.getInstance().currentUser == null) return
@@ -116,7 +116,7 @@ class ChatViewModel : ViewModel() {
         awaitClose { listener?.remove() }
     }
 
-    // â”€â”€â”€ Send â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── Send ─────────────────────────────────────────────────────────────────
 
     fun sendMessage(text: String) {
         val uid = studentId ?: return
@@ -141,14 +141,14 @@ class ChatViewModel : ViewModel() {
                     .await()
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Send error", e)
-                _uiState.value = _uiState.value.copy(error = "Mesaj gÃ¶nderilemedi.")
+                _uiState.value = _uiState.value.copy(error = "Mesaj gönderilemedi.")
             } finally {
                 _uiState.value = _uiState.value.copy(isSending = false)
             }
         }
     }
 
-    // â”€â”€â”€ Edit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── Edit ─────────────────────────────────────────────────────────────────
 
     fun editMessage(messageId: String, newText: String) {
         val uid = studentId ?: return
@@ -167,12 +167,12 @@ class ChatViewModel : ViewModel() {
                     .await()
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Edit error", e)
-                _uiState.value = _uiState.value.copy(error = "Mesaj dÃ¼zenlenemedi.")
+                _uiState.value = _uiState.value.copy(error = "Mesaj düzenlenemedi.")
             }
         }
     }
 
-    // â”€â”€â”€ Delete (soft) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── Delete (soft) ────────────────────────────────────────────────────────
     // Marks the document as deleted without removing it; UI shows tombstone.
 
     fun deleteMessage(messageId: String) {
@@ -197,23 +197,27 @@ class ChatViewModel : ViewModel() {
         }
     }
 
-    // â”€â”€â”€ Mark coach messages as read â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── Mark coach messages as read ──────────────────────────────────────────
 
     private fun markCoachMessagesRead(uid: String, messages: List<ChatMessage>) {
+        val unread = messages.filter { it.senderRole == "coach" && !it.isRead && !it.isDeleted && it.id.isNotBlank() }
+        if (unread.isEmpty()) return
+
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val database = db ?: return@launch
-            messages
-                .filter { it.senderRole == "coach" && !it.isRead && !it.isDeleted }
-                .forEach { msg ->
-                    try {
-                        database.collection("students").document(uid)
-                            .collection("messages").document(msg.id)
-                            .set(mapOf("isRead" to true), SetOptions.merge())
-                            .await()
-                    } catch (e: Exception) {
-                        Log.w("ChatViewModel", "markRead failed: ${msg.id}", e)
+            val messagesCol = database.collection("students").document(uid).collection("messages")
+            val readPayload = mapOf("isRead" to true)
+            for (chunk in unread.chunked(450)) {
+                try {
+                    val batch = database.batch()
+                    chunk.forEach { msg ->
+                        batch.set(messagesCol.document(msg.id), readPayload, SetOptions.merge())
                     }
+                    batch.commit().await()
+                } catch (e: Exception) {
+                    Log.w("ChatViewModel", "markRead batch failed: ${e.message}")
                 }
+            }
         }
     }
 }

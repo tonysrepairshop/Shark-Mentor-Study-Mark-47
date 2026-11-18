@@ -53,14 +53,14 @@ class DopamineLockOverlayActivity : ComponentActivity() {
                     )
                     Spacer(modifier = Modifier.height(20.dp))
                     Text(
-                        "DOPAMİN ORUCUNDASIN!",
+                        "Dopamin Orucu Devrede",
                         fontWeight = FontWeight.Black,
                         fontSize = 22.sp,
                         color = Color.White
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        "Yapay dopamin tuzağına düşmek üzeresin. Bu uygulama hedeflerine giden yolu tıkıyor. Derhal masana dön!",
+                        "Bu uygulama aktif odak ve dopamin koruma protokolü kapsamında kısıtlanmıştır. Çalışma oturumunuza dönebilirsiniz.",
                         color = Color(0xFF94A3B8),
                         fontSize = 14.sp,
                         textAlign = TextAlign.Center

@@ -127,7 +127,7 @@ fun StudentCoachChatScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                "✏️ Düzenleme modu",
+                                "Düzenleme modu",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.SemiBold

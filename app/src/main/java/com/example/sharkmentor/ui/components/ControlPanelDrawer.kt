@@ -150,7 +150,7 @@ fun ControlPanelContent(
                             questionsJson = gson.toJson(questions)
                         )
                         backupManager.uploadBackupToDrive(account, payload).onSuccess {
-                            Toast.makeText(context, "Google Drive yedeği başarıyla alındı!", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "Google Drive yedeği başarıyla alındı.", Toast.LENGTH_LONG).show()
                         }.onFailure { e ->
                             if (e is com.example.sharkmentor.core.backup.DriveConsentRequiredException) {
                                 driveConsentLauncher.launch(e.consentIntent)
@@ -170,7 +170,7 @@ fun ControlPanelContent(
                             folderDao.insertAll(folders)
                             questionDao.insertAll(questions)
                             
-                            Toast.makeText(context, "Drive'dan geri yükleme başarılı!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Drive üzerinden geri yükleme tamamlandı.", Toast.LENGTH_SHORT).show()
                         }.onFailure { e ->
                             if (e is com.example.sharkmentor.core.backup.DriveConsentRequiredException) {
                                 driveConsentLauncher.launch(e.consentIntent)

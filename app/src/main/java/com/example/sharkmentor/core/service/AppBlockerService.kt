@@ -163,14 +163,16 @@ class AppBlockerService : Service() {
                 setPadding(60, 60, 60, 60)
             }
 
-            val icon = TextView(context).apply {
-                text = "🦈 🔒"
-                textSize = 42f
-                gravity = Gravity.CENTER
+            val icon = android.widget.ImageView(context).apply {
+                setImageResource(android.R.drawable.ic_lock_lock)
+                setColorFilter(Color.parseColor("#2EC4B6"))
+                layoutParams = LinearLayout.LayoutParams(96, 96).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                }
             }
 
             val title = TextView(context).apply {
-                text = "Odak Seansı Devam Ediyor!"
+                text = "Odak Seansı Devam Ediyor"
                 textSize = 22f
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER

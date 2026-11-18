@@ -58,11 +58,11 @@ import kotlinx.coroutines.withContext
  * during focus sessions.
  *
  * **Flow:**
- * 1. If [UsageStatsHelper.hasUsageStatsPermission] is false â†’ shows a permission-request UI.
- * 2. Otherwise â†’ loads the user-installed app list (off the main thread) and shows it
+ * 1. If [UsageStatsHelper.hasUsageStatsPermission] is false → shows a permission-request UI.
+ * 2. Otherwise → loads the user-installed app list (off the main thread) and shows it
  *    with checkboxes pre-checked for already-blacklisted packages.
  * 3. "Kaydet" persists the current selection via [BlockerPreferences], then calls [onDismiss].
- * 4. "Ä°ptal" discards changes and calls [onDismiss].
+ * 4. "İptal" discards changes and calls [onDismiss].
  *
  * @param onDismiss Called when the dialog should close (save, cancel, or permission redirect).
  */
@@ -93,9 +93,9 @@ fun AppSelectionDialog(onDismiss: () -> Unit) {
     }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Permission prompt
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun PermissionRequestContent(
@@ -154,9 +154,9 @@ private fun PermissionRequestContent(
     )
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // App list content
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun AppListContent(context: Context, onDismiss: () -> Unit) {
@@ -166,7 +166,7 @@ private fun AppListContent(context: Context, onDismiss: () -> Unit) {
     var appList  by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
-    // Map: packageName â†’ isChecked (mutable, local to this dialog invocation)
+    // Map: packageName → isChecked (mutable, local to this dialog invocation)
     val checkedMap = remember(appList, savedBlacklist) {
         appList.associate { it.packageName to (it.packageName in savedBlacklist) }
             .entries.map { it.key to mutableStateOf(it.value) }
@@ -274,7 +274,7 @@ private fun AppListContent(context: Context, onDismiss: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.width(8.dp))
-                    Text("Odak Seansı Devrede!", fontWeight = FontWeight.Bold)
+                    Text("Odak Seansı Devrede", fontWeight = FontWeight.Bold)
                 }
             },
             text = {
@@ -289,9 +289,9 @@ private fun AppListContent(context: Context, onDismiss: () -> Unit) {
     }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Single app row
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun AppListRow(

@@ -68,7 +68,7 @@ class SharkMessagingService : FirebaseMessagingService() {
             val body = remoteMessage.notification?.body
                 ?: remoteMessage.data["body"]
                 ?: remoteMessage.data["message"]
-                ?: "$fromName seni birlikte çalışmaya davet ediyor! Hadi masaya geç ve odak seansını başlat 🦈"
+                ?: "$fromName sizi birlikte çalışmaya davet ediyor. Odak oturumunu başlatabilirsiniz."
             val groupId = remoteMessage.data["groupId"]
             val nudgeId = remoteMessage.data["nudgeId"] ?: remoteMessage.data["id"]
 
@@ -83,7 +83,7 @@ class SharkMessagingService : FirebaseMessagingService() {
         }
 
         val defaultTitle = "SharkMentor"
-        val defaultBody = "Koçun yeni bir görev atadı!"
+        val defaultBody = "Koçunuz yeni bir görev atadı."
         val title = remoteMessage.notification?.title ?: remoteMessage.data["title"] ?: defaultTitle
         val body = remoteMessage.notification?.body ?: remoteMessage.data["body"] ?: defaultBody
 
@@ -173,9 +173,9 @@ class SharkMessagingService : FirebaseMessagingService() {
             }
 
             val cleanSender = fromName.trim().ifBlank { "Arkadaşın" }
-            val finalTitle = "🦈 $cleanSender seni çalışmaya davet ediyor!"
+            val finalTitle = "$cleanSender çalışma daveti gönderdi"
             val finalBody = message.ifBlank {
-                "$cleanSender seni birlikte çalışmaya davet ediyor! Hadi masaya geç ve odak seansını başlat 🦈"
+                "$cleanSender sizi birlikte çalışmaya davet ediyor. Odak oturumunu başlatabilirsiniz."
             }
 
             val reqSeed = ((nudgeId ?: cleanSender).hashCode() and 0x0FFFFFF0)

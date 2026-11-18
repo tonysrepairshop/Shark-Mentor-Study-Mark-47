@@ -46,7 +46,7 @@ class ReflectionAlarmReceiver : BroadcastReceiver() {
             .setSmallIcon(smallIconRes)
             .setLargeIcon(largeIconBitmap)
             .setColor(context.getColor(R.color.shark_blue_primary))
-            .setContentTitle("Bugünün verimini konuşalım 🦈")
+            .setContentTitle("Günlük Verimlilik Değerlendirmesi")
             .setContentText("Bugünkü çalışma odak ve verimini 1-10 arası puanla, mentorunu bilgilendir.")
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(pendingIntent)

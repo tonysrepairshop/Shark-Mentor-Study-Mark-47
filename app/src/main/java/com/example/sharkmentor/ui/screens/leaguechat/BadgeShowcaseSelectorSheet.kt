@@ -161,8 +161,10 @@ internal fun BadgeSymbolMedallion(
                 Box(contentAlignment = Alignment.Center) {
                     if (unlockedTier != null) {
                         Text(
-                            text = unlockedTier.emoji,
-                            fontSize = 9.sp
+                            text = unlockedTier.shortLabel.take(1),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White
                         )
                     } else {
                         Icon(
@@ -249,11 +251,7 @@ internal fun BadgeTierDetailDialog(
                             }
                         ) {
                             Text(
-                                text = if (activeTier != null) {
-                                    "${activeTier.emoji} ${activeTier.shortLabel}"
-                                } else {
-                                    "Kilitli"
-                                },
+                                text = activeTier?.shortLabel ?: "Kilitli",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
@@ -305,13 +303,13 @@ internal fun BadgeTierDetailDialog(
                         val progressPrefix = if (!ownerLabel.isNullOrBlank()) {
                             "$ownerLabel İlerlemesi"
                         } else {
-                            "İlerlemen"
+                            "İlerlemeniz"
                         }
                         Text(
                             text = if (progress.nextTier != null) {
-                                "$progressPrefix: ${progress.count}/${progress.nextTarget} • Sonraki: ${progress.nextTier.emoji} ${progress.nextTier.shortLabel}"
+                                "$progressPrefix: ${progress.count}/${progress.nextTarget} • Sonraki: ${progress.nextTier.shortLabel}"
                             } else {
-                                "$progressPrefix: ${progress.count}/${progress.nextTarget} • 🦈 Megalodon Zirvesi!"
+                                "$progressPrefix: ${progress.count}/${progress.nextTarget} • Megalodon Zirvesi"
                             },
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             color = accentTextColor
@@ -363,7 +361,11 @@ internal fun BadgeTierDetailDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Text(text = tier.emoji, fontSize = 14.sp)
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = tierTextColor,
+                                        modifier = Modifier.size(10.dp)
+                                    ) {}
                                     Text(
                                         text = tier.label,
                                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
@@ -875,7 +877,7 @@ private fun BadgeCatalogSelectionRow(
                         }
                     ) {
                         Text(
-                            text = if (activeTier != null) "${activeTier.emoji} ${activeTier.shortLabel}" else "Kilitli",
+                            text = activeTier?.shortLabel ?: "Kilitli",
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
                             color = if (activeTier != null) activeAccentText else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -907,9 +909,9 @@ private fun BadgeCatalogSelectionRow(
                 ) {
                     Text(
                         text = if (progress.nextTier != null) {
-                            "${progress.count}/${progress.nextTarget} • Hedef: ${progress.nextTier.emoji} ${progress.nextTier.shortLabel}"
+                            "${progress.count}/${progress.nextTarget} • Hedef: ${progress.nextTier.shortLabel}"
                         } else {
-                            "${progress.count}/${progress.nextTarget} • 🦈 Megalodon Maksimum!"
+                            "${progress.count}/${progress.nextTarget} • Megalodon Zirvesi"
                         },
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
                         color = activeAccentText,
@@ -943,7 +945,7 @@ private fun BadgeCatalogSelectionRow(
                             )
                         ) {
                             Text(
-                                text = "${tier.emoji} $tVal",
+                                text = "${tier.shortLabel} $tVal",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = 9.sp,
                                     fontWeight = if (reached) FontWeight.Bold else FontWeight.Medium

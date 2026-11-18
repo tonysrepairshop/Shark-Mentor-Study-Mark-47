@@ -146,7 +146,7 @@ fun LeagueMemberProfileSheet(
                                 color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
                             ) {
                                 Text(
-                                    text = "${entry.tier.emoji} ${entry.tier.label}",
+                                    text = entry.tier.label,
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -209,7 +209,7 @@ fun LeagueMemberProfileSheet(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
                 ) {
                     Text(
-                        text = "🏆 Lig Sıralama Süresi: ${effHours}s ${effMins}dk (${hours}s ${mins}dk odak + $cappedBonusMins dk bonus / haftalık maks. 150 dk)",
+                        text = "Lig Sıralama Süresi: ${effHours}s ${effMins}dk (${hours}s ${mins}dk odak + $cappedBonusMins dk bonus / haftalık maks. 150 dk)",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
@@ -331,7 +331,7 @@ fun LeagueMemberProfileSheet(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(Modifier.width(8.dp))
-                                Text("💬 Onaylı Direkt Sohbeti Aç", fontWeight = FontWeight.Bold)
+                                Text("Onaylı Direkt Sohbeti Aç", fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -399,7 +399,7 @@ fun LeagueMemberProfileSheet(
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Spacer(Modifier.width(8.dp))
-                                    Text("📩 Soru / Mesaj İsteği Gönder", fontWeight = FontWeight.Bold)
+                                    Text("Soru / Mesaj İsteği Gönder", fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -438,7 +438,7 @@ fun LeagueMemberProfileSheet(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = if (isBlocked) "✅ Engeli Kaldır" else "🚫 Engelle",
+                            text = if (isBlocked) "Engeli Kaldır" else "Engelle",
                             color = if (isBlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -460,7 +460,7 @@ fun LeagueMemberProfileSheet(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = "🚩 Şikayet Et",
+                            text = "Şikayet Et",
                             color = MaterialTheme.colorScheme.onSurface,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -486,14 +486,14 @@ fun LeagueMemberProfileSheet(
             containerColor = MaterialTheme.colorScheme.surface,
             title = {
                 Text(
-                    text = "🚫 $realName Engellensin mi?",
+                    text = "$realName Engellensin mi?",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.onSurface
                 )
             },
             text = {
                 Text(
-                    text = "Engellediğinde bu kullanıcının mesajları, paylaştığı sorular ve çalışma davetleri senin için gizlenir. İstediğin zaman engeli kaldırabilirsin.",
+                    text = "Engellediğinizde bu kullanıcının mesajları, paylaştığı sorular ve çalışma davetleri gizlenir. Engeli istediğiniz zaman kaldırabilirsiniz.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -566,7 +566,7 @@ private fun ReportMemberDialog(
         containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Text(
-                text = "🚩 $targetName Hakkında Şikayet",
+                text = "$targetName Hakkında Şikayet",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurface
             )

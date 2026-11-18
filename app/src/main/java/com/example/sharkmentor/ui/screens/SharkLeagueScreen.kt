@@ -449,7 +449,7 @@ private fun IncomingStudyInviteBanner(
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "🦈 ${invite.fromName} seni çalışmaya davet ediyor!",
+                    text = "${invite.fromName} sizi çalışmaya davet ediyor",
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
@@ -651,7 +651,7 @@ private fun LeagueContent(
                         onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) },
                         onShareFriendCode = {
                             onShareText(
-                                "SharkMentor'da odak yarışına katıl! Arkadaş Kodum: ${uiState.myFriendCode}"
+                                "SharkMentor'da odak yarışına katıl. Arkadaş Kodum: ${uiState.myFriendCode}"
                             )
                         },
                         onEditBadgesClick = onOpenBadgeShowcase,
@@ -687,7 +687,7 @@ private fun LeagueContent(
                         onCopyGroupCode = { code -> onCopyCode("Grup davet kodu", code) },
                         onShareGroupCode = { group ->
                             onShareText(
-                                "SharkMentor'da \"${group.name}\" çalışma grubuma katıl! 6 Haneli Grup Kodu: ${group.inviteCode}"
+                                "SharkMentor'da \"${group.name}\" çalışma grubuna katıl. 6 Haneli Grup Kodu: ${group.inviteCode}"
                             )
                         },
                         onOpenGroupChat = onOpenGroupChat
@@ -741,7 +741,7 @@ private fun LeagueContent(
                         onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) },
                         onShareFriendCode = {
                             onShareText(
-                                "SharkMentor'da odak yarışına katıl! Arkadaş Kodum: ${uiState.myFriendCode}"
+                                "SharkMentor'da odak yarışına katıl. Arkadaş Kodum: ${uiState.myFriendCode}"
                             )
                         },
                         onEditBadgesClick = onOpenBadgeShowcase,
@@ -773,7 +773,7 @@ private fun LeagueContent(
                     onCopyGroupCode = { code -> onCopyCode("Grup davet kodu", code) },
                     onShareGroupCode = { group ->
                         onShareText(
-                            "SharkMentor'da \"${group.name}\" çalışma grubuma katıl! 6 Haneli Grup Kodu: ${group.inviteCode}"
+                            "SharkMentor'da \"${group.name}\" çalışma grubuna katıl. 6 Haneli Grup Kodu: ${group.inviteCode}"
                         )
                     },
                     onOpenGroupChat = onOpenGroupChat
@@ -1068,7 +1068,7 @@ private fun SocialCodeActionCard(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = "💬 Grup & Soru Sohbeti",
+                            text = "Grup & Soru Sohbeti",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -1175,7 +1175,7 @@ private fun MyTierCard(
                         }
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = "${tier.emoji} ${tier.label}",
+                            text = tier.label,
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
                             color = accentColor
                         )
@@ -1258,9 +1258,9 @@ private fun MyTierCard(
             ) {
                 Text(
                     text = if (cappedBonusMins > 0L) {
-                        "🏆 Lig Sıralama Süresi: ${effHours}s ${effMins}dk (Odak + $cappedBonusMins dk / maks. 150 dk bonus)"
+                        "Lig Sıralama Süresi: ${effHours}s ${effMins}dk (Odak + $cappedBonusMins dk / maks. 150 dk bonus)"
                     } else {
-                        "🏆 Lig Sıralama Formülü: Haftalık Odak + maks. 150 dk (9000 sn) soru bonusu"
+                        "Lig Sıralama Formülü: Haftalık Odak + maks. 150 dk (9000 sn) soru bonusu"
                     },
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -1362,7 +1362,7 @@ private fun MyTierCard(
                         }
                     } else {
                         Text(
-                            text = "Soru paylaşarak veya onaylı çözüm üreterek rozet kazanıp 5 rozet vitrinini sergile!",
+                            text = "Soru paylaşarak veya onaylı çözüm üreterek rozet kazanıp 5 rozet vitrininizi sergileyin.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

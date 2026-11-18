@@ -223,7 +223,7 @@ class ProfileViewModel @JvmOverloads constructor(
                 requestNote = requestNote
             )
             result.onSuccess {
-                _bookingMessage.emit("Görüşme randevunuz otomatik olarak onaylandı ve koçunuza iletildi!")
+                _bookingMessage.emit("Görüşme randevunuz otomatik olarak onaylandı ve koçunuza iletildi.")
                 val dateStr = SimpleDateFormat("d MMMM yyyy, EEEE - HH:mm", Locale("tr")).format(appointmentDate)
                 MeetingReminderWorker.scheduleReminder(
                     context = getApplication(),

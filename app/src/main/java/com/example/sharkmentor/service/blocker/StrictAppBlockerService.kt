@@ -74,7 +74,7 @@ class StrictAppBlockerService : Service() {
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
         }
         return NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Dopamin Orucu Aktif 🛡️")
+            .setContentTitle("Dopamin Orucu Aktif")
             .setContentText("Dikkat dağıtıcı uygulamalar engelleniyor.")
             .setSmallIcon(R.drawable.ic_lock_lock)
             .build()

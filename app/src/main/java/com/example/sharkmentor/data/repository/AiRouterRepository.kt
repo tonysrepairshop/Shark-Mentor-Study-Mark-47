@@ -234,6 +234,7 @@ class AiRouterRepository(
 
     companion object {
         const val SOLE_GEMINI_MODEL = "gemini-3.6-flash"
+        private val ACTION_BLOCK_REGEX = Regex("#ACTION:(\\{.*?\\})#", setOf(RegexOption.DOT_MATCHES_ALL))
 
         const val MANDATORY_PERSONA_RULES = """
 KESİN DAVRANIŞ VE ÜSLUP KURALLARI (ASLA İHLAL ETME):
@@ -260,15 +261,15 @@ ANLAŞILIRLIK VE MATEMATİKSEL YAZIM KURALLARI (ÇOK ÖNEMLİ):
      * Üs ve indisler: ², ³, ⁴, ⁿ, ⁻¹, x₁, x₂
      * Bağıntılar: =, ≠, ≈, ≤, ≥, ±, Δ, π, °
 2. BİÇİMLENDİRME DÜZENİ:
-   📌 **SORUNUN ÖZETİ & VERİLENLER:**
+   **SORUNUN ÖZETİ & VERİLENLER:**
    • Verilenleri ve sorulanı 1-2 maddede özetle.
 
-   🔍 **ADIM ADIM ÇÖZÜM:**
+   **ADIM ADIM ÇÖZÜM:**
    • **1. Adım:** İlk işlem ve mantığı
    • **2. Adım:** Devam eden işlemler
    • **3. Adım:** Sadeleştirme veya son işlem
 
-   🎯 **DOĞRU CEVAP & SONUÇ:**
+   **DOĞRU CEVAP & SONUÇ:**
    • **Doğru Seçenek: [Şık ve Değer]** (Örn: **Doğru Cevap: C (24)**)
    • 1 cümlelik pratik kontrol veya kilit ipucu.
 $MANDATORY_PERSONA_RULES
@@ -282,7 +283,7 @@ ANLAŞILIRLIK VE BİÇİMLENDİRME KURALLARI:
 1. TELEFON EKRANI İÇİN TEMİZ SEMBOLLER:
    - Kesinlikle LaTeX kodları (\frac, \sqrt, \cdot vb.) KULLANMA. Temiz semboller (√, ², ³, ×, ÷, ±, Δ, π, a/b) kullan.
 2. DÜZEN VE FORMAT:
-   📝 **ÖZGÜN İKİZ SORU:**
+   **ÖZGÜN İKİZ SORU:**
    [Soru metni ve hikayesi]
    A) ...
    B) ...
@@ -290,11 +291,11 @@ ANLAŞILIRLIK VE BİÇİMLENDİRME KURALLARI:
    D) ...
    E) ...
 
-   💡 **ÇÖZÜM ALGORİTMASI:**
+   **ÇÖZÜM ALGORİTMASI:**
    • **1. Adım:** ...
    • **2. Adım:** ...
 
-   🎯 **DOĞRU CEVAP:**
+   **DOĞRU CEVAP:**
    • **[Şık ve Değeri]** (Örn: **Doğru Cevap: B**)
 $MANDATORY_PERSONA_RULES
 """
@@ -678,6 +679,7 @@ $MANDATORY_PERSONA_RULES
                 }
             }
 
+            var lastEmitted = ""
             val geminiResult = GeminiAiFactory.streamContentWithFailover(
                 context = context,
                 systemInstruction = enrichedSystemInstruction,
@@ -690,7 +692,10 @@ $MANDATORY_PERSONA_RULES
                 maxOutputTokens = maxTokens,
                 topP = 0.8f,
                 timeoutMs = 75_000L,
-                onPartialText = onPartialText
+                onPartialText = { partial ->
+                    lastEmitted = partial
+                    onPartialText(partial)
+                }
             )
 
             if (geminiResult.isSuccess) {
@@ -698,7 +703,9 @@ $MANDATORY_PERSONA_RULES
                     "Görsel incelendi ve çözüldü."
                 }
                 val parsedActionNotes = parseInlineActionNotes(finalText)
-                onPartialText(finalText)
+                if (finalText != lastEmitted) {
+                    onPartialText(finalText)
+                }
                 return@withContext Result.success(
                     AiRouterResult(
                         text = finalText,
@@ -770,8 +777,7 @@ $MANDATORY_PERSONA_RULES
      */
     private suspend fun parseInlineActionNotes(resultText: String): List<String> {
         val parsedActionNotes = mutableListOf<String>()
-        val actionRegex = Regex("#ACTION:(\\{.*?\\})#", setOf(RegexOption.DOT_MATCHES_ALL))
-        for (match in actionRegex.findAll(resultText)) {
+        for (match in ACTION_BLOCK_REGEX.findAll(resultText)) {
             val jsonPayload = match.groupValues[1]
             runCatching {
                 val jsonObj = Gson().fromJson(jsonPayload, JsonObject::class.java)
@@ -1045,6 +1051,11 @@ $MANDATORY_PERSONA_RULES
     ): Result<AiRouterResult> = withContext(Dispatchers.IO) {
         val shouldAttachTools = !forceInlineActionMode && activeEngine == SharkAiEngine.PLANNER_OR_ORGANIZER
         val effectiveMaxTokens = overrideMaxTokens ?: 8192
+        var lastEmitted = ""
+        val trackedPartialCallback: (String) -> Unit = { partial ->
+            lastEmitted = partial
+            onPartialText(partial)
+        }
 
         var geminiResult = GeminiAiFactory.streamContentWithFailover(
             context = context,
@@ -1057,7 +1068,7 @@ $MANDATORY_PERSONA_RULES
             maxOutputTokens = effectiveMaxTokens,
             topP = 0.85f,
             timeoutMs = 75_000L,
-            onPartialText = onPartialText
+            onPartialText = trackedPartialCallback
         )
 
         val err = geminiResult.exceptionOrNull()
@@ -1071,6 +1082,7 @@ $MANDATORY_PERSONA_RULES
 
         if (geminiResult.isFailure && shouldAttachTools && isToolSchemaError) {
             Log.w("AiRouterRepository", "Tool schema error (${err?.message}); retrying without tools...")
+            lastEmitted = ""
             geminiResult = GeminiAiFactory.streamContentWithFailover(
                 context = context,
                 systemInstruction = systemInstruction,
@@ -1082,7 +1094,7 @@ $MANDATORY_PERSONA_RULES
                 maxOutputTokens = effectiveMaxTokens,
                 topP = 0.85f,
                 timeoutMs = 75_000L,
-                onPartialText = onPartialText
+                onPartialText = trackedPartialCallback
             )
         }
 
@@ -1130,7 +1142,9 @@ $MANDATORY_PERSONA_RULES
         val inlineNotes = parseInlineActionNotes(finalText)
         toolNotes.addAll(inlineNotes)
 
-        onPartialText(finalText)
+        if (finalText != lastEmitted) {
+            onPartialText(finalText)
+        }
 
         Result.success(
             AiRouterResult(
@@ -1249,7 +1263,7 @@ $MANDATORY_PERSONA_RULES
                 }
 
                 ToolExecutionOutcome(
-                    note = "✅ Hata Kumbarası organize edildi: **$folderTitle** ($subject • $topic)"
+                    note = "Hata Kumbarası organize edildi: **$folderTitle** ($subject • $topic)"
                 )
             }
 
@@ -1294,7 +1308,7 @@ $MANDATORY_PERSONA_RULES
                 )
 
                 ToolExecutionOutcome(
-                    note = "📅 Çalışma Planına Eklendi: **$dayName ($scheduledTime)** — $subject: $topic ($targetQuestions Soru) #ACTION:NAV_PLANS",
+                    note = "Çalışma Planına Eklendi: **$dayName ($scheduledTime)** — $subject: $topic ($targetQuestions Soru) #ACTION:NAV_PLANS",
                     planFolderId = folderId
                 )
             }

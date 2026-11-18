@@ -518,7 +518,7 @@ fun SubjectMasteryCard(subject: SubjectMastery) {
             
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Ort. Seviye: ⭐ ${String.format("%.1f", subject.topicAverage)}/5 • Kaynak: ${(subject.resourceProgress * 100).toInt()}%",
+                text = "Ort. Seviye: ${String.format("%.1f", subject.topicAverage)}/5 • Kaynak: ${(subject.resourceProgress * 100).toInt()}%",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -774,10 +774,10 @@ class FocusTimerService : Service() {
     private fun buildNotification(state: TimerState): Notification {
         val timeText  = formatMillis(state.displayMillis)
         val isBreak   = state.timerPhase == TimerPhase.MANDATORY_BREAK || state.currentMode == TimerMode.BREAK
-        val modeLabel = if (isBreak) "☕ " + getString(R.string.mode_break) else state.currentMode.displayName
-        val statusIcon = when { isBreak -> "☕"; state.isPaused -> "⏸"; else -> "⏱" }
+        val modeLabel = if (isBreak) getString(R.string.mode_break) else state.currentMode.displayName
+        val statusLabel = when { isBreak -> "Mola"; state.isPaused -> "Duraklatıldı"; else -> "Aktif" }
         val title      = getString(if (isBreak) R.string.service_title_break else R.string.service_title_focus)
-        val presenceSuffix = if (state.isPresenceCheckActive) " · ⚠ ${formatMillis(state.presenceCheckRemainingMillis)}" else ""
+        val presenceSuffix = if (state.isPresenceCheckActive) " · Varlık Kontrolü: ${formatMillis(state.presenceCheckRemainingMillis)}" else ""
 
         val openPi = PendingIntent.getActivity(
             this, REQUEST_OPEN,
@@ -794,7 +794,7 @@ class FocusTimerService : Service() {
             .setLargeIcon(largeIconBitmap)
             .setColor(getColor(R.color.shark_blue_primary))
             .setContentTitle(title)
-            .setContentText("$statusIcon $timeText — $modeLabel$presenceSuffix")
+            .setContentText("$statusLabel • $timeText — $modeLabel$presenceSuffix")
             .setContentIntent(openPi)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -890,7 +890,7 @@ class FocusTimerService : Service() {
                 .setSmallIcon(smallIconRes)
                 .setLargeIcon(largeIconBitmap)
                 .setColor(getColor(R.color.shark_blue_primary))
-                .setContentTitle("🦈 " + getString(R.string.app_name))
+                .setContentTitle(getString(R.string.app_name))
                 .setContentText(message)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(message))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
