@@ -1,8 +1,11 @@
 package com.example.sharkmentor.ui.viewmodel
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.sharkmentor.data.repository.AiRouterRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * 105 dakikalık soru çözüm penceresi için kademeli ödül dilimleri:
@@ -159,6 +163,15 @@ class QuestionSolveViewModel : ViewModel() {
     private val _isAiLocked = MutableStateFlow(false)
     val isAiLocked: StateFlow<Boolean> = _isAiLocked.asStateFlow()
 
+    private val _aiSolutionText = MutableStateFlow("")
+    val aiSolutionText: StateFlow<String> = _aiSolutionText.asStateFlow()
+
+    private val _isAiLoading = MutableStateFlow(false)
+    val isAiLoading: StateFlow<Boolean> = _isAiLoading.asStateFlow()
+
+    private val _aiError = MutableStateFlow<String?>(null)
+    val aiError: StateFlow<String?> = _aiError.asStateFlow()
+
     private val _isSubmitting = MutableStateFlow(false)
     val isSubmitting: StateFlow<Boolean> = _isSubmitting.asStateFlow()
 
@@ -169,6 +182,7 @@ class QuestionSolveViewModel : ViewModel() {
     val isSubmitted: StateFlow<Boolean> = _isSubmitted.asStateFlow()
 
     private var countdownJob: Job? = null
+    private var aiJob: Job? = null
 
     fun initializeQuestion(
         questionId: String,
@@ -186,10 +200,27 @@ class QuestionSolveViewModel : ViewModel() {
             effectiveSharedAt + TOTAL_SOLVE_WINDOW_MILLIS
         }
 
-        val isSameQuestion = _questionId.value == questionId &&
+        val isDifferentQuestion = _questionId.value != questionId
+        val isSameQuestion = !isDifferentQuestion &&
             _sharedAtMillis.value == effectiveSharedAt &&
             _expiresAtMillis.value == effectiveExpiresAt &&
             countdownJob?.isActive == true
+
+        if (isDifferentQuestion) {
+            aiJob?.cancel()
+            _explanationText.value = ""
+            _paperSolutionBitmap.value = null
+            _activeTool.value = SolveWorkspaceTool.PEN
+            _isAiLocked.value = initialAiLocked
+            _aiSolutionText.value = ""
+            _isAiLoading.value = false
+            _aiError.value = null
+            _isSubmitting.value = false
+            _submitError.value = null
+            _isSubmitted.value = false
+        } else if (initialAiLocked) {
+            _isAiLocked.value = true
+        }
 
         _questionId.value = questionId
         _subject.value = subject
@@ -197,9 +228,6 @@ class QuestionSolveViewModel : ViewModel() {
         _imageUrl.value = imageUrl
         _sharedAtMillis.value = effectiveSharedAt
         _expiresAtMillis.value = effectiveExpiresAt
-        if (initialAiLocked) {
-            _isAiLocked.value = true
-        }
 
         if (!isSameQuestion) {
             startCountdown(effectiveSharedAt, effectiveExpiresAt)
@@ -256,6 +284,55 @@ class QuestionSolveViewModel : ViewModel() {
         _submitError.value = null
     }
 
+    fun requestSharkAiSolution(context: Context, questionNote: String = "", forceReload: Boolean = false) {
+        if (!forceReload && (_isAiLoading.value || _aiSolutionText.value.isNotBlank())) {
+            return
+        }
+        aiJob?.cancel()
+        _isAiLoading.value = true
+        _aiError.value = null
+        if (forceReload) {
+            _aiSolutionText.value = ""
+        }
+
+        val currentImg = _imageUrl.value.trim()
+        val attachmentUri: Uri? = when {
+            currentImg.isBlank() -> null
+            currentImg.startsWith("/") -> Uri.fromFile(File(currentImg))
+            else -> runCatching { Uri.parse(currentImg) }.getOrNull()
+        }
+
+        val subj = _subject.value.ifBlank { "Ders" }
+        val tpc = _topic.value.ifBlank { "Genel" }
+        val prompt = buildString {
+            append("Bu $subj ($tpc) sorusunu görseldeki verileri eksiksiz okuyarak adım adım çöz ve doğru cevabı net biçimde belirt.")
+            if (questionNote.isNotBlank()) {
+                append("\nÖğrenci notu: $questionNote")
+            }
+        }
+
+        aiJob = viewModelScope.launch {
+            val router = AiRouterRepository(context.applicationContext)
+            val result = router.executeSolverEngine(
+                userPrompt = prompt,
+                contextInstruction = "Ders: $subj | Konu: $tpc",
+                attachmentUri = attachmentUri,
+                onPartialText = { partial ->
+                    _aiSolutionText.value = partial
+                }
+            )
+            result.onSuccess { res ->
+                if (res.text.isNotBlank()) {
+                    _aiSolutionText.value = res.text
+                }
+                _isAiLoading.value = false
+            }.onFailure { err ->
+                _isAiLoading.value = false
+                _aiError.value = err.localizedMessage ?: "Shark AI çözümü oluşturulamadı."
+            }
+        }
+    }
+
     fun setError(message: String?) {
         _submitError.value = message
     }
@@ -275,6 +352,7 @@ class QuestionSolveViewModel : ViewModel() {
 
     override fun onCleared() {
         countdownJob?.cancel()
+        aiJob?.cancel()
         super.onCleared()
     }
 }

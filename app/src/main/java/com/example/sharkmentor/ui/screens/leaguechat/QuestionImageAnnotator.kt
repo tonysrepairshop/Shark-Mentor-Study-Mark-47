@@ -122,6 +122,12 @@ class QuestionAnnotatorState(
     val hasAnnotations: Boolean
         get() = drawingController.strokes.isNotEmpty()
 
+    fun loadBitmap(bitmap: Bitmap) {
+        sourceBitmap = bitmap
+        isLoadingImage = false
+        imageLoadError = null
+    }
+
     /**
      * Composites the loaded [sourceBitmap] (or a clean white canvas if no image was loaded)
      * together with all strokes in [drawingController] into a single [Bitmap].
@@ -209,7 +215,7 @@ class QuestionAnnotatorState(
             style = Paint.Style.STROKE
             color = baseColorInt
             strokeWidth = baseWidth
-            strokeCap = if (stroke.tool == DrawingTool.HIGHLIGHTER || stroke.tool == DrawingTool.UNDERLINE) {
+            strokeCap = if (stroke.tool == DrawingTool.HIGHLIGHTER || stroke.tool == DrawingTool.UNDERLINE_MARKER) {
                 Paint.Cap.SQUARE
             } else {
                 Paint.Cap.ROUND
@@ -283,7 +289,7 @@ class QuestionAnnotatorState(
             return
         }
 
-        if (stroke.tool == DrawingTool.UNDERLINE && pts.size >= 2) {
+        if (stroke.tool == DrawingTool.UNDERLINE_MARKER && pts.size >= 2) {
             val startX = pts.first().x * scaleX
             val startY = pts.first().y * scaleY
             val endX = pts.last().x * scaleX

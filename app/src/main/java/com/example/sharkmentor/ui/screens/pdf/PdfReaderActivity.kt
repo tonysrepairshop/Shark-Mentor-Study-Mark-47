@@ -1073,6 +1073,8 @@ fun PdfReaderScreen(
                         AiProviderChoice.CLAUDE.takeIf { MultiProviderAiClient.getClaudeApiKey(context).isNotBlank() }
                     AiProviderChoice.OPENAI ->
                         AiProviderChoice.OPENAI.takeIf { MultiProviderAiClient.getOpenAiApiKey(context).isNotBlank() }
+                    AiProviderChoice.GROK ->
+                        AiProviderChoice.GROK.takeIf { MultiProviderAiClient.getGrokApiKey(context).isNotBlank() }
                     AiProviderChoice.DEEPSEEK ->
                         AiProviderChoice.DEEPSEEK.takeIf { DeepSeekClient.getDeepSeekApiKey(context).isNotBlank() }
                     AiProviderChoice.KIMI ->

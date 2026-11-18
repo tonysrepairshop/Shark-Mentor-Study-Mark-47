@@ -46,8 +46,8 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 const val QUESTION_REWARD_WINDOW_MS: Long = 105L * 60L * 1_000L // 105 minutes
-private const val GOLD_ELAPSED_MS: Long = 35L * 60L * 1_000L     // 0..35 min  -> 100%
-private const val SILVER_ELAPSED_MS: Long = 70L * 60L * 1_000L   // 35..70 min -> 70%
+private const val GOLD_ELAPSED_MS: Long = 15L * 60L * 1_000L     // 0..15 min  -> 100%
+private const val SILVER_ELAPSED_MS: Long = 60L * 60L * 1_000L   // 15..60 min -> 70%
 
 enum class ChatFilterTab(val label: String) {
     ALL("Tümü"),
@@ -90,7 +90,8 @@ data class QuestionCardUi(
     val createdAtMillis: Long,
     val expiresAtMillis: Long,
     val approvedSolutionId: String? = null,
-    val solverName: String? = null
+    val solverName: String? = null,
+    val aiAccessedByUids: List<String> = emptyList()
 ) {
     fun remainingMillis(nowMillis: Long = System.currentTimeMillis()): Long =
         (expiresAtMillis - nowMillis).coerceAtLeast(0L)
@@ -912,6 +913,27 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun markQuestionAiLocked(questionId: String) {
+        val cleanId = questionId.trim()
+        if (cleanId.isBlank()) return
+        val uid = resolveCurrentUid()
+        if (uid == "local_student" || uid == "student_default") return
+        val targetCollection = activeMessagesCollection() ?: return
+
+        viewModelScope.launch {
+            runCatching {
+                targetCollection.document(cleanId)
+                    .set(
+                        mapOf("aiAccessedByUids" to FieldValue.arrayUnion(uid)),
+                        SetOptions.merge()
+                    )
+                    .await()
+            }.onFailure { e ->
+                Log.w("LeagueChatVM", "markQuestionAiLocked error: ${e.message}")
+            }
+        }
+    }
+
     fun saveQuestionToMyErrorBank(question: QuestionCardUi) {
         if (_uiState.value.savedQuestionIds.contains(question.messageId)) {
             _uiState.value = _uiState.value.copy(
@@ -1350,6 +1372,10 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             val subject = SyncWorker.sanitizeTurkishText(doc.getString("questionSubject").orEmpty().ifBlank { "Ders" })
             val topic = SyncWorker.sanitizeTurkishText(doc.getString("questionTopic").orEmpty().ifBlank { "Genel" })
             val expiresAt = doc.getLong("expiresAtMillis") ?: (createdAtMs + QUESTION_REWARD_WINDOW_MS)
+            val aiLockedUids = (doc.get("aiAccessedByUids") as? List<*>)
+                ?.mapNotNull { it?.toString()?.trim() }
+                ?.filter { it.isNotBlank() }
+                ?: emptyList()
             QuestionCardUi(
                 messageId = doc.id,
                 senderId = senderId,
@@ -1363,7 +1389,8 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                 createdAtMillis = createdAtMs,
                 expiresAtMillis = expiresAt,
                 approvedSolutionId = doc.getString("approvedSolutionId"),
-                solverName = doc.getString("solverName")?.let { SyncWorker.sanitizeTurkishText(it) }
+                solverName = doc.getString("solverName")?.let { SyncWorker.sanitizeTurkishText(it) },
+                aiAccessedByUids = aiLockedUids
             )
         } else {
             null

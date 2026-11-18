@@ -1,11 +1,13 @@
 package com.example.sharkmentor.ui.screens.leaguechat
 
+import android.graphics.Bitmap
 import android.net.Uri
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.FileOutputStream
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -31,10 +33,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -47,7 +47,6 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Button
@@ -62,7 +61,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -70,7 +68,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -187,7 +184,9 @@ fun LeagueChatScreen(
     }
 
     BackHandler {
-        if (uiState.mode == LeagueChatMode.DM_THREAD && destination is LeagueChatDestination.DmInbox) {
+        if (solvingQuestion != null) {
+            solvingQuestion = null
+        } else if (uiState.mode == LeagueChatMode.DM_THREAD && destination is LeagueChatDestination.DmInbox) {
             chatViewModel.openDmInbox(myDisplayNameHint)
         } else {
             onBackClick()
@@ -591,6 +590,82 @@ fun LeagueChatScreen(
             }
         }
 
+        val activeSolvingQuestion = solvingQuestion
+        if (activeSolvingQuestion != null) {
+            var resolvedSolveImageUrl by remember(activeSolvingQuestion.messageId) {
+                mutableStateOf("")
+            }
+            LaunchedEffect(activeSolvingQuestion.messageId, activeSolvingQuestion.imageBase64, activeSolvingQuestion.localImageUri) {
+                resolvedSolveImageUrl = withContext(Dispatchers.IO) {
+                    val localRaw = activeSolvingQuestion.localImageUri.trim()
+                    val base64Raw = activeSolvingQuestion.imageBase64.trim()
+                    val usableLocal = when {
+                        localRaw.startsWith("http://", ignoreCase = true) ||
+                            localRaw.startsWith("https://", ignoreCase = true) -> localRaw
+                        localRaw.startsWith("/") && File(localRaw).exists() -> Uri.fromFile(File(localRaw)).toString()
+                        localRaw.startsWith("file://") && File(localRaw.removePrefix("file://")).exists() -> localRaw
+                        else -> ""
+                    }
+                    if (usableLocal.isNotBlank()) {
+                        usableLocal
+                    } else if (base64Raw.isNotBlank()) {
+                        runCatching {
+                            val safeId = activeSolvingQuestion.messageId
+                                .replace(Regex("[^A-Za-z0-9_-]"), "_")
+                                .ifBlank { "q" }
+                            val cacheFile = File(context.cacheDir, "solve_q_${safeId}.jpg")
+                            val bytes = Base64.decode(base64Raw, Base64.DEFAULT)
+                            FileOutputStream(cacheFile).use { it.write(bytes) }
+                            Uri.fromFile(cacheFile).toString()
+                        }.getOrDefault("")
+                    } else {
+                        ""
+                    }
+                }
+            }
+
+            QuestionSolveScreen(
+                questionId = activeSolvingQuestion.messageId,
+                subject = activeSolvingQuestion.subject,
+                topic = activeSolvingQuestion.topic,
+                imageUrl = resolvedSolveImageUrl,
+                sharedAtMillis = activeSolvingQuestion.createdAtMillis,
+                expiresAtMillis = activeSolvingQuestion.expiresAtMillis,
+                initialAiLocked = activeSolvingQuestion.aiAccessedByUids.contains(uiState.currentUid),
+                questionNote = activeSolvingQuestion.noteText,
+                onAiLockConfirmed = {
+                    chatViewModel.markQuestionAiLocked(activeSolvingQuestion.messageId)
+                },
+                onSubmitSolution = { explanation, annotatedBitmap ->
+                    coroutineScope.launch {
+                        val solutionImageUri: Uri? = if (annotatedBitmap != null) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val outFile = File(
+                                        context.cacheDir,
+                                        "solve_sol_${System.currentTimeMillis()}.jpg"
+                                    )
+                                    FileOutputStream(outFile).use { fos ->
+                                        annotatedBitmap.compress(Bitmap.CompressFormat.JPEG, 88, fos)
+                                    }
+                                    Uri.fromFile(outFile)
+                                }.getOrNull()
+                            }
+                        } else {
+                            null
+                        }
+                        chatViewModel.submitSolution(
+                            question = activeSolvingQuestion,
+                            solutionText = explanation,
+                            solutionImageUri = solutionImageUri
+                        )
+                        solvingQuestion = null
+                    }
+                },
+                onNavigateBack = { solvingQuestion = null }
+            )
+        }
+
         // Focus Lock Shield Overlay — strictly active during focus sessions
         FocusChatLockOverlay(onReturnToStudy = onBackClick)
     }
@@ -600,23 +675,6 @@ fun LeagueChatScreen(
             onDismiss = { showQuestionPicker = false },
             onSelectQuestion = { question ->
                 chatViewModel.shareErrorQuestion(question)
-            }
-        )
-    }
-
-    val activeSolvingQuestion = solvingQuestion
-    if (activeSolvingQuestion != null) {
-        QuickSolutionComposerSheet(
-            question = activeSolvingQuestion,
-            nowMillis = nowMillis,
-            onDismiss = { solvingQuestion = null },
-            onSubmit = { text, imageUri ->
-                chatViewModel.submitSolution(
-                    question = activeSolvingQuestion,
-                    solutionText = text,
-                    solutionImageUri = imageUri
-                )
-                solvingQuestion = null
             }
         )
     }
@@ -1724,113 +1782,6 @@ private fun DmInboxList(
                             )
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun QuickSolutionComposerSheet(
-    question: QuestionCardUi,
-    nowMillis: Long,
-    onDismiss: () -> Unit,
-    onSubmit: (solutionText: String, solutionImageUri: Uri?) -> Unit
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var solutionText by rememberSaveable(question.messageId) { mutableStateOf("") }
-    var attachedImageUri by remember { mutableStateOf<Uri?>(null) }
-
-    val imagePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) attachedImageUri = uri
-    }
-
-    val tier = question.currentRewardTier(nowMillis)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 26.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Text(
-                text = "✏️ Soruyu Çöz (${question.subject})",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black)
-            )
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-            ) {
-                Text(
-                    text = "Aktif Ödül Dilimi: ${tier.summaryBadge()}\nOnaylandığında puanlar hesabına aktarılır.",
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.padding(10.dp)
-                )
-            }
-
-            OutlinedTextField(
-                value = solutionText,
-                onValueChange = { solutionText = it },
-                label = { Text("Çözüm Adımları & İpucu") },
-                placeholder = { Text("Çözüm mantığını adım adım yaz...") },
-                minLines = 3,
-                maxLines = 6,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedButton(
-                    onClick = {
-                        imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PhotoLibrary,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = if (attachedImageUri == null) "Çözüm Fotoğrafı Ekle" else "Fotoğraf Değiştir ✓",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Button(
-                    onClick = { onSubmit(solutionText, attachedImageUri) },
-                    enabled = solutionText.isNotBlank() || attachedImageUri != null,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("Çözümü Gönder", fontWeight = FontWeight.Bold)
                 }
             }
         }

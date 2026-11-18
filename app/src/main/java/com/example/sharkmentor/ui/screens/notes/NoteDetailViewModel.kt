@@ -536,6 +536,8 @@ KESİN DAVRANIŞ KURALLARI:
                         AiProviderChoice.CLAUDE.takeIf { MultiProviderAiClient.getClaudeApiKey(appContext).isNotBlank() }
                     AiProviderChoice.OPENAI ->
                         AiProviderChoice.OPENAI.takeIf { MultiProviderAiClient.getOpenAiApiKey(appContext).isNotBlank() }
+                    AiProviderChoice.GROK ->
+                        AiProviderChoice.GROK.takeIf { MultiProviderAiClient.getGrokApiKey(appContext).isNotBlank() }
                     AiProviderChoice.DEEPSEEK ->
                         AiProviderChoice.DEEPSEEK.takeIf { DeepSeekClient.getDeepSeekApiKey(appContext).isNotBlank() }
                     AiProviderChoice.KIMI ->

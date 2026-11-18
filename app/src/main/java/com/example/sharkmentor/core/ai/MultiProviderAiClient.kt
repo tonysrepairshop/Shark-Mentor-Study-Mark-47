@@ -17,11 +17,12 @@ import java.io.InputStreamReader
 import java.net.ConnectException
 import java.net.UnknownHostException
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
  * Unified REST client for live model discovery, connection testing, and SSE streaming
- * across DeepSeek, Kimi (Moonshot .ai / .cn), Claude (Anthropic), and GPT (OpenAI).
+ * across DeepSeek, Kimi (Moonshot .ai / .cn / Kimi Code), Claude (Anthropic), GPT (OpenAI), and Grok (xAI).
  */
 object MultiProviderAiClient {
 
@@ -31,8 +32,13 @@ object MultiProviderAiClient {
     private const val DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 
     private val KIMI_HOSTS = listOf(
-        "https://api.moonshot.ai",
-        "https://api.moonshot.cn"
+        "https://api.moonshot.ai/v1",
+        "https://api.kimi.ai/v1",
+        "https://api.moonshot.cn/v1"
+    )
+    private val KIMI_CODING_BASES = listOf(
+        "https://api.kimi.com/coding/v1",
+        "https://api.kimi.ai/coding/v1"
     )
 
     private const val CLAUDE_MODELS_URL = "https://api.anthropic.com/v1/models?limit=100"
@@ -42,11 +48,15 @@ object MultiProviderAiClient {
     private const val OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
     private const val OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
+    private const val GROK_MODELS_URL = "https://api.x.ai/v1/models"
+    private const val GROK_CHAT_URL = "https://api.x.ai/v1/chat/completions"
+
     private val gson = Gson()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     @Volatile
     private var preferredKimiBaseHost: String = KIMI_HOSTS.first()
+    private val preferredKimiBaseByKey = ConcurrentHashMap<String, String>()
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -64,11 +74,15 @@ object MultiProviderAiClient {
     fun getOpenAiApiKey(context: Context? = null): String =
         UserAiPreferences.getOrNull(context)?.getUserOpenAiKey().orEmpty()
 
+    fun getGrokApiKey(context: Context? = null): String =
+        UserAiPreferences.getOrNull(context)?.getUserGrokKey().orEmpty()
+
     fun hasAnyExternalProviderKey(context: Context? = null): Boolean =
         DeepSeekClient.getDeepSeekApiKey(context).isNotBlank() ||
             DeepSeekClient.getKimiApiKey(context).isNotBlank() ||
             getClaudeApiKey(context).isNotBlank() ||
-            getOpenAiApiKey(context).isNotBlank()
+            getOpenAiApiKey(context).isNotBlank() ||
+            getGrokApiKey(context).isNotBlank()
 
     /**
      * Queries the live `/models` endpoint of [provider] using [apiKeyRaw] and returns
@@ -86,6 +100,9 @@ object MultiProviderAiClient {
             when (provider) {
                 AiProviderChoice.DEEPSEEK -> DeepSeekClient.getDeepSeekApiKey(null)
                 AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(null)
+                AiProviderChoice.CLAUDE -> getClaudeApiKey(null)
+                AiProviderChoice.OPENAI -> getOpenAiApiKey(null)
+                AiProviderChoice.GROK -> getGrokApiKey(null)
                 else -> ""
             }
         }
@@ -114,6 +131,13 @@ object MultiProviderAiClient {
                 urls = listOf(OPENAI_MODELS_URL),
                 apiKey = cleanKey,
                 filterAndSort = { ids -> filterAndSortOpenAiModels(ids) }
+            )
+
+            AiProviderChoice.GROK -> fetchOpenAiStyleModels(
+                providerLabel = "Grok (xAI)",
+                urls = listOf(GROK_MODELS_URL),
+                apiKey = cleanKey,
+                filterAndSort = { ids -> filterAndSortGrokModels(ids) }
             )
 
             AiProviderChoice.GEMINI, AiProviderChoice.AUTO ->
@@ -150,6 +174,7 @@ object MultiProviderAiClient {
                     AiProviderChoice.KIMI -> DeepSeekClient.getKimiApiKey(if (candidateKey == null) context else null)
                     AiProviderChoice.CLAUDE -> if (candidateKey == null) prefs?.getUserClaudeKey().orEmpty() else ""
                     AiProviderChoice.OPENAI -> if (candidateKey == null) prefs?.getUserOpenAiKey().orEmpty() else ""
+                    AiProviderChoice.GROK -> if (candidateKey == null) prefs?.getUserGrokKey().orEmpty() else ""
                     else -> ""
                 }
             )
@@ -168,6 +193,7 @@ object MultiProviderAiClient {
             AiProviderChoice.KIMI -> UserAiPreferences.DEFAULT_KIMI_MODEL
             AiProviderChoice.CLAUDE -> UserAiPreferences.DEFAULT_CLAUDE_MODEL
             AiProviderChoice.OPENAI -> UserAiPreferences.DEFAULT_OPENAI_MODEL
+            AiProviderChoice.GROK -> UserAiPreferences.DEFAULT_GROK_MODEL
             else -> UserAiPreferences.STANDARD_GEMINI_MODEL
         }
         val effectiveModel = UserAiPreferences.sanitizeProviderModelId(
@@ -195,6 +221,15 @@ object MultiProviderAiClient {
                     maxTokens = 32
                 )
 
+                AiProviderChoice.GROK -> executeOpenAiSingleTurn(
+                    url = GROK_CHAT_URL,
+                    apiKey = effectiveKey,
+                    model = effectiveModel,
+                    systemPrompt = "",
+                    userPrompt = "Sadece OK yaz.",
+                    maxTokens = 32
+                )
+
                 AiProviderChoice.DEEPSEEK -> executeOpenAiSingleTurn(
                     url = DEEPSEEK_CHAT_URL,
                     apiKey = effectiveKey,
@@ -206,26 +241,31 @@ object MultiProviderAiClient {
 
                 AiProviderChoice.KIMI -> {
                     var lastErr: Throwable? = null
+                    var nonAuthErr: Throwable? = null
                     var reply: String? = null
-                    for (host in orderedKimiHosts()) {
+                    for (base in orderedKimiBases(effectiveKey)) {
                         try {
                             reply = executeOpenAiSingleTurn(
-                                url = "$host/v1/chat/completions",
+                                url = "$base/chat/completions",
                                 apiKey = effectiveKey,
                                 model = effectiveModel,
                                 systemPrompt = "",
                                 userPrompt = "Sadece OK yaz.",
-                                maxTokens = 32
+                                maxTokens = 32,
+                                extraHeaders = kimiHeadersForBase(base)
                             )
-                            preferredKimiBaseHost = host
+                            rememberWorkingKimiBase(effectiveKey, base)
                             break
                         } catch (ce: CancellationException) {
                             throw ce
                         } catch (e: Throwable) {
                             lastErr = e
+                            if (nonAuthErr == null && !isHttp401(e)) {
+                                nonAuthErr = e
+                            }
                         }
                     }
-                    reply ?: throw (lastErr ?: IllegalStateException("Kimi yanıt vermedi."))
+                    reply ?: throw (nonAuthErr ?: lastErr ?: IllegalStateException("Kimi yanıt vermedi."))
                 }
 
                 AiProviderChoice.GEMINI, AiProviderChoice.AUTO -> "OK"
@@ -246,19 +286,24 @@ object MultiProviderAiClient {
         } else {
             val err = result.exceptionOrNull()
             if (err is CancellationException) throw err
+            val errMsg = err?.localizedMessage?.take(180) ?: err?.javaClass?.simpleName ?: "Bilinmeyen hata"
+            val details = mutableListOf(
+                "Anahtar: $masked",
+                errMsg
+            )
+            if (provider == AiProviderChoice.KIMI && isHttp401(err)) {
+                details.add("İpucu: Kimi anahtarları oluşturulduğu platforma göre ayrılır (.ai / .cn / kimi.com/code). Anahtarın doğru platformda ve aktif olduğundan emin olun.")
+            }
             AiProviderConnectionResult(
                 success = false,
                 summary = "${provider.shortLabel} bağlantısı başarısız ($effectiveModel)",
-                details = listOf(
-                    "Anahtar: $masked",
-                    err?.localizedMessage?.take(180) ?: err?.javaClass?.simpleName ?: "Bilinmeyen hata"
-                )
+                details = details
             )
         }
     }
 
     /**
-     * Streams chat completion for [provider] (`DEEPSEEK`, `KIMI`, `CLAUDE`, or `OPENAI`).
+     * Streams chat completion for [provider] (`DEEPSEEK`, `KIMI`, `CLAUDE`, `OPENAI`, or `GROK`).
      */
     suspend fun streamChatCompletion(
         provider: AiProviderChoice,
@@ -320,6 +365,29 @@ object MultiProviderAiClient {
                 }
             }
 
+            AiProviderChoice.GROK -> {
+                val apiKey = prefs?.getUserGrokKey().orEmpty()
+                if (apiKey.isBlank()) throw IllegalStateException("Grok (xAI) API anahtarı tanımlı değil.")
+                val model = prefs?.getSelectedGrokModel()?.ifBlank { UserAiPreferences.DEFAULT_GROK_MODEL }
+                    ?: UserAiPreferences.DEFAULT_GROK_MODEL
+                streamOpenAiChatCompletions(
+                    url = GROK_CHAT_URL,
+                    apiKey = apiKey,
+                    model = model,
+                    systemPrompt = systemPrompt,
+                    userPrompt = userPrompt,
+                    chatHistory = chatHistory,
+                    temperature = temperature,
+                    maxTokens = maxTokens,
+                    imageBase64 = imageBase64,
+                    imageMimeType = imageMimeType,
+                    useMaxCompletionTokensIfNeeded = false
+                ) { token ->
+                    accumulated.append(token)
+                    onAccumulatedChunk(accumulated.toString())
+                }
+            }
+
             AiProviderChoice.DEEPSEEK -> {
                 val apiKey = DeepSeekClient.getDeepSeekApiKey(context)
                 if (apiKey.isBlank()) throw IllegalStateException("DeepSeek API anahtarı tanımlı değil.")
@@ -349,10 +417,11 @@ object MultiProviderAiClient {
                 val model = prefs?.getSelectedKimiModel()?.ifBlank { UserAiPreferences.DEFAULT_KIMI_MODEL }
                     ?: UserAiPreferences.DEFAULT_KIMI_MODEL
                 var lastErr: Throwable? = null
-                for (host in orderedKimiHosts()) {
+                var nonAuthErr: Throwable? = null
+                for (base in orderedKimiBases(apiKey)) {
                     try {
                         streamOpenAiChatCompletions(
-                            url = "$host/v1/chat/completions",
+                            url = "$base/chat/completions",
                             apiKey = apiKey,
                             model = model,
                             systemPrompt = systemPrompt,
@@ -362,22 +431,30 @@ object MultiProviderAiClient {
                             maxTokens = maxTokens,
                             imageBase64 = imageBase64,
                             imageMimeType = imageMimeType,
-                            useMaxCompletionTokensIfNeeded = false
+                            useMaxCompletionTokensIfNeeded = false,
+                            extraHeaders = kimiHeadersForBase(base)
                         ) { token ->
                             accumulated.append(token)
                             onAccumulatedChunk(accumulated.toString())
                         }
-                        preferredKimiBaseHost = host
+                        rememberWorkingKimiBase(apiKey, base)
                         lastErr = null
+                        nonAuthErr = null
                         break
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Throwable) {
                         if (accumulated.isNotEmpty()) break
                         lastErr = e
+                        if (nonAuthErr == null && !isHttp401(e)) {
+                            nonAuthErr = e
+                        }
                     }
                 }
-                if (lastErr != null && accumulated.isEmpty()) throw lastErr
+                if (accumulated.isEmpty()) {
+                    val toThrow = nonAuthErr ?: lastErr
+                    if (toThrow != null) throw toThrow
+                }
             }
 
             AiProviderChoice.GEMINI, AiProviderChoice.AUTO -> {
@@ -448,20 +525,25 @@ object MultiProviderAiClient {
     }
 
     private fun fetchKimiModels(apiKey: String): GeminiModelDiscoveryResult {
-        val urls = orderedKimiHosts().map { "$it/v1/models" }
+        val bases = orderedKimiBases(apiKey)
         var lastError: String? = null
-        for ((idx, url) in urls.withIndex()) {
-            val host = orderedKimiHosts()[idx]
+        var nonAuthError: String? = null
+        for (base in bases) {
+            val url = "$base/models"
             try {
-                val req = Request.Builder()
+                val reqBuilder = Request.Builder()
                     .url(url)
                     .addHeader("Authorization", "Bearer $apiKey")
-                    .get()
-                    .build()
+                kimiHeadersForBase(base).forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+                val req = reqBuilder.get().build()
                 httpClient.newCall(req).execute().use { res ->
                     val raw = runCatching { res.body?.string().orEmpty() }.getOrDefault("")
                     if (!res.isSuccessful) {
-                        lastError = extractHttpErrorSummary(res.code, raw)
+                        val summary = extractHttpErrorSummary(res.code, raw)
+                        lastError = summary
+                        if (nonAuthError == null && res.code != 401) {
+                            nonAuthError = summary
+                        }
                         return@use
                     }
                     val root = runCatching { JSONObject(raw) }.getOrNull()
@@ -475,7 +557,7 @@ object MultiProviderAiClient {
                     }
                     val models = sortKimiModels(ids)
                     if (models.isNotEmpty()) {
-                        preferredKimiBaseHost = host
+                        rememberWorkingKimiBase(apiKey, base)
                         return GeminiModelDiscoveryResult(
                             success = true,
                             models = models,
@@ -498,7 +580,7 @@ object MultiProviderAiClient {
         return GeminiModelDiscoveryResult(
             success = false,
             models = emptyList(),
-            summary = lastError ?: "Kimi modelleri alınamadı."
+            summary = nonAuthError ?: lastError ?: "Kimi modelleri alınamadı."
         )
     }
 
@@ -639,6 +721,33 @@ object MultiProviderAiClient {
                     lower.startsWith("o4") || lower.startsWith("o3") || lower.startsWith("o1") ->
                         "İleri düzey akıl yürütme (Reasoning) modeli"
                     else -> "OpenAI sohbet modeli"
+                }
+                GeminiModelOption(id = id, displayName = formatModelTitle(id), description = desc)
+            }
+    }
+
+    private fun filterAndSortGrokModels(ids: List<String>): List<GeminiModelOption> {
+        val ignoredFragments = listOf("image", "imagine", "video", "tts", "audio", "embedding")
+        return ids.distinct()
+            .filter { id ->
+                val lower = id.lowercase(Locale.ROOT)
+                lower.contains("grok") && ignoredFragments.none { lower.contains(it) }
+            }
+            .sortedWith(
+                compareByDescending<String> { it.contains("grok-4", ignoreCase = true) }
+                    .thenByDescending { it.contains("grok-3", ignoreCase = true) }
+                    .thenByDescending { it.contains("mini", ignoreCase = true) || it.contains("fast", ignoreCase = true) }
+                    .thenBy { it }
+            )
+            .map { id ->
+                val lower = id.lowercase(Locale.ROOT)
+                val desc = when {
+                    lower.contains("grok-4") && lower.contains("fast") -> "Ultra hızlı Grok 4 modeli"
+                    lower.contains("grok-4") -> "Yeni nesil xAI Grok 4 modeli"
+                    lower.contains("grok-3-mini") -> "Hızlı ve verimli Grok 3 Mini akıl yürütme"
+                    lower.contains("grok-3") -> "xAI Grok 3 yüksek doğruluklu sohbet"
+                    lower.contains("vision") -> "Görsel destekli xAI Grok modeli"
+                    else -> "xAI Grok API modeli"
                 }
                 GeminiModelOption(id = id, displayName = formatModelTitle(id), description = desc)
             }
@@ -856,7 +965,7 @@ object MultiProviderAiClient {
         }
     }
 
-    // ── Execution: OpenAI-compatible (GPT / DeepSeek / Kimi) ─────────────────
+    // ── Execution: OpenAI-compatible (GPT / DeepSeek / Kimi / Grok) ──────────
 
     private fun isNewOpenAiReasoningModel(model: String): Boolean {
         val lower = model.lowercase(Locale.ROOT)
@@ -872,7 +981,8 @@ object MultiProviderAiClient {
         model: String,
         systemPrompt: String,
         userPrompt: String,
-        maxTokens: Int
+        maxTokens: Int,
+        extraHeaders: Map<String, String> = emptyMap()
     ): String {
         val msgs = buildList {
             if (systemPrompt.isNotBlank()) {
@@ -893,10 +1003,12 @@ object MultiProviderAiClient {
             bodyMap["max_tokens"] = maxTokens
         }
 
-        val req = Request.Builder()
+        val reqBuilder = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
+        extraHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+        val req = reqBuilder
             .post(gson.toJson(bodyMap).toRequestBody(jsonMediaType))
             .build()
 
@@ -911,10 +1023,12 @@ object MultiProviderAiClient {
                         "max_completion_tokens" to maxTokens,
                         "stream" to false
                     )
-                    val retryReq = Request.Builder()
+                    val retryBuilder = Request.Builder()
                         .url(url)
                         .addHeader("Authorization", "Bearer $apiKey")
                         .addHeader("Content-Type", "application/json")
+                    extraHeaders.forEach { (k, v) -> retryBuilder.addHeader(k, v) }
+                    val retryReq = retryBuilder
                         .post(gson.toJson(retryMap).toRequestBody(jsonMediaType))
                         .build()
                     httpClient.newCall(retryReq).execute().use { retryRes ->
@@ -936,7 +1050,9 @@ object MultiProviderAiClient {
         val choices = root.optJSONArray("choices")
         val first = choices?.optJSONObject(0)
         val msg = first?.optJSONObject("message")
-        val text = msg?.optString("content")?.trim().orEmpty()
+        val text = msg?.optString("content")?.trim()
+            ?.ifBlank { msg.optString("reasoning_content").trim() }
+            .orEmpty()
         if (text.isBlank()) throw IllegalStateException("Model boş yanıt döndürdü.")
         return text
     }
@@ -953,6 +1069,7 @@ object MultiProviderAiClient {
         imageBase64: String?,
         imageMimeType: String,
         useMaxCompletionTokensIfNeeded: Boolean,
+        extraHeaders: Map<String, String> = emptyMap(),
         onToken: suspend (String) -> Unit
     ) {
         val messagesPayload = buildList<Map<String, Any>> {
@@ -1000,11 +1117,13 @@ object MultiProviderAiClient {
             if (!omitTemperature && !model.contains("reasoner", ignoreCase = true)) {
                 map["temperature"] = temperature
             }
-            return Request.Builder()
+            val reqBuilder = Request.Builder()
                 .url(url)
                 .addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json")
                 .addHeader("Accept", "text/event-stream")
+            extraHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+            return reqBuilder
                 .post(gson.toJson(map).toRequestBody(jsonMediaType))
                 .build()
         }
@@ -1066,9 +1185,45 @@ object MultiProviderAiClient {
         }.getOrDefault(null to null)
     }
 
-    private fun orderedKimiHosts(): List<String> {
-        val current = preferredKimiBaseHost
-        return listOf(current) + KIMI_HOSTS.filter { it != current }
+    private fun orderedKimiBases(apiKey: String): List<String> {
+        val clean = UserAiPreferences.sanitizeKey(apiKey)
+        val cachedForKey = preferredKimiBaseByKey[clean]
+        val isCodingKey = clean.startsWith("sk-kimi-", ignoreCase = true)
+        val rawOrder = buildList {
+            if (!cachedForKey.isNullOrBlank()) add(cachedForKey)
+            if (isCodingKey) {
+                addAll(KIMI_CODING_BASES)
+                add(preferredKimiBaseHost)
+                addAll(KIMI_HOSTS)
+            } else {
+                add(preferredKimiBaseHost)
+                addAll(KIMI_HOSTS)
+                addAll(KIMI_CODING_BASES)
+            }
+        }
+        return rawOrder.distinct()
+    }
+
+    private fun kimiHeadersForBase(base: String): Map<String, String> =
+        if (base.contains("/coding", ignoreCase = true)) {
+            mapOf("User-Agent" to "KimiCLI/1.0")
+        } else {
+            emptyMap()
+        }
+
+    private fun rememberWorkingKimiBase(apiKey: String, base: String) {
+        val clean = UserAiPreferences.sanitizeKey(apiKey)
+        if (clean.isNotBlank()) {
+            preferredKimiBaseByKey[clean] = base
+        }
+        preferredKimiBaseHost = base
+    }
+
+    private fun isHttp401(error: Throwable?): Boolean {
+        val msg = error?.message.orEmpty()
+        return msg.contains("HTTP 401", ignoreCase = true) ||
+            msg.contains("invalid_authentication", ignoreCase = true) ||
+            msg.contains("Invalid Authentication", ignoreCase = true)
     }
 
     private fun extractHttpErrorSummary(code: Int, rawBody: String): String {

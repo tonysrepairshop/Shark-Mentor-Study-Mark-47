@@ -26,14 +26,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -120,6 +123,7 @@ fun QuestionSolveScreen(
     modifier: Modifier = Modifier,
     onAiLockConfirmed: () -> Unit = {},
     initialAiLocked: Boolean = false,
+    questionNote: String = "",
     viewModel: QuestionSolveViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -162,6 +166,9 @@ fun QuestionSolveScreen(
     val explanationText by viewModel.explanationText.collectAsState()
     val paperSolutionBitmap by viewModel.paperSolutionBitmap.collectAsState()
     val isAiLocked by viewModel.isAiLocked.collectAsState()
+    val aiSolutionText by viewModel.aiSolutionText.collectAsState()
+    val isAiLoading by viewModel.isAiLoading.collectAsState()
+    val aiError by viewModel.aiError.collectAsState()
     val isSubmitting by viewModel.isSubmitting.collectAsState()
     val submitError by viewModel.submitError.collectAsState()
 
@@ -256,7 +263,9 @@ fun QuestionSolveScreen(
                         showSharkAiConfirmDialog = false
                         viewModel.confirmAiLock()
                         viewModel.selectTool(SolveWorkspaceTool.SHARK_AI)
+                        isBottomPanelExpanded = true
                         onAiLockConfirmed()
+                        viewModel.requestSharkAiSolution(context, questionNote)
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFFEF4444),
@@ -479,7 +488,7 @@ fun QuestionSolveScreen(
                             SolveWorkspaceTool.PEN -> {
                                 viewModel.selectTool(SolveWorkspaceTool.PEN)
                                 if (annotatorState.drawingController.activeTool == DrawingTool.NONE ||
-                                    annotatorState.drawingController.activeTool == DrawingTool.ERASER
+                                    annotatorState.drawingController.activeTool.isEraserTool
                                 ) {
                                     annotatorState.drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
                                 }
@@ -499,7 +508,9 @@ fun QuestionSolveScreen(
                                 focusManager.clearFocus()
                                 if (isAiLocked) {
                                     viewModel.selectTool(SolveWorkspaceTool.SHARK_AI)
+                                    isBottomPanelExpanded = true
                                     onAiLockConfirmed()
+                                    viewModel.requestSharkAiSolution(context, questionNote)
                                 } else {
                                     showSharkAiConfirmDialog = true
                                 }
@@ -817,34 +828,129 @@ fun QuestionSolveScreen(
                             }
 
                             SolveWorkspaceTool.SHARK_AI -> {
-                                // 4. Araç: Shark AI Durum Paneli
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(Color(0xFFEF4444).copy(alpha = 0.14f))
-                                        .border(
-                                            1.dp,
-                                            Color(0xFFEF4444).copy(alpha = 0.45f),
-                                            RoundedCornerShape(10.dp)
+                                // 4. Araç: Shark AI Durum & Çözüm Paneli
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(Color(0xFFEF4444).copy(alpha = 0.14f))
+                                            .border(
+                                                1.dp,
+                                                Color(0xFFEF4444).copy(alpha = 0.45f),
+                                                RoundedCornerShape(10.dp)
+                                            )
+                                            .padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = null,
+                                            tint = Color(0xFFF87171),
+                                            modifier = Modifier.size(18.dp)
                                         )
-                                        .padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Lock,
-                                        contentDescription = null,
-                                        tint = Color(0xFFF87171),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(
-                                        text = "Shark AI çözümü görüntülendiği için bu soruya çözüm gönderimi ve puan kazanımı kilitlendi.",
-                                        color = Color(0xFFFECACA),
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                        Text(
+                                            text = "Shark AI çözümü görüntülendiği için bu soruya çözüm gönderimi ve puan kazanımı kilitlendi.",
+                                            color = Color(0xFFFECACA),
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 72.dp, max = 180.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(Color(0xFF131E35))
+                                            .border(
+                                                1.dp,
+                                                Color(0xFFF59E0B).copy(alpha = 0.35f),
+                                                RoundedCornerShape(10.dp)
+                                            )
+                                            .padding(10.dp)
+                                    ) {
+                                        when {
+                                            isAiLoading && aiSolutionText.isBlank() -> {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(16.dp),
+                                                        strokeWidth = 2.dp,
+                                                        color = Color(0xFFFBBF24)
+                                                    )
+                                                    Text(
+                                                        text = "Shark AI soruyu çözüyor...",
+                                                        color = Color(0xFFFDE68A),
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Medium
+                                                    )
+                                                }
+                                            }
+                                            aiError != null && aiSolutionText.isBlank() -> {
+                                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    Text(
+                                                        text = aiError ?: "Shark AI çözümü alınamadı.",
+                                                        color = Color(0xFFFCA5A5),
+                                                        fontSize = 11.5.sp
+                                                    )
+                                                    TextButton(
+                                                        onClick = {
+                                                            viewModel.requestSharkAiSolution(
+                                                                context = context,
+                                                                questionNote = questionNote,
+                                                                forceReload = true
+                                                            )
+                                                        }
+                                                    ) {
+                                                        Text(
+                                                            text = "Tekrar Dene",
+                                                            color = Color(0xFFFBBF24),
+                                                            fontSize = 12.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            aiSolutionText.isNotBlank() -> {
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .verticalScroll(rememberScrollState()),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = aiSolutionText,
+                                                        color = Color(0xFFE2E8F0),
+                                                        fontSize = 12.sp,
+                                                        lineHeight = 17.sp
+                                                    )
+                                                }
+                                            }
+                                            else -> {
+                                                TextButton(
+                                                    onClick = {
+                                                        viewModel.requestSharkAiSolution(
+                                                            context = context,
+                                                            questionNote = questionNote,
+                                                            forceReload = true
+                                                        )
+                                                    }
+                                                ) {
+                                                    Text(
+                                                        text = "🤖 Shark AI Çözümünü Getir",
+                                                        color = Color(0xFFFBBF24),
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
