@@ -807,12 +807,6 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                         )
                         SharkBadgeCatalog.syncShowcaseAndBadgesToCloud(appContext, uid)
                     } else {
-                        val earnedFirstTierBadges = mutableListOf(
-                            SharkBadgeCatalog.BADGE_ILK_COZUM,
-                            SharkBadgeCatalog.BADGE_SORU_AVCISI,
-                            SharkBadgeCatalog.BADGE_SERI_MENTOR,
-                            SharkBadgeCatalog.BADGE_MEGALODON_ONDERI
-                        )
                         val progressIncrements = hashMapOf<String, Any>(
                             SharkBadgeCatalog.BADGE_ILK_COZUM to FieldValue.increment(1L),
                             SharkBadgeCatalog.BADGE_SORU_AVCISI to FieldValue.increment(1L),
@@ -820,18 +814,15 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                             SharkBadgeCatalog.BADGE_MEGALODON_ONDERI to FieldValue.increment(1L)
                         )
                         if (solveElapsedMs in 0L..(15L * 60L * 1_000L)) {
-                            earnedFirstTierBadges.add(SharkBadgeCatalog.BADGE_HIZLI_KOPEKBALIGI)
                             progressIncrements[SharkBadgeCatalog.BADGE_HIZLI_KOPEKBALIGI] = FieldValue.increment(1L)
                         }
                         if (solveElapsedMs in (60L * 60L * 1_000L)..(105L * 60L * 1_000L)) {
-                            earnedFirstTierBadges.add(SharkBadgeCatalog.BADGE_CAN_SIMIDI)
                             progressIncrements[SharkBadgeCatalog.BADGE_CAN_SIMIDI] = FieldValue.increment(1L)
                         }
                         SharkBadgeCatalog.topicAndSubjectBadgeIdsFor(
                             subject = question.subject,
                             topic = question.topic
                         ).forEach { badgeId ->
-                            earnedFirstTierBadges.add(badgeId)
                             progressIncrements[badgeId] = FieldValue.increment(1L)
                         }
 
@@ -839,7 +830,6 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                             val studentRewardPayload = hashMapOf<String, Any>(
                                 "mentorPoints" to FieldValue.increment(solution.escrowPoints.toLong()),
                                 "approvedSolutionsCount" to FieldValue.increment(1L),
-                                "unlockedBadges" to FieldValue.arrayUnion(*earnedFirstTierBadges.toTypedArray()),
                                 "badgeProgress" to progressIncrements
                             )
                             if (bonusSecs > 0L) {

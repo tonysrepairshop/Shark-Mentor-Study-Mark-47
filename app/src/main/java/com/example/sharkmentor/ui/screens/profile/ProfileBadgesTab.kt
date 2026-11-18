@@ -2,12 +2,9 @@ package com.example.sharkmentor.ui.screens.profile
 
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -23,11 +20,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EmojiEvents
@@ -62,42 +57,40 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.sharkmentor.core.badges.BadgeCategory as CoreBadgeCategory
 import com.example.sharkmentor.core.badges.BadgeProgressInfo
 import com.example.sharkmentor.core.badges.BadgeTier
 import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.badges.SharkBadgeChip
 import com.example.sharkmentor.core.badges.SharkBadgeDef
+import com.example.sharkmentor.core.badges.SharkBadgeSymbolIcon
 import java.util.Locale
 
 /**
  * Rozet kategori filtreleri ("Tümü", "Matematik/Geo", "Fizik", "Kimya", "Biyoloji",
  * "Türkçe/Edebiyat", "Sosyal/Dil", "Mentorluk").
  */
-enum class BadgeCategory(
+enum class ProfileBadgeCategoryFilter(
     val label: String,
     val emoji: String
 ) {
     ALL("Tümü", "🏅"),
-    MATH_GEO("Matematik/Geo", "📐"),
-    PHYSICS("Fizik", "⚛️"),
-    CHEMISTRY("Kimya", "⚗️"),
-    BIOLOGY("Biyoloji", "🧬"),
-    TURKISH_LIT("Türkçe/Edebiyat", "📖"),
-    SOCIAL_LANG("Sosyal/Dil", "🌍"),
-    MENTORSHIP("Mentorluk", "🦈")
+    MATH_GEO(CoreBadgeCategory.MATH_GEO.shortTitle, CoreBadgeCategory.MATH_GEO.emoji),
+    PHYSICS(CoreBadgeCategory.PHYSICS.shortTitle, CoreBadgeCategory.PHYSICS.emoji),
+    CHEMISTRY(CoreBadgeCategory.CHEMISTRY.shortTitle, CoreBadgeCategory.CHEMISTRY.emoji),
+    BIOLOGY(CoreBadgeCategory.BIOLOGY.shortTitle, CoreBadgeCategory.BIOLOGY.emoji),
+    TURKISH_LIT(CoreBadgeCategory.TURKISH_LIT.shortTitle, CoreBadgeCategory.TURKISH_LIT.emoji),
+    SOCIAL_LANG(CoreBadgeCategory.SOCIAL_LANG.shortTitle, CoreBadgeCategory.SOCIAL_LANG.emoji),
+    MENTORSHIP(CoreBadgeCategory.MENTORSHIP.shortTitle, CoreBadgeCategory.MENTORSHIP.emoji)
 }
 
 /**
@@ -132,24 +125,21 @@ fun ProfileBadgesTab(
     val context = LocalContext.current
     val allBadges = SharkBadgeCatalog.ALL_BADGES
 
-    val effectiveUnlockedIds = remember(unlockedBadgeIds, badgeProgress, allBadges) {
-        val fromProgress = allBadges
-            .filter { def ->
-                val count = badgeProgress[def.id] ?: 0
-                count >= (def.thresholds.firstOrNull() ?: 1)
-            }
-            .map { it.id }
-            .toSet()
-        unlockedBadgeIds + fromProgress
-    }
-
-    val badgeProgressItems = remember(allBadges, badgeProgress, effectiveUnlockedIds) {
+    val badgeProgressItems = remember(allBadges, badgeProgress, unlockedBadgeIds) {
         allBadges.map { badge ->
+            val rawCount = badgeProgress[badge.id] ?: 0
             badge.progressFor(
-                rawCount = badgeProgress[badge.id] ?: 0,
-                isLegacyUnlocked = effectiveUnlockedIds.contains(badge.id)
+                rawCount = rawCount,
+                isLegacyUnlocked = rawCount <= 0 && unlockedBadgeIds.contains(badge.id)
             )
         }
+    }
+
+    val effectiveUnlockedIds = remember(badgeProgressItems) {
+        badgeProgressItems
+            .filter { it.unlockedTier != null }
+            .map { it.badge.id }
+            .toSet()
     }
 
     val tierCounts = remember(badgeProgressItems) {
@@ -174,7 +164,7 @@ fun ProfileBadgesTab(
         )
     }
 
-    var selectedCategory by rememberSaveable { mutableStateOf(BadgeCategory.ALL) }
+    var selectedCategory by rememberSaveable { mutableStateOf(ProfileBadgeCategoryFilter.ALL) }
     var selectedStatusFilter by rememberSaveable { mutableStateOf(BadgeStatusFilter.ALL) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var inspectedBadgeInfo by remember { mutableStateOf<BadgeProgressInfo?>(null) }
@@ -187,8 +177,9 @@ fun ProfileBadgesTab(
     ) {
         val normalizedQuery = normalizeTurkishSearch(searchQuery)
         badgeProgressItems.filter { info ->
-            val categoryMatch = selectedCategory == BadgeCategory.ALL ||
-                resolveBadgeCategory(info.badge) == selectedCategory
+            val badgeFilterCategory = resolveBadgeCategory(info.badge)
+            val categoryMatch = selectedCategory == ProfileBadgeCategoryFilter.ALL ||
+                badgeFilterCategory == selectedCategory
 
             val statusMatch = when (selectedStatusFilter) {
                 BadgeStatusFilter.ALL -> true
@@ -200,7 +191,7 @@ fun ProfileBadgesTab(
                 true
             } else {
                 val haystack = normalizeTurkishSearch(
-                    "${info.badge.title} ${info.badge.description} ${info.badge.conditionLabel} ${resolveBadgeSymbolText(info.badge)} ${resolveBadgeCategory(info.badge).label}"
+                    "${info.badge.id} ${info.badge.title} ${info.badge.description} ${info.badge.conditionLabel} ${info.badge.symbolText} ${info.badge.category.title} ${badgeFilterCategory.label}"
                 )
                 haystack.contains(normalizedQuery)
             }
@@ -277,7 +268,7 @@ fun ProfileBadgesTab(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    BadgeCategory.entries.forEach { category ->
+                    ProfileBadgeCategoryFilter.entries.forEach { category ->
                         val isSelected = selectedCategory == category
                         FilterChip(
                             selected = isSelected,
@@ -687,10 +678,9 @@ private fun BadgeGridCard(
             ) {
                 SharkBadgeSymbolIcon(
                     badge = badge,
-                    tier = unlockedTier,
-                    isUnlocked = isUnlocked,
                     size = 46.dp,
-                    symbolFontSize = 13.sp
+                    tier = unlockedTier,
+                    isLocked = !isUnlocked
                 )
 
                 Column(
@@ -819,53 +809,6 @@ private fun BadgeGridCard(
 }
 
 /**
- * Rozetin özel sembol madalyonu (örn. f'(x), ∫, lim, F=ma, pH, DNA vb.).
- */
-@Composable
-fun SharkBadgeSymbolIcon(
-    badge: SharkBadgeDef,
-    tier: BadgeTier?,
-    isUnlocked: Boolean,
-    size: Dp = 48.dp,
-    symbolFontSize: TextUnit = 13.sp,
-    modifier: Modifier = Modifier
-) {
-    val startColor = Color(badge.primaryColorHex)
-    val endColor = Color(badge.secondaryColorHex)
-    val borderColor = tier?.let { Color(it.primaryColorHex) } ?: Color.White.copy(alpha = 0.28f)
-    val symbolText = remember(badge.id) { resolveBadgeSymbolText(badge) }
-
-    Box(
-        modifier = modifier
-            .size(size)
-            .alpha(if (isUnlocked) 1f else 0.72f)
-            .clip(CircleShape)
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(startColor, endColor)
-                )
-            )
-            .border(
-                width = if (tier != null) 2.dp else 1.dp,
-                color = borderColor,
-                shape = CircleShape
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = symbolText,
-            color = Color.White,
-            fontSize = symbolFontSize,
-            fontWeight = FontWeight.ExtraBold,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 1,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 3.dp)
-        )
-    }
-}
-
-/**
  * 3. Rozete Tıklayınca Açılan Detay Penceresi (ModalBottomSheet):
  * - Büyük sembol rozet madalyonu (f'(x), ∫ vb.) ve başlık + kategori etiketi
  * - Kazanım açıklaması ve net hedef cümlesi (ör. "Türev'den 15 soru doğru çöz")
@@ -890,7 +833,7 @@ private fun BadgeDetailModalSheet(
     val primaryColor = Color(badge.primaryColorHex)
     val activeColor = unlockedTier?.let { Color(it.primaryColorHex) } ?: primaryColor
     val category = remember(badge.id) { resolveBadgeCategory(badge) }
-    val thresholds = if (badge.thresholds.size >= 4) badge.thresholds else listOf(15, 45, 100, 220)
+    val thresholds = if (badge.thresholds.size >= 4) badge.thresholds else SharkBadgeCatalog.DEFAULT_TOPIC_THRESHOLDS
     val remainingToNext = (progressInfo.nextTarget - progressInfo.count).coerceAtLeast(0)
 
     ModalBottomSheet(
@@ -914,10 +857,9 @@ private fun BadgeDetailModalSheet(
             ) {
                 SharkBadgeSymbolIcon(
                     badge = badge,
-                    tier = unlockedTier,
-                    isUnlocked = isUnlocked,
                     size = 68.dp,
-                    symbolFontSize = 18.sp
+                    tier = unlockedTier,
+                    isLocked = !isUnlocked
                 )
 
                 Column(
@@ -1212,172 +1154,26 @@ private fun buildClearTargetSentence(
 ): String {
     val nextTier = progressInfo.nextTier
     val target = progressInfo.nextTarget
-    val baseTitle = badge.title
-        .removeSuffix(" Canavarı")
-        .removeSuffix(" Kâşifi")
-        .removeSuffix(" Simyacısı")
-        .removeSuffix(" Uzmanı")
-        .removeSuffix(" Avcısı")
-        .removeSuffix(" Bilge")
-        .trim()
-
     return if (nextTier != null) {
-        "${nextTier.emoji} ${nextTier.label} kademe için $baseTitle alanında toplam $target hedefini tamamla (${badge.conditionLabel})."
+        "${nextTier.emoji} ${nextTier.label} kademe için ${badge.title} hedefinde toplam $target tamamla (${badge.conditionLabel})."
     } else {
         "🦈 Megalodon kademesine ulaştın! (${badge.conditionLabel})"
     }
 }
 
 /**
- * Rozetin özel sembol metnini (örn. "f'(x)", "∫", "lim", "F=ma", "pH", "DNA") belirler.
- * Argon 1'in SharkBadgeDef üzerinde tanımlayabileceği `symbol` / `symbolText` alanlarını da
- * dinamik olarak destekler.
+ * Rozetin ait olduğu ders/mentorluk kategorisini doğrudan katalog tanımından çözümler.
  */
-private fun resolveBadgeSymbolText(badge: SharkBadgeDef): String {
-    // 1. Eğer SharkBadgeDef üzerinde symbolText veya symbol getter'ı varsa onu kullan
-    for (getterName in listOf("getSymbolText", "getSymbol", "getShortSymbol")) {
-        val reflected = runCatching {
-            badge.javaClass.getMethod(getterName).invoke(badge) as? String
-        }.getOrNull()
-        if (!reflected.isNullOrBlank()) {
-            return reflected.trim()
-        }
+private fun resolveBadgeCategory(badge: SharkBadgeDef): ProfileBadgeCategoryFilter =
+    when (badge.category) {
+        CoreBadgeCategory.MATH_GEO -> ProfileBadgeCategoryFilter.MATH_GEO
+        CoreBadgeCategory.PHYSICS -> ProfileBadgeCategoryFilter.PHYSICS
+        CoreBadgeCategory.CHEMISTRY -> ProfileBadgeCategoryFilter.CHEMISTRY
+        CoreBadgeCategory.BIOLOGY -> ProfileBadgeCategoryFilter.BIOLOGY
+        CoreBadgeCategory.TURKISH_LIT -> ProfileBadgeCategoryFilter.TURKISH_LIT
+        CoreBadgeCategory.SOCIAL_LANG -> ProfileBadgeCategoryFilter.SOCIAL_LANG
+        CoreBadgeCategory.MENTORSHIP -> ProfileBadgeCategoryFilter.MENTORSHIP
     }
-
-    // 2. Başlık ve ID üzerinden konu bazlı sembol eşleştirmesi
-    val key = normalizeTurkishSearch("${badge.id} ${badge.title}")
-    return when {
-        key.contains("turev") -> "f'(x)"
-        key.contains("integral") -> "∫dx"
-        key.contains("limit") -> "lim"
-        key.contains("trigonometri") -> "sinθ"
-        key.contains("logaritma") -> "log"
-        key.contains("fonksiyon") -> "f(x)"
-        key.contains("polinom") -> "P(x)"
-        key.contains("dizi") -> "aₙ"
-        key.contains("olasilik") || key.contains("permutasyon") || key.contains("kombinasyon") -> "P(A)"
-        key.contains("karmasik") -> "i²"
-        key.contains("parabol") || key.contains("ikinci derece") -> "ax²"
-        key.contains("ucgen") -> "△"
-        key.contains("cember") || key.contains("daire") -> "◯"
-        key.contains("analitik") -> "(x,y)"
-        key.contains("kati cisim") || key.contains("uzay") -> "πr²h"
-        key.contains("geometri") -> "∠α"
-        key.contains("matematik") || key.contains("sayisal") -> "f'(x)"
-
-        key.contains("kuvvet") || key.contains("newton") || key.contains("dinamik") -> "F=ma"
-        key.contains("hareket") || key.contains("atis") -> "v=at"
-        key.contains("enerji") || key.contains("is guc") -> "½mv²"
-        key.contains("momentum") || key.contains("itme") -> "p=mv"
-        key.contains("elektrik") || key.contains("devre") -> "V=IR"
-        key.contains("manyetizma") || key.contains("induksiyon") -> "B·I"
-        key.contains("dalga") || key.contains("optik") -> "λ=v/f"
-        key.contains("modern fizik") || key.contains("fotoelektrik") || key.contains("atom fizigi") -> "E=mc²"
-        key.contains("cember") || key.contains("basit harmonik") -> "ω=2πf"
-        key.contains("fizik") -> "F=ma"
-
-        key.contains("mol") -> "mol"
-        key.contains("gaz") -> "PV"
-        key.contains("cozelti") -> "M=n/V"
-        key.contains("entalpi") || key.contains("enerji") || key.contains("hiz") -> "ΔH"
-        key.contains("denge") -> "Kc"
-        key.contains("asit") || key.contains("baz") -> "pH"
-        key.contains("elektrokimya") || key.contains("redoks") -> "E°"
-        key.contains("organik") || key.contains("karbon") -> "C₆H₆"
-        key.contains("periyodik") || key.contains("atom") -> "Z/A"
-        key.contains("kimya") -> "pH"
-
-        key.contains("kalitim") || key.contains("genetik") || key.contains("dna") || key.contains("protein") -> "DNA"
-        key.contains("hucre") || key.contains("mitoz") || key.contains("mayoz") -> "2n"
-        key.contains("fotosentez") || key.contains("solunum") -> "ATP"
-        key.contains("sistem") || key.contains("sinir") || key.contains("dolasim") -> "🫀"
-        key.contains("bitki") -> "🌿"
-        key.contains("ekoloji") -> "🌱"
-        key.contains("biyoloji") -> "DNA"
-
-        key.contains("paragraf") -> "¶"
-        key.contains("dil bilgisi") || key.contains("yazim") || key.contains("noktalama") -> "Aa"
-        key.contains("divan") || key.contains("siir") || key.contains("edebiyat") || key.contains("roman") -> "✒️"
-        key.contains("turkce") -> "¶"
-
-        key.contains("tarih") || key.contains("inkilap") || key.contains("osmanli") -> "🏛️"
-        key.contains("cografya") || key.contains("iklim") || key.contains("harita") -> "🧭"
-        key.contains("felsefe") || key.contains("mantik") || key.contains("psikoloji") -> "Φ"
-        key.contains("din") -> "☪️"
-        key.contains("ingilizce") || key.contains("ydt") || key.contains("yabanci dil") -> "A-Z"
-        key.contains("sosyal") -> "🌍"
-
-        key.contains("ilk_soru") -> "📸"
-        key.contains("ilk_cozum") -> "✓"
-        key.contains("hizli") -> "⚡"
-        key.contains("can_simidi") -> "🛟"
-        key.contains("soru_canavari") -> "🔥"
-        key.contains("soru_avcisi") -> "🎯"
-        else -> badge.emoji.ifBlank { "🏅" }
-    }
-}
-
-/**
- * Rozetin ait olduğu ders/mentorluk kategorisini çözümler.
- */
-private fun resolveBadgeCategory(badge: SharkBadgeDef): BadgeCategory {
-    // 1. Eğer SharkBadgeDef üzerinde getCategory() varsa onu da kontrol et
-    val reflectedCategory = runCatching {
-        badge.javaClass.getMethod("getCategory").invoke(badge)?.toString()
-    }.getOrNull()
-
-    if (!reflectedCategory.isNullOrBlank()) {
-        val normCat = normalizeTurkishSearch(reflectedCategory)
-        when {
-            normCat.contains("math") || normCat.contains("mat") || normCat.contains("geo") -> return BadgeCategory.MATH_GEO
-            normCat.contains("phys") || normCat.contains("fizik") -> return BadgeCategory.PHYSICS
-            normCat.contains("chem") || normCat.contains("kimya") -> return BadgeCategory.CHEMISTRY
-            normCat.contains("bio") || normCat.contains("biyo") -> return BadgeCategory.BIOLOGY
-            normCat.contains("turk") || normCat.contains("edeb") || normCat.contains("lit") -> return BadgeCategory.TURKISH_LIT
-            normCat.contains("soc") || normCat.contains("sosyal") || normCat.contains("tarih") ||
-                normCat.contains("cog") || normCat.contains("lang") || normCat.contains("dil") -> return BadgeCategory.SOCIAL_LANG
-            normCat.contains("mentor") -> return BadgeCategory.MENTORSHIP
-        }
-    }
-
-    val text = normalizeTurkishSearch("${badge.id} ${badge.title} ${badge.conditionLabel}")
-    return when {
-        text.contains("matematik") || text.contains("turev") || text.contains("integral") ||
-            text.contains("limit") || text.contains("trigonometri") || text.contains("logaritma") ||
-            text.contains("fonksiyon") || text.contains("polinom") || text.contains("dizi") ||
-            text.contains("olasilik") || text.contains("permutasyon") || text.contains("kombinasyon") ||
-            text.contains("geometri") || text.contains("ucgen") || text.contains("cember") ||
-            text.contains("analitik") || text.contains("parabol") || text.contains("kati cisim") ->
-            BadgeCategory.MATH_GEO
-
-        text.contains("fizik") || text.contains("kuvvet") || text.contains("hareket") ||
-            text.contains("optik") || text.contains("manyetizma") || text.contains("elektrik") ||
-            text.contains("dalga") || text.contains("momentum") || text.contains("modern fizik") ->
-            BadgeCategory.PHYSICS
-
-        text.contains("kimya") || text.contains("mol") || text.contains("organik") ||
-            text.contains("asit") || text.contains("entalpi") || text.contains("elektrokimya") ||
-            text.contains("periyodik") || text.contains("cozelti") || text.contains("gazlar") ->
-            BadgeCategory.CHEMISTRY
-
-        text.contains("biyoloji") || text.contains("hucre") || text.contains("kalitim") ||
-            text.contains("genetik") || text.contains("ekoloji") || text.contains("fotosentez") ||
-            text.contains("solunum") || text.contains("bitki") || text.contains("sistemler") ->
-            BadgeCategory.BIOLOGY
-
-        text.contains("turkce") || text.contains("paragraf") || text.contains("edebiyat") ||
-            text.contains("dil bilgisi") || text.contains("siir") || text.contains("roman") ||
-            text.contains("anlam") || text.contains("yazim") ->
-            BadgeCategory.TURKISH_LIT
-
-        text.contains("sosyal") || text.contains("tarih") || text.contains("cografya") ||
-            text.contains("felsefe") || text.contains("din") || text.contains("ingilizce") ||
-            text.contains("ydt") || text.contains("inkilap") ->
-            BadgeCategory.SOCIAL_LANG
-
-        else -> BadgeCategory.MENTORSHIP
-    }
-}
 
 private fun normalizeTurkishSearch(input: String): String =
     input.trim()

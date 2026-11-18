@@ -3,8 +3,6 @@ package com.example.sharkmentor.ui.screens.leaguechat
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -65,7 +63,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
@@ -74,21 +71,24 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.sharkmentor.core.badges.BadgeCategory as CoreBadgeCategory
 import com.example.sharkmentor.core.badges.BadgeProgressInfo
 import com.example.sharkmentor.core.badges.BadgeTier
 import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.badges.SharkBadgeChip
 import com.example.sharkmentor.core.badges.SharkBadgeDef
+import com.example.sharkmentor.core.badges.SharkBadgeSymbolIcon
 import java.util.Locale
 
 internal enum class BadgeFilterCategory(val label: String) {
     ALL("Tümü"),
-    MATEMATIK("Matematik"),
-    FIZIK("Fizik"),
-    KIMYA("Kimya"),
-    BIYOLOJI("Biyoloji"),
-    SOZEL("Sözel"),
-    MENTORLUK("Mentorluk")
+    MATEMATIK(CoreBadgeCategory.MATH_GEO.shortTitle),
+    FIZIK(CoreBadgeCategory.PHYSICS.shortTitle),
+    KIMYA(CoreBadgeCategory.CHEMISTRY.shortTitle),
+    BIYOLOJI(CoreBadgeCategory.BIOLOGY.shortTitle),
+    TURKCE_EDEB(CoreBadgeCategory.TURKISH_LIT.shortTitle),
+    SOSYAL_DIL(CoreBadgeCategory.SOCIAL_LANG.shortTitle),
+    MENTORLUK(CoreBadgeCategory.MENTORSHIP.shortTitle)
 }
 
 internal fun normalizeBadgeText(raw: String): String =
@@ -104,292 +104,16 @@ internal fun normalizeBadgeText(raw: String): String =
         .replace('î', 'i')
         .replace('û', 'u')
 
-private fun containsNormalizedWord(normalizedText: String, word: String): Boolean {
-    if (word.isBlank() || normalizedText.isBlank()) return false
-    var startIndex = 0
-    while (startIndex <= normalizedText.length - word.length) {
-        val found = normalizedText.indexOf(word, startIndex)
-        if (found < 0) return false
-        val beforeOk = found == 0 || !normalizedText[found - 1].isLetterOrDigit()
-        val afterIdx = found + word.length
-        val afterOk = afterIdx >= normalizedText.length || !normalizedText[afterIdx].isLetterOrDigit()
-        if (beforeOk && afterOk) return true
-        startIndex = found + 1
+internal fun resolveBadgeCategory(badge: SharkBadgeDef): BadgeFilterCategory =
+    when (badge.category) {
+        CoreBadgeCategory.MATH_GEO -> BadgeFilterCategory.MATEMATIK
+        CoreBadgeCategory.PHYSICS -> BadgeFilterCategory.FIZIK
+        CoreBadgeCategory.CHEMISTRY -> BadgeFilterCategory.KIMYA
+        CoreBadgeCategory.BIOLOGY -> BadgeFilterCategory.BIYOLOJI
+        CoreBadgeCategory.TURKISH_LIT -> BadgeFilterCategory.TURKCE_EDEB
+        CoreBadgeCategory.SOCIAL_LANG -> BadgeFilterCategory.SOSYAL_DIL
+        CoreBadgeCategory.MENTORSHIP -> BadgeFilterCategory.MENTORLUK
     }
-    return false
-}
-
-private fun readOptionalBadgeStringProperty(badge: SharkBadgeDef, vararg getterNames: String): String? {
-    return runCatching {
-        val methods = badge::class.java.methods
-        for (name in getterNames) {
-            val method = methods.firstOrNull { it.name == name && it.parameterCount == 0 } ?: continue
-            val value = method.invoke(badge) ?: continue
-            when (value) {
-                is String -> if (value.isNotBlank()) return@runCatching value.trim()
-                else -> {
-                    val labelMethod = value::class.java.methods.firstOrNull {
-                        (it.name == "getLabel" || it.name == "getTitle" || it.name == "getDisplayName") &&
-                            it.parameterCount == 0
-                    }
-                    val labelVal = labelMethod?.invoke(value)?.toString()?.trim()
-                    val resolved = labelVal?.takeIf { it.isNotBlank() } ?: value.toString().trim()
-                    if (resolved.isNotBlank()) return@runCatching resolved
-                }
-            }
-        }
-        null
-    }.getOrNull()
-}
-
-private fun classifyNormalizedText(idNorm: String, textNorm: String): BadgeFilterCategory? {
-    return when {
-        idNorm.startsWith("mat") ||
-            idNorm.startsWith("geo") ||
-            textNorm.contains("matematik") ||
-            textNorm.contains("geometri") ||
-            textNorm.contains("turev") ||
-            textNorm.contains("integral") ||
-            containsNormalizedWord(textNorm, "limit") ||
-            textNorm.contains("trigonometri") ||
-            textNorm.contains("logaritma") ||
-            textNorm.contains("olasilik") ||
-            textNorm.contains("istatistik") ||
-            textNorm.contains("permutasyon") ||
-            textNorm.contains("kombinasyon") ||
-            containsNormalizedWord(textNorm, "binom") ||
-            textNorm.contains("fonksiyon") ||
-            textNorm.contains("polinom") ||
-            textNorm.contains("parabol") ||
-            textNorm.contains("diziler") ||
-            textNorm.contains("karmasik sayi") ||
-            textNorm.contains("analitik") ||
-            textNorm.contains("ucgen") ||
-            textNorm.contains("dortgen") ||
-            textNorm.contains("cokgen") ||
-            textNorm.contains("cember") ||
-            textNorm.contains("daire") ||
-            textNorm.contains("kati cisim") ||
-            textNorm.contains("problemler") ||
-            textNorm.contains("denklem") ||
-            textNorm.contains("esitsizlik") ||
-            containsNormalizedWord(textNorm, "uslu") ||
-            textNorm.contains("koklu") ||
-            textNorm.contains("kumeler") ||
-            containsNormalizedWord(textNorm, "mantik") ||
-            textNorm.contains("sayilar") -> BadgeFilterCategory.MATEMATIK
-
-        idNorm.startsWith("fiz") ||
-            idNorm.startsWith("phys") ||
-            textNorm.contains("fizik") ||
-            textNorm.contains("kuvvet") ||
-            containsNormalizedWord(textNorm, "hareket") ||
-            textNorm.contains("dinamik") ||
-            textNorm.contains("momentum") ||
-            containsNormalizedWord(textNorm, "tork") ||
-            textNorm.contains("ivme") ||
-            textNorm.contains("atislar") ||
-            containsNormalizedWord(textNorm, "atis") ||
-            textNorm.contains("elektrik") ||
-            textNorm.contains("manyet") ||
-            textNorm.contains("optik") ||
-            textNorm.contains("mercek") ||
-            containsNormalizedWord(textNorm, "ayna") ||
-            textNorm.contains("dalga") ||
-            textNorm.contains("modern fizik") ||
-            textNorm.contains("fotoelektrik") ||
-            textNorm.contains("kaldirma") ||
-            textNorm.contains("basinc") ||
-            textNorm.contains("termodinamik") ||
-            textNorm.contains("cembersel") ||
-            textNorm.contains("newton") ||
-            containsNormalizedWord(textNorm, "ohm") ||
-            textNorm.contains("vektor") -> BadgeFilterCategory.FIZIK
-
-        idNorm.startsWith("kim") ||
-            idNorm.startsWith("chem") ||
-            textNorm.contains("kimya") ||
-            textNorm.contains("simya") ||
-            textNorm.contains("tepkime") ||
-            textNorm.contains("periyodik") ||
-            textNorm.contains("orbital") ||
-            containsNormalizedWord(textNorm, "mol") ||
-            textNorm.contains("moller") ||
-            textNorm.contains("molekul") ||
-            textNorm.contains("molar") ||
-            textNorm.contains("organik") ||
-            textNorm.contains("hidrokarbon") ||
-            containsNormalizedWord(textNorm, "asit") ||
-            textNorm.contains("asitler") ||
-            containsNormalizedWord(textNorm, "baz") ||
-            textNorm.contains("bazlar") ||
-            textNorm.contains("elektrokimya") ||
-            textNorm.contains("redoks") ||
-            textNorm.contains("entalpi") ||
-            textNorm.contains("cozelti") ||
-            textNorm.contains("derisim") ||
-            textNorm.contains("gazlar") ||
-            textNorm.contains("kimyasal denge") -> BadgeFilterCategory.KIMYA
-
-        idNorm.startsWith("biy") ||
-            idNorm.startsWith("bio") ||
-            textNorm.contains("biyoloji") ||
-            containsNormalizedWord(textNorm, "biyo") ||
-            textNorm.contains("hucre") ||
-            textNorm.contains("organel") ||
-            textNorm.contains("sistemler") ||
-            textNorm.contains("genetik") ||
-            textNorm.contains("kalitim") ||
-            textNorm.contains("ekoloji") ||
-            textNorm.contains("ekosistem") ||
-            containsNormalizedWord(textNorm, "dna") ||
-            containsNormalizedWord(textNorm, "rna") ||
-            textNorm.contains("protein") ||
-            textNorm.contains("fotosentez") ||
-            textNorm.contains("solunum") ||
-            textNorm.contains("dolasim") ||
-            textNorm.contains("sindirim") ||
-            textNorm.contains("bosaltim") ||
-            textNorm.contains("sinir sistem") ||
-            textNorm.contains("endokrin") ||
-            textNorm.contains("enzim") ||
-            textNorm.contains("mitoz") ||
-            textNorm.contains("mayoz") -> BadgeFilterCategory.BIYOLOJI
-
-        idNorm.startsWith("turk") ||
-            idNorm.startsWith("paragr") ||
-            idNorm.startsWith("edeb") ||
-            idNorm.startsWith("sos") ||
-            idNorm.startsWith("tarih") ||
-            idNorm.startsWith("cog") ||
-            idNorm.startsWith("fel") ||
-            idNorm.startsWith("ing") ||
-            textNorm.contains("turkce") ||
-            textNorm.contains("paragraf") ||
-            textNorm.contains("edebiyat") ||
-            textNorm.contains("dil bilgisi") ||
-            textNorm.contains("yazim") ||
-            textNorm.contains("noktalama") ||
-            textNorm.contains("anlatim") ||
-            containsNormalizedWord(textNorm, "siir") ||
-            containsNormalizedWord(textNorm, "roman") ||
-            textNorm.contains("tarih") ||
-            textNorm.contains("inkilap") ||
-            textNorm.contains("cografya") ||
-            textNorm.contains("iklim") ||
-            textNorm.contains("harita") ||
-            textNorm.contains("felsefe") ||
-            textNorm.contains("din kulturu") ||
-            textNorm.contains("sosyal") ||
-            textNorm.contains("sozel") ||
-            textNorm.contains("ingilizce") -> BadgeFilterCategory.SOZEL
-
-        else -> null
-    }
-}
-
-internal fun resolveBadgeCategory(badge: SharkBadgeDef): BadgeFilterCategory {
-    val explicitCategory = readOptionalBadgeStringProperty(
-        badge,
-        "getCategory",
-        "getBadgeCategory",
-        "getSubject",
-        "getSubjectCategory"
-    )
-    if (!explicitCategory.isNullOrBlank()) {
-        val catNorm = normalizeBadgeText(explicitCategory)
-        when {
-            catNorm.contains("mat") || catNorm.contains("geo") -> return BadgeFilterCategory.MATEMATIK
-            catNorm.contains("fiz") || catNorm.contains("phys") -> return BadgeFilterCategory.FIZIK
-            catNorm.contains("kim") || catNorm.contains("chem") -> return BadgeFilterCategory.KIMYA
-            catNorm.contains("biy") || catNorm.contains("biol") -> return BadgeFilterCategory.BIYOLOJI
-            catNorm.contains("soz") ||
-                catNorm.contains("verb") ||
-                catNorm.contains("turk") ||
-                catNorm.contains("edeb") ||
-                catNorm.contains("literat") ||
-                catNorm.contains("sosyal") ||
-                catNorm.contains("social") ||
-                catNorm.contains("tarih") ||
-                catNorm.contains("hist") ||
-                catNorm.contains("cograf") ||
-                catNorm.contains("geog") ||
-                catNorm.contains("felsef") ||
-                catNorm.contains("philos") ||
-                catNorm.contains("ingiliz") ||
-                catNorm.contains("english") ||
-                catNorm.contains("lang") -> return BadgeFilterCategory.SOZEL
-            catNorm.contains("mentor") ||
-                catNorm.contains("genel") ||
-                catNorm.contains("general") ||
-                catNorm.contains("communit") ||
-                catNorm.contains("speed") ||
-                catNorm.contains("topluluk") -> return BadgeFilterCategory.MENTORLUK
-        }
-    }
-
-    val idNorm = normalizeBadgeText(badge.id)
-    val titleNorm = normalizeBadgeText("${badge.id} ${badge.title}")
-    classifyNormalizedText(idNorm, titleNorm)?.let { return it }
-
-    val fullNorm = normalizeBadgeText("${badge.id} ${badge.title} ${badge.description} ${badge.conditionLabel}")
-    return classifyNormalizedText(idNorm, fullNorm) ?: BadgeFilterCategory.MENTORLUK
-}
-
-internal fun resolveBadgeSymbolText(badge: SharkBadgeDef): String {
-    val explicitSymbol = readOptionalBadgeStringProperty(
-        badge,
-        "getSymbolText",
-        "getSymbol",
-        "getMedallionSymbol",
-        "getShortSymbol",
-        "getBadgeSymbol",
-        "getIconText"
-    )
-    if (!explicitSymbol.isNullOrBlank()) return explicitSymbol
-
-    val norm = normalizeBadgeText("${badge.id} ${badge.title}")
-    return when {
-        norm.contains("turev") -> "f'(x)"
-        norm.contains("integral") -> "∫"
-        containsNormalizedWord(norm, "limit") -> "lim"
-        norm.contains("trigonometri") -> "sinθ"
-        norm.contains("logaritma") -> "log"
-        norm.contains("olasilik") || norm.contains("permutasyon") || norm.contains("kombinasyon") -> "P(A)"
-        norm.contains("fonksiyon") -> "f(x)"
-        norm.contains("polinom") -> "P(x)"
-        norm.contains("geometri") || norm.contains("ucgen") -> "△"
-        norm.contains("cember") || norm.contains("daire") -> "π"
-        norm.contains("esitsizlik") -> "≤"
-        norm.contains("denklem") -> "x="
-        norm.contains("koklu") -> "√x"
-        containsNormalizedWord(norm, "uslu") -> "xⁿ"
-        containsNormalizedWord(norm, "mantik") -> "∀"
-        norm.contains("matematik") || norm.contains("diziler") -> "∑"
-        norm.contains("elektrik") || containsNormalizedWord(norm, "ohm") -> "Ω"
-        norm.contains("optik") || norm.contains("dalga") -> "λ"
-        norm.contains("termodinamik") -> "ΔQ"
-        norm.contains("basinc") -> "P"
-        norm.contains("vektor") -> "v⃗"
-        norm.contains("kuvvet") || containsNormalizedWord(norm, "hareket") || norm.contains("dinamik") -> "F=ma"
-        norm.contains("fizik") -> "⚛"
-        containsNormalizedWord(norm, "asit") || norm.contains("asitler") || containsNormalizedWord(norm, "baz") || norm.contains("bazlar") || containsNormalizedWord(norm, "ph") -> "pH"
-        norm.contains("organik") -> "CₙH"
-        containsNormalizedWord(norm, "mol") -> "n"
-        norm.contains("kimya") || norm.contains("simya") -> "⚗"
-        norm.contains("genetik") || containsNormalizedWord(norm, "dna") -> "DNA"
-        norm.contains("ekoloji") -> "🌿"
-        norm.contains("biyoloji") || containsNormalizedWord(norm, "biyo") -> "🧬"
-        norm.contains("paragraf") -> "¶"
-        norm.contains("edebiyat") || containsNormalizedWord(norm, "siir") -> "✍"
-        norm.contains("tarih") -> "🏛"
-        norm.contains("felsefe") -> "Φ"
-        norm.contains("ingilizce") || norm.contains("english") -> "En"
-        norm.contains("cografya") || norm.contains("sosyal") -> "🌍"
-        badge.emoji.isNotBlank() -> badge.emoji
-        else -> "★"
-    }
-}
 
 private fun readableTierTextColor(tier: BadgeTier?, fallback: Color, surfaceColor: Color): Color {
     val isDark = surfaceColor.luminance() < 0.5f
@@ -400,7 +124,7 @@ private fun readableTierTextColor(tier: BadgeTier?, fallback: Color, surfaceColo
 }
 
 internal fun safeThresholdsFor(badge: SharkBadgeDef): List<Int> =
-    if (badge.thresholds.size >= 4) badge.thresholds.take(4) else listOf(1, 5, 15, 30)
+    if (badge.thresholds.size >= 4) badge.thresholds.take(4) else SharkBadgeCatalog.DEFAULT_TOPIC_THRESHOLDS
 
 @Composable
 internal fun BadgeSymbolMedallion(
@@ -411,46 +135,15 @@ internal fun BadgeSymbolMedallion(
     modifier: Modifier = Modifier
 ) {
     val startColor = Color(badge.primaryColorHex)
-    val endColor = Color(badge.secondaryColorHex)
-    val ringColor = unlockedTier?.let { Color(it.primaryColorHex) } ?: Color.White.copy(alpha = 0.35f)
-    val symbolText = remember(badge.id, badge.title, badge.emoji) { resolveBadgeSymbolText(badge) }
-    val fontSizeSp = when {
-        symbolText.length <= 2 -> (size.value * 0.40f).coerceIn(13f, 24f).sp
-        symbolText.length == 3 -> (size.value * 0.28f).coerceIn(10f, 18f).sp
-        else -> (size.value * 0.23f).coerceIn(9f, 15f).sp
-    }
 
     Box(modifier = modifier.size(size)) {
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .clip(CircleShape)
-                .background(Brush.linearGradient(listOf(startColor, endColor)))
-                .border(
-                    width = if (unlockedTier != null) 2.dp else 1.dp,
-                    color = ringColor,
-                    shape = CircleShape
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            if (symbolText.isNotBlank()) {
-                Text(
-                    text = symbolText,
-                    color = Color.White,
-                    fontSize = fontSizeSp,
-                    fontWeight = FontWeight.Black,
-                    maxLines = 1,
-                    softWrap = false
-                )
-            } else {
-                Icon(
-                    imageVector = badge.icon,
-                    contentDescription = badge.title,
-                    tint = Color.White,
-                    modifier = Modifier.size(size * 0.46f)
-                )
-            }
-        }
+        SharkBadgeSymbolIcon(
+            badge = badge,
+            modifier = Modifier.matchParentSize(),
+            size = size,
+            tier = unlockedTier,
+            isLocked = !isUnlocked
+        )
 
         if (size >= 38.dp) {
             Surface(
@@ -752,13 +445,14 @@ fun BadgeShowcaseSelectorSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val allBadges = SharkBadgeCatalog.ALL_BADGES
 
-    val effectiveUnlockedIds = remember(unlockedBadgeIds, badgeProgress) {
-        val fromCounts = badgeProgress.filter { (id, count) ->
-            val def = SharkBadgeCatalog.findById(id)
-            val firstThreshold = def?.let { safeThresholdsFor(it).firstOrNull() } ?: 1
-            def != null && count >= firstThreshold
-        }.keys
-        unlockedBadgeIds + fromCounts
+    val effectiveUnlockedIds = remember(unlockedBadgeIds, badgeProgress, allBadges) {
+        allBadges.filter { def ->
+            val rawCount = badgeProgress[def.id] ?: 0
+            def.progressFor(
+                rawCount = rawCount,
+                isLegacyUnlocked = rawCount <= 0 && unlockedBadgeIds.contains(def.id)
+            ).unlockedTier != null
+        }.map { it.id }.toSet()
     }
 
     val selectedIds = remember(initialSelectedIds, effectiveUnlockedIds) {
@@ -795,7 +489,7 @@ fun BadgeShowcaseSelectorSheet(
             if (normalizedQuery.isBlank()) return@filter true
 
             val searchable = normalizeBadgeText(
-                "${badge.title} ${badge.description} ${badge.conditionLabel} ${badge.id} ${category.label}"
+                "${badge.title} ${badge.description} ${badge.conditionLabel} ${badge.id} ${badge.symbolText} ${badge.category.title} ${category.label}"
             )
             searchable.contains(normalizedQuery)
         }
