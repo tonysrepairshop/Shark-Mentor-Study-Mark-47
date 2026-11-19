@@ -63,7 +63,8 @@ object UserAiPreferences {
 
     const val BUILTIN_DEFAULT_MODEL = "gemini-3.6-flash"
     const val STANDARD_GEMINI_MODEL = BUILTIN_DEFAULT_MODEL
-    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-3.6-flash"
+    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+    val STANDARD_ALLOWED_MODELS = listOf(BUILTIN_DEFAULT_MODEL, CONTROLLED_404_FALLBACK_MODEL)
 
     const val DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
     const val DEFAULT_KIMI_MODEL = "moonshot-v1-8k"
