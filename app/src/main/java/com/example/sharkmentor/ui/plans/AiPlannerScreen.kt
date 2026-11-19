@@ -58,6 +58,7 @@ fun AiPlannerScreen(
         containerColor = Color(0xFF070D14),
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = {
                     Text(
                         text = "Haftalık Plan",

@@ -79,7 +79,7 @@ fun PersonalizedGreetingHeader(
         val namePart = if (firstName != null) " $firstName" else ""
         when (currentHour) {
             in 6..11 -> {
-                "Günaydın$namePart" to when (selectedMode) {
+                "Günaydın$namePart! 🌅" to when (selectedMode) {
                     AiPersona.STUDY_PLANNER -> "Güne zinde bir başlangıç yapalım. Bugünün ders ve etüt programını organize etmeye hazır mısın?"
                     AiPersona.GOAL_SETTER -> "Yeni bir günde hedeflerine bir adım daha yaklaşalım. Stratejik net ve sıralama hedeflerini gözden geçirelim mi?"
                     AiPersona.DOPAMINE_COACH -> "Sabah enerjini yüksek tut. Ertelemeyi bir kenara bırakıp bugünün ilk derin odak bloğunu başlatalım."
@@ -88,7 +88,7 @@ fun PersonalizedGreetingHeader(
                 }
             }
             in 12..17 -> {
-                "Günün nasıl geçiyor$namePart?" to when (selectedMode) {
+                "Günün nasıl geçiyor$namePart? ⚡" to when (selectedMode) {
                     AiPersona.STUDY_PLANNER -> "Günün en yoğun çalışma saatlerindesin. Akşam etütlerini ve kalan ders hedeflerini planlayalım mı?"
                     AiPersona.GOAL_SETTER -> "Stratejik ilerlemen nasıl gidiyor? Deneme netlerini ve sıralama projeksiyonunu güncelleyelim."
                     AiPersona.DOPAMINE_COACH -> "Öğleden sonra odağını koru. Çalışma düzenini toparlayacak güçlü bir odak serisi kuralım."
@@ -97,7 +97,7 @@ fun PersonalizedGreetingHeader(
                 }
             }
             in 18..22 -> {
-                "İyi akşamlar$namePart" to when (selectedMode) {
+                "İyi akşamlar$namePart! 🎯" to when (selectedMode) {
                     AiPersona.STUDY_PLANNER -> "Akşam çalışma bloğunu en yüksek verimle tamamlayalım. Yarının planını da şimdiden kurgulayalım mı?"
                     AiPersona.GOAL_SETTER -> "Bugünkü çalışmalarının hedeflerine katkısını değerlendirelim. Net projeksiyonunu güncelleyelim mi?"
                     AiPersona.DOPAMINE_COACH -> "Günü güçlü bir disiplinle tamamlama zamanı. Son odak periyodunu verimli biçimde bitirelim."
@@ -106,7 +106,7 @@ fun PersonalizedGreetingHeader(
                 }
             }
             else -> {
-                "Gece mesaisi mi$namePart?" to when (selectedMode) {
+                "Gece mesaisi mi$namePart? 🦉" to when (selectedMode) {
                     AiPersona.STUDY_PLANNER -> "Gece sessizliğinde plan yapmak zihni berraklaştırır. Yarın için net bir çalışma çizelgesi çıkaralım mı?"
                     AiPersona.GOAL_SETTER -> "Günün değerlendirmesini yapıp hedeflerini güncelleyelim mi? Sıralama simülasyonunu inceleyebiliriz."
                     AiPersona.DOPAMINE_COACH -> "Gecenin sessizliğini derin bir odaklanmayla değerlendir. Kısa ve verimli bir etüt sonrası dinlenmeye geçebilirsin."

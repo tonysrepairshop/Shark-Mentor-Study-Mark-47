@@ -89,6 +89,7 @@ fun AppBlockerScreen(onBackClick: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text("App Blocker (Odak Kalkanı)") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {

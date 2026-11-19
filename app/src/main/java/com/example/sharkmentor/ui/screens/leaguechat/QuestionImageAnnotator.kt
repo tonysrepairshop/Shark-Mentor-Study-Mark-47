@@ -88,6 +88,7 @@ import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStroke
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
 import com.example.sharkmentor.ui.screens.notes.drawing.PenCustomColorDialog
+import com.example.sharkmentor.ui.screens.notes.drawing.ShapeKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
@@ -213,6 +214,7 @@ class QuestionAnnotatorState(
 
         val effectiveAlpha = when (stroke.tool) {
             DrawingTool.HIGHLIGHTER -> (stroke.alpha * 0.38f).coerceIn(0.10f, 0.55f)
+            DrawingTool.PENCIL -> (stroke.alpha * 0.78f).coerceIn(0.12f, 0.88f)
             else -> stroke.alpha.coerceIn(0.10f, 1.0f)
         }
         val baseColorInt = Color(stroke.colorArgb).copy(alpha = effectiveAlpha).toArgb()
@@ -237,16 +239,30 @@ class QuestionAnnotatorState(
             }
         }
 
-        if (stroke.tool.isShapeTool && pts.size >= 2) {
+        val effectiveShapeKind = if (stroke.shapeKind != ShapeKind.NONE) {
+            stroke.shapeKind
+        } else {
+            stroke.tool.toShapeKind()
+        }
+
+        if (stroke.tool == DrawingTool.UNDERLINE_MARKER && pts.size >= 2) {
+            val startX = pts.first().x * scaleX
+            val startY = pts.first().y * scaleY
+            val endX = pts.last().x * scaleX
+            canvas.drawLine(startX, startY, endX, startY, paint)
+            return
+        }
+
+        if (effectiveShapeKind != ShapeKind.NONE && pts.size >= 2) {
             val startX = pts.first().x * scaleX
             val startY = pts.first().y * scaleY
             val endX = pts.last().x * scaleX
             val endY = pts.last().y * scaleY
-            when (stroke.tool) {
-                DrawingTool.SHAPE_LINE -> {
+            when (effectiveShapeKind) {
+                ShapeKind.LINE -> {
                     canvas.drawLine(startX, startY, endX, endY, paint)
                 }
-                DrawingTool.SHAPE_ARROW -> {
+                ShapeKind.ARROW -> {
                     canvas.drawLine(startX, startY, endX, endY, paint)
                     val angle = atan2(endY - startY, endX - startX)
                     val headLen = (baseWidth * 4.2f).coerceIn(14f, 44f)
@@ -258,7 +274,7 @@ class QuestionAnnotatorState(
                     canvas.drawLine(endX, endY, x1, y1, paint)
                     canvas.drawLine(endX, endY, x2, y2, paint)
                 }
-                DrawingTool.SHAPE_RECTANGLE -> {
+                ShapeKind.RECTANGLE -> {
                     canvas.drawRect(
                         min(startX, endX),
                         min(startY, endY),
@@ -267,7 +283,7 @@ class QuestionAnnotatorState(
                         paint
                     )
                 }
-                DrawingTool.SHAPE_ELLIPSE -> {
+                ShapeKind.ELLIPSE -> {
                     canvas.drawOval(
                         RectF(
                             min(startX, endX),
@@ -278,29 +294,28 @@ class QuestionAnnotatorState(
                         paint
                     )
                 }
-                DrawingTool.SHAPE_TRIANGLE -> {
-                    val left = min(startX, endX)
-                    val right = max(startX, endX)
-                    val top = min(startY, endY)
-                    val bottom = max(startY, endY)
+                ShapeKind.TRIANGLE -> {
                     val path = AndroidPath().apply {
-                        moveTo((left + right) * 0.5f, top)
-                        lineTo(right, bottom)
-                        lineTo(left, bottom)
-                        close()
+                        if (pts.size >= 3) {
+                            moveTo(pts[0].x * scaleX, pts[0].y * scaleY)
+                            lineTo(pts[1].x * scaleX, pts[1].y * scaleY)
+                            lineTo(pts[2].x * scaleX, pts[2].y * scaleY)
+                            close()
+                        } else {
+                            val left = min(startX, endX)
+                            val right = max(startX, endX)
+                            val top = min(startY, endY)
+                            val bottom = max(startY, endY)
+                            moveTo((left + right) * 0.5f, top)
+                            lineTo(right, bottom)
+                            lineTo(left, bottom)
+                            close()
+                        }
                     }
                     canvas.drawPath(path, paint)
                 }
-                else -> {}
+                ShapeKind.NONE -> {}
             }
-            return
-        }
-
-        if (stroke.tool == DrawingTool.UNDERLINE_MARKER && pts.size >= 2) {
-            val startX = pts.first().x * scaleX
-            val startY = pts.first().y * scaleY
-            val endX = pts.last().x * scaleX
-            canvas.drawLine(startX, startY, endX, startY, paint)
             return
         }
 
@@ -317,7 +332,10 @@ class QuestionAnnotatorState(
         }
 
         val hasVariablePressure = stroke.pressureSensitive &&
-            (stroke.tool == DrawingTool.FOUNTAIN_PEN || stroke.tool == DrawingTool.TECHNICAL_PEN)
+            (stroke.tool == DrawingTool.FOUNTAIN_PEN ||
+                stroke.tool == DrawingTool.BRUSH_PEN ||
+                stroke.tool == DrawingTool.PENCIL ||
+                stroke.tool == DrawingTool.TECHNICAL_PEN)
 
         if (hasVariablePressure) {
             var smoothedP = pts.first().pressure.coerceIn(0.04f, 1.88f)

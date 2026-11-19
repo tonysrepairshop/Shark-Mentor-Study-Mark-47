@@ -177,6 +177,7 @@ fun SharkLeagueScreen(
                     .background(MaterialTheme.colorScheme.surface)
             ) {
                 TopAppBar(
+                    expandedHeight = 52.dp,
                     title = {
                         Column {
                             Text(

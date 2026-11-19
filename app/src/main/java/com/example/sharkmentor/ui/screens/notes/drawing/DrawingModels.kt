@@ -10,6 +10,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 import kotlin.math.PI
 import kotlin.math.abs
@@ -21,6 +24,93 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
+ * Reactive SharedPreferences store for Notes & PDF drawing studio preferences.
+ * Edited exclusively from Settings -> "Not Özellikleri" and observed live by DrawingCanvasOverlay.
+ */
+object NoteDrawingPreferences {
+    private const val PREFS_NAME = "shark_drawing_studio_prefs"
+    private const val KEY_PRESSURE_SENSITIVITY = "pressure_sensitivity_enabled"
+    private const val KEY_PRESSURE_STRENGTH = "pressure_sensitivity_strength"
+    private const val KEY_SCRIBBLE_TO_ERASE = "scribble_to_erase_enabled"
+    private const val KEY_AUTO_SHAPE_RECOGNITION = "auto_shape_recognition_enabled"
+
+    @Volatile
+    private var loaded = false
+
+    private val _pressureSensitivityEnabled = MutableStateFlow(true)
+    val pressureSensitivityEnabled: StateFlow<Boolean> = _pressureSensitivityEnabled.asStateFlow()
+
+    private val _pressureSensitivityStrength = MutableStateFlow(1.15f)
+    val pressureSensitivityStrength: StateFlow<Float> = _pressureSensitivityStrength.asStateFlow()
+
+    private val _scribbleToEraseEnabled = MutableStateFlow(true)
+    val scribbleToEraseEnabled: StateFlow<Boolean> = _scribbleToEraseEnabled.asStateFlow()
+
+    private val _autoShapeRecognitionEnabled = MutableStateFlow(true)
+    val autoShapeRecognitionEnabled: StateFlow<Boolean> = _autoShapeRecognitionEnabled.asStateFlow()
+
+    fun ensureLoaded(context: Context) {
+        if (loaded) return
+        synchronized(this) {
+            if (loaded) return
+            runCatching {
+                val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                _pressureSensitivityEnabled.value = prefs.getBoolean(KEY_PRESSURE_SENSITIVITY, true)
+                _pressureSensitivityStrength.value = prefs.getFloat(KEY_PRESSURE_STRENGTH, 1.15f).coerceIn(0.5f, 1.8f)
+                _scribbleToEraseEnabled.value = prefs.getBoolean(KEY_SCRIBBLE_TO_ERASE, true)
+                _autoShapeRecognitionEnabled.value = prefs.getBoolean(KEY_AUTO_SHAPE_RECOGNITION, true)
+            }
+            loaded = true
+        }
+    }
+
+    fun setPressureSensitivityEnabled(context: Context, enabled: Boolean) {
+        ensureLoaded(context)
+        _pressureSensitivityEnabled.value = enabled
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_PRESSURE_SENSITIVITY, enabled)
+                .apply()
+        }
+    }
+
+    fun setPressureSensitivityStrength(context: Context, strength: Float) {
+        ensureLoaded(context)
+        val clamped = strength.coerceIn(0.5f, 1.8f)
+        _pressureSensitivityStrength.value = clamped
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putFloat(KEY_PRESSURE_STRENGTH, clamped)
+                .apply()
+        }
+    }
+
+    fun setScribbleToEraseEnabled(context: Context, enabled: Boolean) {
+        ensureLoaded(context)
+        _scribbleToEraseEnabled.value = enabled
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_SCRIBBLE_TO_ERASE, enabled)
+                .apply()
+        }
+    }
+
+    fun setAutoShapeRecognitionEnabled(context: Context, enabled: Boolean) {
+        ensureLoaded(context)
+        _autoShapeRecognitionEnabled.value = enabled
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_AUTO_SHAPE_RECOGNITION, enabled)
+                .apply()
+        }
+    }
+}
+
+/**
  * Available tools in the Notes & PDF Annotation Drawing Studio.
  */
 enum class DrawingTool(
@@ -30,9 +120,14 @@ enum class DrawingTool(
 ) {
     NONE("Metin / Gezinme", 4f, 1.0f),
 
-    // Kalemler
+    // Kalem Paketleri (Kalem simgesine uzun basınca seçilir)
     FOUNTAIN_PEN("Dolma Kalem", 4.5f, 1.0f),
+    BALLPOINT_PEN("Tükenmez Kalem", 3.2f, 1.0f),
+    PENCIL("Kurşun Kalem", 3.4f, 0.86f),
+    BRUSH_PEN("Fırça Kalem", 8.0f, 1.0f),
     HIGHLIGHTER("Fosforlu Kalem", 20f, 0.38f),
+
+    // Eski kayıtlı çizimlerle geriye dönük uyumluluk
     TECHNICAL_PEN("İnce Teknik Kalem", 1.8f, 1.0f),
     UNDERLINE_MARKER("Alt Çizgi", 3.5f, 0.90f),
 
@@ -50,8 +145,39 @@ enum class DrawingTool(
     // Kement (Lasso)
     LASSO("Kement Seçim", 2.5f, 1.0f);
 
+    val shortLabel: String
+        get() = when (this) {
+            FOUNTAIN_PEN -> "Dolma"
+            BALLPOINT_PEN -> "Tükenmez"
+            PENCIL -> "Kurşun"
+            BRUSH_PEN -> "Fırça"
+            HIGHLIGHTER -> "Fosforlu"
+            TECHNICAL_PEN -> "Teknik"
+            UNDERLINE_MARKER -> "Alt Çizgi"
+            else -> displayName
+        }
+
+    val packageDescription: String
+        get() = when (this) {
+            FOUNTAIN_PEN -> "Basınca duyarlı kaligrafik uç"
+            BALLPOINT_PEN -> "Net ve dengeli günlük yazım"
+            PENCIL -> "Mat grafit dokulu çizim ucu"
+            BRUSH_PEN -> "Geniş aralıklı vurgulu fırça"
+            HIGHLIGHTER -> "Yarı saydam vurgu kalemi"
+            else -> displayName
+        }
+
     val isPenTool: Boolean
-        get() = this == FOUNTAIN_PEN || this == HIGHLIGHTER || this == TECHNICAL_PEN || this == UNDERLINE_MARKER
+        get() = this == FOUNTAIN_PEN || this == BALLPOINT_PEN || this == PENCIL ||
+            this == BRUSH_PEN || this == HIGHLIGHTER || this == TECHNICAL_PEN ||
+            this == UNDERLINE_MARKER
+
+    val isPrimaryPenPackage: Boolean
+        get() = this in PEN_PACKAGES
+
+    val supportsAutoShape: Boolean
+        get() = this == FOUNTAIN_PEN || this == BALLPOINT_PEN || this == PENCIL ||
+            this == BRUSH_PEN || this == TECHNICAL_PEN
 
     val isEraserTool: Boolean
         get() = this == STROKE_ERASER || this == AREA_ERASER
@@ -68,6 +194,16 @@ enum class DrawingTool(
         SHAPE_TRIANGLE -> ShapeKind.TRIANGLE
         UNDERLINE_MARKER -> ShapeKind.LINE
         else -> ShapeKind.NONE
+    }
+
+    companion object {
+        val PEN_PACKAGES: List<DrawingTool> = listOf(
+            FOUNTAIN_PEN,
+            BALLPOINT_PEN,
+            PENCIL,
+            BRUSH_PEN,
+            HIGHLIGHTER
+        )
     }
 }
 
@@ -238,13 +374,19 @@ data class DrawingStroke(
                 }
             }
             ShapeKind.TRIANGLE -> {
-                val topVertex = DrawingPoint((left + right) * 0.5f, top)
-                val br = DrawingPoint(right, bottom)
-                val bl = DrawingPoint(left, bottom)
+                val (v0, v1, v2) = if (points.size >= 3) {
+                    Triple(points[0], points[1], points[2])
+                } else {
+                    Triple(
+                        DrawingPoint((left + right) * 0.5f, top),
+                        DrawingPoint(right, bottom),
+                        DrawingPoint(left, bottom)
+                    )
+                }
                 buildList {
-                    addAll(interpolateSegment(topVertex, br, stepPx))
-                    addAll(interpolateSegment(br, bl, stepPx))
-                    addAll(interpolateSegment(bl, topVertex, stepPx))
+                    addAll(interpolateSegment(v0, v1, stepPx))
+                    addAll(interpolateSegment(v1, v2, stepPx))
+                    addAll(interpolateSegment(v2, v0, stepPx))
                 }
             }
             ShapeKind.ELLIPSE -> {
@@ -306,6 +448,9 @@ class DrawingController(
     var activeTool by mutableStateOf(DrawingTool.NONE)
         private set
 
+    var lastSelectedPenTool by mutableStateOf(DrawingTool.FOUNTAIN_PEN)
+        private set
+
     var penColor by mutableStateOf(Color(0xFF1E88E5))
     var strokeWidth by mutableFloatStateOf(DrawingTool.FOUNTAIN_PEN.defaultWidth)
     var alpha by mutableFloatStateOf(DrawingTool.FOUNTAIN_PEN.defaultAlpha)
@@ -313,7 +458,10 @@ class DrawingController(
     var stylusOnlyMode by mutableStateOf(false)
         private set
     var smartPalmRejectionEnabled by mutableStateOf(true)
-    var pressureSensitivityEnabled by mutableStateOf(true)
+    var pressureSensitivityEnabled by mutableStateOf(NoteDrawingPreferences.pressureSensitivityEnabled.value)
+    var pressureSensitivityStrength by mutableFloatStateOf(NoteDrawingPreferences.pressureSensitivityStrength.value)
+    var scribbleToEraseEnabled by mutableStateOf(NoteDrawingPreferences.scribbleToEraseEnabled.value)
+    var autoShapeRecognitionEnabled by mutableStateOf(NoteDrawingPreferences.autoShapeRecognitionEnabled.value)
     var customPenColors by mutableStateOf<List<Color>>(emptyList())
         private set
 
@@ -324,11 +472,10 @@ class DrawingController(
     fun bindPreferencesContext(context: Context) {
         val ctx = context.applicationContext
         appContext = ctx
+        NoteDrawingPreferences.ensureLoaded(ctx)
+        syncFromNotePreferences()
         runCatching {
             val prefs = ctx.getSharedPreferences(PREFS_DRAWING_STUDIO, Context.MODE_PRIVATE)
-            if (prefs.contains(KEY_PRESSURE_SENSITIVITY)) {
-                pressureSensitivityEnabled = prefs.getBoolean(KEY_PRESSURE_SENSITIVITY, true)
-            }
             val rawColors = prefs.getString(KEY_CUSTOM_PEN_COLORS, null).orEmpty()
             if (rawColors.isNotBlank()) {
                 val parsed = rawColors.split(",")
@@ -340,6 +487,13 @@ class DrawingController(
                 }
             }
         }
+    }
+
+    fun syncFromNotePreferences() {
+        pressureSensitivityEnabled = NoteDrawingPreferences.pressureSensitivityEnabled.value
+        pressureSensitivityStrength = NoteDrawingPreferences.pressureSensitivityStrength.value
+        scribbleToEraseEnabled = NoteDrawingPreferences.scribbleToEraseEnabled.value
+        autoShapeRecognitionEnabled = NoteDrawingPreferences.autoShapeRecognitionEnabled.value
     }
 
     fun addCustomPenColor(color: Color, context: Context? = null) {
@@ -364,12 +518,7 @@ class DrawingController(
         val ctx = context?.applicationContext ?: appContext
         if (ctx != null) {
             appContext = ctx
-            runCatching {
-                ctx.getSharedPreferences(PREFS_DRAWING_STUDIO, Context.MODE_PRIVATE)
-                    .edit()
-                    .putBoolean(KEY_PRESSURE_SENSITIVITY, enabled)
-                    .apply()
-            }
+            NoteDrawingPreferences.setPressureSensitivityEnabled(ctx, enabled)
         }
     }
 
@@ -377,21 +526,30 @@ class DrawingController(
         updatePressureSensitivity(!pressureSensitivityEnabled, context)
     }
 
-    // Per-tool saved settings so switching between Fountain Pen, Highlighter, and Technical Pen preserves user preferences
+    // Per-tool saved settings so switching between Pen packages preserves user preferences
     private val toolWidths = mutableMapOf(
         DrawingTool.FOUNTAIN_PEN to DrawingTool.FOUNTAIN_PEN.defaultWidth,
+        DrawingTool.BALLPOINT_PEN to DrawingTool.BALLPOINT_PEN.defaultWidth,
+        DrawingTool.PENCIL to DrawingTool.PENCIL.defaultWidth,
+        DrawingTool.BRUSH_PEN to DrawingTool.BRUSH_PEN.defaultWidth,
         DrawingTool.HIGHLIGHTER to DrawingTool.HIGHLIGHTER.defaultWidth,
         DrawingTool.TECHNICAL_PEN to DrawingTool.TECHNICAL_PEN.defaultWidth,
         DrawingTool.UNDERLINE_MARKER to DrawingTool.UNDERLINE_MARKER.defaultWidth
     )
     private val toolAlphas = mutableMapOf(
         DrawingTool.FOUNTAIN_PEN to DrawingTool.FOUNTAIN_PEN.defaultAlpha,
+        DrawingTool.BALLPOINT_PEN to DrawingTool.BALLPOINT_PEN.defaultAlpha,
+        DrawingTool.PENCIL to DrawingTool.PENCIL.defaultAlpha,
+        DrawingTool.BRUSH_PEN to DrawingTool.BRUSH_PEN.defaultAlpha,
         DrawingTool.HIGHLIGHTER to DrawingTool.HIGHLIGHTER.defaultAlpha,
         DrawingTool.TECHNICAL_PEN to DrawingTool.TECHNICAL_PEN.defaultAlpha,
         DrawingTool.UNDERLINE_MARKER to DrawingTool.UNDERLINE_MARKER.defaultAlpha
     )
     private val toolColors = mutableMapOf(
         DrawingTool.FOUNTAIN_PEN to Color(0xFF1E88E5),
+        DrawingTool.BALLPOINT_PEN to Color(0xFF0F172A),
+        DrawingTool.PENCIL to Color(0xFF475569),
+        DrawingTool.BRUSH_PEN to Color(0xFF1E88E5),
         DrawingTool.HIGHLIGHTER to Color(0xFFFFEB3B),
         DrawingTool.TECHNICAL_PEN to Color(0xFF0F172A),
         DrawingTool.UNDERLINE_MARKER to Color(0xFFE53935)
@@ -462,13 +620,20 @@ class DrawingController(
             toolColors[activeTool] = penColor
         }
         activeTool = tool
+        if (tool.isPrimaryPenPackage) {
+            lastSelectedPenTool = tool
+        }
         if (tool != DrawingTool.LASSO) {
             clearSelection()
         }
         when {
             tool.isPenTool -> {
                 strokeWidth = toolWidths[tool] ?: tool.defaultWidth
-                alpha = toolAlphas[tool] ?: tool.defaultAlpha
+                alpha = if (tool == DrawingTool.HIGHLIGHTER) {
+                    toolAlphas[tool] ?: tool.defaultAlpha
+                } else {
+                    tool.defaultAlpha
+                }
                 penColor = toolColors[tool] ?: penColor
             }
             tool.isShapeTool -> {
@@ -480,6 +645,10 @@ class DrawingController(
             }
             else -> {}
         }
+    }
+
+    fun selectActiveOrLastPen() {
+        selectTool(lastSelectedPenTool)
     }
 
     fun updatePenColor(color: Color) {

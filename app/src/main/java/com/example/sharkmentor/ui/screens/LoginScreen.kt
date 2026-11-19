@@ -48,6 +48,7 @@ fun LoginScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text(if (isSignUpMode) "Kayıt Ol" else "Giriş Yap") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background

@@ -76,6 +76,7 @@ fun ScheduleScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                expandedHeight = 52.dp,
                 title = {
                     Column {
                         Text("Haftalık Programım", fontWeight = FontWeight.Bold)

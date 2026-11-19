@@ -92,6 +92,7 @@ fun InstitutionInfoScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text("Kurum Bilgisi & Bağlantı") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {

@@ -60,6 +60,7 @@ fun SharkScreen(
                 divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)) }
             ) {
                 Tab(
+                    modifier = Modifier.height(40.dp),
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
                     text = {
@@ -71,6 +72,7 @@ fun SharkScreen(
                     }
                 )
                 Tab(
+                    modifier = Modifier.height(40.dp),
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
                     text = {

@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -89,6 +88,7 @@ import com.example.sharkmentor.ui.screens.ErrorTrainingScreen
 import com.example.sharkmentor.ui.screens.HistoryScreen
 import com.example.sharkmentor.ui.screens.HomeScreen
 import com.example.sharkmentor.ui.screens.LoginScreen
+import com.example.sharkmentor.ui.screens.NoteSettingsScreen
 import com.example.sharkmentor.ui.screens.PlansScreen
 import com.example.sharkmentor.ui.screens.ProfileScreen
 import com.example.sharkmentor.ui.screens.SharkLeagueScreen
@@ -216,6 +216,18 @@ fun MainScreen(
                 ) {
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                         val isPaceKeep = currentDestination?.route == Screen.PaceKeep.route
+                        val topBarRoutes = remember {
+                            setOf(
+                                Screen.Focus.route,
+                                Screen.Dashboard.route,
+                                Screen.Notes.route,
+                                Screen.Resources.route,
+                                Screen.Shark.route,
+                                Screen.ErrorBank.route,
+                                "ai_zen_coach"
+                            )
+                        }
+                        val shouldShowTopBar = (currentDestination?.route in topBarRoutes) && !isPaceKeep && !activeNoteEditor
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -225,13 +237,11 @@ fun MainScreen(
                                 ),
                         ) {
                             Scaffold(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .then(if (isPaceKeep) Modifier else Modifier.windowInsetsPadding(WindowInsets.statusBars)),
+                                modifier = Modifier.fillMaxSize(),
                                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                                 containerColor = if (isPaceKeep) androidx.compose.ui.graphics.Color(0xFF071426) else MaterialTheme.colorScheme.background,
                                 topBar = {
-                                    if (currentDestination?.route != Screen.Login.route && !isPaceKeep && !activeNoteEditor) {
+                                    if (shouldShowTopBar) {
                                         SharkMentorTopBar(
                                             countdown = countdownText, 
                                             isCampus = uiState.isCampus,
@@ -273,7 +283,6 @@ fun MainScreen(
                                 val isImeOpen = WindowInsets.isImeVisible
                                 val primaryTabRoutes = remember { setOf("home", "plans", "notes_screen", "resources", "analytics", "error_bank") }
                                 val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !activeNoteEditor
-                                val shouldShowTopBar = (currentDestination?.route != Screen.Login.route && !isPaceKeep) && !activeNoteEditor
                                 val effectiveTopPadding = if (shouldShowTopBar) innerPadding.calculateTopPadding() else 0.dp
                                 val effectiveBottomPadding = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
 
@@ -335,6 +344,7 @@ fun MainScreen(
                         }
                         composable(Screen.Notes.route) {
                             NotesScreen(
+                                showTopBar = false,
                                 onBackClick = { navController.popBackStack() },
                                 onOpenDrawer = { scope.launch { drawerState.open() } },
                                 importedNote = pendingImportedNote,
@@ -385,6 +395,11 @@ fun MainScreen(
                                         launchSingleTop = true
                                     }
                                 },
+                                onOpenNoteSettings = {
+                                    navController.navigate("note_settings") {
+                                        launchSingleTop = true
+                                    }
+                                },
                                 onOpenAppBlocker = { navController.navigate("app_blocker") },
                                 onOpenAnalysis = { navController.navigate("analysis") },
                                 onOpenHistory = { navController.navigate("history") },
@@ -399,6 +414,11 @@ fun MainScreen(
                         }
                         composable("ai_settings") {
                             AiSettingsScreen(
+                                onBackClick = { navController.popBackStack() }
+                            )
+                        }
+                        composable("note_settings") {
+                            NoteSettingsScreen(
                                 onBackClick = { navController.popBackStack() }
                             )
                         }
@@ -497,6 +517,7 @@ private fun SharkMentorTopBar(
     onMenuClick: () -> Unit
 ) {
     TopAppBar(
+        expandedHeight = 48.dp,
         title = {
             SharkMentorBranding(countdown = countdown, isCampus = isCampus)
         },

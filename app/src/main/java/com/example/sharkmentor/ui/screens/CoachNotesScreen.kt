@@ -69,6 +69,7 @@ fun StudentCoachChatScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
+                expandedHeight = 52.dp,
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(

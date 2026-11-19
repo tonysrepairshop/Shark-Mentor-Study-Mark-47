@@ -278,6 +278,7 @@ fun ProfileScreen(
         topBar = {
             Column {
                 TopAppBar(
+                    expandedHeight = 50.dp,
                     title = { Text("Profil ve Hesap") },
                     navigationIcon = {
                         IconButton(onClick = onBackClick) {

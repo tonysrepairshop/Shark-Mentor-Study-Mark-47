@@ -755,7 +755,6 @@ fun PdfReaderScreen(
     var globalPenColor by remember { mutableStateOf(Color(0xFF1E88E5)) }
     var globalStrokeWidth by remember { mutableFloatStateOf(4.5f) }
     var globalAlpha by remember { mutableFloatStateOf(1.0f) }
-    var globalPressureSensitive by remember { mutableStateOf(true) }
 
     fun getOrCreatePageController(pageIdx: Int): DrawingController {
         return pageControllers.getOrPut(pageIdx) {
@@ -781,7 +780,6 @@ fun PdfReaderScreen(
                     strokeWidth = globalStrokeWidth
                     alpha = globalAlpha
                 }
-                pressureSensitivityEnabled = globalPressureSensitive
             }
         }
     }
@@ -794,14 +792,13 @@ fun PdfReaderScreen(
         activePageController.penColor,
         activePageController.strokeWidth,
         activePageController.alpha,
-        activePageController.pressureSensitivityEnabled,
+        activePageController.stylusOnlyMode,
         currentPageIndex
     ) {
         globalActiveTool = activePageController.activeTool
         globalPenColor = activePageController.penColor
         globalStrokeWidth = activePageController.strokeWidth
         globalAlpha = activePageController.alpha
-        globalPressureSensitive = activePageController.pressureSensitivityEnabled
 
         pageControllers.values.forEach { ctrl ->
             if (ctrl !== activePageController) {
@@ -811,7 +808,8 @@ fun PdfReaderScreen(
                 ctrl.penColor = globalPenColor
                 ctrl.strokeWidth = globalStrokeWidth
                 ctrl.alpha = globalAlpha
-                ctrl.pressureSensitivityEnabled = globalPressureSensitive
+                ctrl.updateStylusOnlyMode(activePageController.stylusOnlyMode)
+                ctrl.syncFromNotePreferences()
             }
         }
     }
@@ -1212,11 +1210,11 @@ fun PdfReaderScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF1E293B))
-            .statusBarsPadding()
             .navigationBarsPadding()
     ) {
         // Top App Bar
         TopAppBar(
+            expandedHeight = 50.dp,
             title = {
                 Column {
                     Text(
@@ -1517,7 +1515,7 @@ fun PdfReaderScreen(
                                     if (isDrawingNow) {
                                         activePageController.selectTool(DrawingTool.NONE)
                                     } else {
-                                        activePageController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                                        activePageController.selectActiveOrLastPen()
                                     }
                                 }
                             ) {
@@ -1590,7 +1588,7 @@ fun PdfReaderScreen(
                                             if (isDrawingNow) {
                                                 activePageController.selectTool(DrawingTool.NONE)
                                             } else {
-                                                activePageController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                                                activePageController.selectActiveOrLastPen()
                                             }
                                         }
                                     ) {

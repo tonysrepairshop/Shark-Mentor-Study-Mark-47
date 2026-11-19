@@ -86,6 +86,7 @@ fun DetailedAnalyticsScreen(
     androidx.compose.material3.Scaffold(
         topBar = {
             androidx.compose.material3.TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text("Detaylı Analiz & Raporlar") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {

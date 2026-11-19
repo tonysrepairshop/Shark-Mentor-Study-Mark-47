@@ -21,6 +21,7 @@ import java.io.InputStreamReader
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 data class GeminiChatTurn(
@@ -223,6 +224,7 @@ object GeminiRestClient {
     private const val AI_STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
     private val ENDPOINT_FALLBACK_HTTP_CODES = setOf(400, 401, 403, 404)
+    private val preferredEndpointByKey = ConcurrentHashMap<String, GeminiEndpointType>()
 
     private val gson = Gson()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -277,11 +279,58 @@ object GeminiRestClient {
         return sanitizeApiKey(apiKey).startsWith("AQ.")
     }
 
+    internal fun recordEndpointSuccess(apiKey: String, endpoint: GeminiEndpointType) {
+        val cleanKey = sanitizeApiKey(apiKey)
+        if (cleanKey.isNotBlank()) {
+            preferredEndpointByKey[cleanKey] = endpoint
+        }
+    }
+
+    internal fun clearEndpointCacheForTesting() {
+        preferredEndpointByKey.clear()
+    }
+
+    internal fun mergeEndpointErrors(
+        primary: GeminiApiException,
+        fallback: GeminiApiException,
+        modelName: String
+    ): GeminiApiException {
+        val primaryLabel = primary.endpoint?.displayName ?: "Primary"
+        val fallbackLabel = fallback.endpoint?.displayName ?: "Fallback"
+        val combinedMessage =
+            "$primaryLabel (${primary.httpCode}): ${primary.message.orEmpty().take(120)} | " +
+                "$fallbackLabel (${fallback.httpCode}): ${fallback.message.orEmpty().take(120)}"
+
+        // Preserve 404 NOT_FOUND whenever EITHER endpoint recognized the key and reported
+        // the model unavailable, so GeminiAiFactory can trigger controlled model fallback.
+        val dominant = when {
+            fallback.isModelNotFound && !primary.isModelNotFound -> fallback
+            primary.isModelNotFound && !fallback.isModelNotFound -> primary
+            fallback.isQuotaOrRateLimit || fallback.isOverloadOrTransient -> fallback
+            else -> primary
+        }
+
+        return GeminiApiException(
+            message = combinedMessage,
+            httpCode = dominant.httpCode,
+            apiStatus = dominant.apiStatus,
+            endpoint = dominant.endpoint,
+            modelName = modelName,
+            usedEndpointFallback = true,
+            rawBody = dominant.rawBody
+        )
+    }
+
     fun resolveEndpointsForKey(apiKey: String): List<GeminiEndpointType> {
-        return if (isVertexExpressKey(apiKey)) {
-            listOf(GeminiEndpointType.VERTEX_AI_EXPRESS, GeminiEndpointType.GOOGLE_AI_STUDIO)
+        val cleanKey = sanitizeApiKey(apiKey)
+        if (!isVertexExpressKey(cleanKey)) {
+            return listOf(GeminiEndpointType.GOOGLE_AI_STUDIO)
+        }
+        val preferred = preferredEndpointByKey[cleanKey]
+        return if (preferred == GeminiEndpointType.GOOGLE_AI_STUDIO) {
+            listOf(GeminiEndpointType.GOOGLE_AI_STUDIO, GeminiEndpointType.VERTEX_AI_EXPRESS)
         } else {
-            listOf(GeminiEndpointType.GOOGLE_AI_STUDIO)
+            listOf(GeminiEndpointType.VERTEX_AI_EXPRESS, GeminiEndpointType.GOOGLE_AI_STUDIO)
         }
     }
 
@@ -843,7 +892,6 @@ object GeminiRestClient {
         val cleanModel = sanitizeModelName(modelName).ifBlank { MODEL_ID }
         val effectiveConfig = resolveLowLatencyConfig(cleanModel, generationConfig)
         val hasThinking = effectiveConfig?.thinkingConfig != null
-        val isVertexKey = isVertexExpressKey(cleanKey)
         val primaryRequestJson = buildRequestBody(
             contents = contents,
             systemInstruction = systemInstruction,
@@ -860,11 +908,12 @@ object GeminiRestClient {
         }
 
         val endpoints = resolveEndpointsForKey(cleanKey)
+        var firstEndpointError: GeminiApiException? = null
         var lastError: GeminiApiException? = null
 
         for ((idx, endpoint) in endpoints.withIndex()) {
             val isFallbackAttempt = idx > 0
-            val url = appendApiKeyQueryParam(buildGenerateUrl(endpoint, cleanModel, streaming = false), cleanKey)
+            val url = buildGenerateUrl(endpoint, cleanModel, streaming = false)
             var stripThinkingAndRetry = false
 
             for (cfgAttempt in 0..1) {
@@ -893,38 +942,55 @@ object GeminiRestClient {
                                 modelName = cleanModel,
                                 usedFallback = isFallbackAttempt
                             )
-                            if (!isFallbackAttempt || lastError == null || !isVertexKey) {
-                                lastError = apiEx
+                            if (idx == 0) {
+                                firstEndpointError = apiEx
                             }
+                            val effectiveError = if (isFallbackAttempt && firstEndpointError != null) {
+                                mergeEndpointErrors(firstEndpointError!!, apiEx, cleanModel)
+                            } else {
+                                apiEx
+                            }
+                            lastError = effectiveError
                             val canFallback = idx < endpoints.lastIndex && response.code in ENDPOINT_FALLBACK_HTTP_CODES
                             if (canFallback) {
-                                safeLogW("Vertex Express HTTP ${response.code} on $cleanModel; falling back to AI Studio immediately.")
+                                safeLogW("Endpoint $endpoint HTTP ${response.code} on $cleanModel; falling back to ${endpoints[idx + 1]} immediately.")
                                 return@use
                             }
-                            throw lastError ?: apiEx
+                            throw effectiveError
                         }
 
-                        return@withContext parseGenerateContentJson(
+                        val parsed = parseGenerateContentJson(
                             jsonString = rawBody,
                             modelName = cleanModel,
                             endpoint = endpoint,
                             usedEndpointFallback = isFallbackAttempt
                         )
+                        recordEndpointSuccess(cleanKey, endpoint)
+                        return@withContext parsed
                     }
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (apiEx: GeminiApiException) {
+                    if (apiEx === lastError) {
+                        throw apiEx
+                    }
                     if (cfgAttempt == 0 && hasThinking && isUnsupportedThinkingConfigError(apiEx.httpCode, apiEx.rawBody)) {
                         safeLogW("Endpoint $endpoint rejected thinkingConfig on $cleanModel; retrying same endpoint without thinkingConfig.")
                         stripThinkingAndRetry = true
                         continue
                     }
-                    if (!isFallbackAttempt || lastError == null || !isVertexKey) {
-                        lastError = apiEx
+                    if (idx == 0) {
+                        firstEndpointError = apiEx
                     }
+                    val effectiveError = if (isFallbackAttempt && firstEndpointError != null) {
+                        mergeEndpointErrors(firstEndpointError!!, apiEx, cleanModel)
+                    } else {
+                        apiEx
+                    }
+                    lastError = effectiveError
                     val canFallback = idx < endpoints.lastIndex && apiEx.httpCode in ENDPOINT_FALLBACK_HTTP_CODES
                     if (!canFallback) {
-                        throw lastError ?: apiEx
+                        throw effectiveError
                     }
                     break
                 }
@@ -964,7 +1030,6 @@ object GeminiRestClient {
         val cleanModel = sanitizeModelName(modelName).ifBlank { MODEL_ID }
         val effectiveConfig = resolveLowLatencyConfig(cleanModel, generationConfig)
         val hasThinking = effectiveConfig?.thinkingConfig != null
-        val isVertexKey = isVertexExpressKey(cleanKey)
         val primaryRequestJson = buildRequestBody(
             contents = contents,
             systemInstruction = systemInstruction,
@@ -981,11 +1046,12 @@ object GeminiRestClient {
         }
 
         val endpoints = resolveEndpointsForKey(cleanKey)
+        var firstEndpointError: GeminiApiException? = null
         var lastError: GeminiApiException? = null
 
         for ((idx, endpoint) in endpoints.withIndex()) {
             val isFallbackAttempt = idx > 0
-            val url = appendApiKeyQueryParam(buildGenerateUrl(endpoint, cleanModel, streaming = true), cleanKey)
+            val url = buildGenerateUrl(endpoint, cleanModel, streaming = true)
             var stripThinkingAndRetry = false
 
             for (cfgAttempt in 0..1) {
@@ -1016,15 +1082,21 @@ object GeminiRestClient {
                                 modelName = cleanModel,
                                 usedFallback = isFallbackAttempt
                             )
-                            if (!isFallbackAttempt || lastError == null || !isVertexKey) {
-                                lastError = apiEx
+                            if (idx == 0) {
+                                firstEndpointError = apiEx
                             }
+                            val effectiveError = if (isFallbackAttempt && firstEndpointError != null) {
+                                mergeEndpointErrors(firstEndpointError!!, apiEx, cleanModel)
+                            } else {
+                                apiEx
+                            }
+                            lastError = effectiveError
                             val canFallback = idx < endpoints.lastIndex && response.code in ENDPOINT_FALLBACK_HTTP_CODES
                             if (canFallback) {
-                                safeLogW("SSE Vertex Express HTTP ${response.code} on $cleanModel; falling back to AI Studio immediately.")
+                                safeLogW("SSE Endpoint $endpoint HTTP ${response.code} on $cleanModel; falling back to ${endpoints[idx + 1]} immediately.")
                                 return@use
                             }
-                            throw lastError ?: apiEx
+                            throw effectiveError
                         }
 
                         val body = response.body ?: throw GeminiApiException(
@@ -1056,11 +1128,16 @@ object GeminiRestClient {
                             }
                         }
 
-                        return@withContext accumulator.finish()
+                        val finished = accumulator.finish()
+                        recordEndpointSuccess(cleanKey, endpoint)
+                        return@withContext finished
                     }
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (apiEx: GeminiApiException) {
+                    if (apiEx === lastError) {
+                        throw apiEx
+                    }
                     if (cfgAttempt == 0 && hasThinking && emittedCharsCount == 0 &&
                         isUnsupportedThinkingConfigError(apiEx.httpCode, apiEx.rawBody)
                     ) {
@@ -1068,14 +1145,20 @@ object GeminiRestClient {
                         stripThinkingAndRetry = true
                         continue
                     }
-                    if (!isFallbackAttempt || lastError == null || !isVertexKey) {
-                        lastError = apiEx
+                    if (idx == 0) {
+                        firstEndpointError = apiEx
                     }
+                    val effectiveError = if (isFallbackAttempt && firstEndpointError != null) {
+                        mergeEndpointErrors(firstEndpointError!!, apiEx, cleanModel)
+                    } else {
+                        apiEx
+                    }
+                    lastError = effectiveError
                     val canFallback = idx < endpoints.lastIndex &&
                         emittedCharsCount == 0 &&
                         apiEx.httpCode in ENDPOINT_FALLBACK_HTTP_CODES
                     if (!canFallback) {
-                        throw lastError ?: apiEx
+                        throw effectiveError
                     }
                     break
                 }
@@ -1108,7 +1191,7 @@ object GeminiRestClient {
         }
 
         val request = Request.Builder()
-            .url(appendApiKeyQueryParam(buildListModelsUrl(100), cleanKey))
+            .url(buildListModelsUrl(100))
             .addHeader("x-goog-api-key", cleanKey)
             .get()
             .build()
