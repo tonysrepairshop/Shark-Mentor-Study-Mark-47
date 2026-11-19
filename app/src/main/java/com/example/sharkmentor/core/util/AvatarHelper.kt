@@ -47,10 +47,19 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import kotlin.math.abs
 import kotlin.math.min
+
+@Immutable
+data class LocalAvatarState(
+    val avatarBase64: String = "",
+    val avatarPresetId: String = ""
+)
 
 @Immutable
 data class AvatarPreset(
@@ -73,6 +82,12 @@ object AvatarHelper {
     private const val MAX_AVATAR_BYTES = 12 * 1024 // ~12 KB raw WebP ceiling
 
     private val bitmapCache = object : LruCache<String, ImageBitmap>(72) {}
+
+    @Volatile
+    private var isStateLoaded = false
+
+    private val _avatarState = MutableStateFlow(LocalAvatarState())
+    val avatarState: StateFlow<LocalAvatarState> = _avatarState.asStateFlow()
 
     val PRESETS: List<AvatarPreset> = listOf(
         AvatarPreset(
@@ -163,6 +178,23 @@ object AvatarHelper {
         return PRESETS.firstOrNull { it.id == presetId }
     }
 
+    fun init(context: Context) {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val base64 = prefs.getString(KEY_AVATAR_BASE64, "") ?: ""
+        val presetId = if (base64.isNotBlank()) "" else (prefs.getString(KEY_AVATAR_PRESET_ID, "") ?: "")
+        _avatarState.value = LocalAvatarState(
+            avatarBase64 = base64,
+            avatarPresetId = presetId
+        )
+        isStateLoaded = true
+    }
+
+    fun ensureLoaded(context: Context) {
+        if (!isStateLoaded) {
+            init(context)
+        }
+    }
+
     fun getSavedAvatarBase64(context: Context): String {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getString(KEY_AVATAR_BASE64, "") ?: ""
@@ -174,11 +206,18 @@ object AvatarHelper {
     }
 
     fun saveLocalAvatar(context: Context, base64: String, presetId: String) {
+        val cleanBase64 = base64.trim()
+        val cleanPreset = if (cleanBase64.isNotBlank()) "" else presetId.trim()
+        val next = LocalAvatarState(avatarBase64 = cleanBase64, avatarPresetId = cleanPreset)
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit()
-            .putString(KEY_AVATAR_BASE64, base64)
-            .putString(KEY_AVATAR_PRESET_ID, presetId)
+            .putString(KEY_AVATAR_BASE64, cleanBase64)
+            .putString(KEY_AVATAR_PRESET_ID, cleanPreset)
             .apply()
+        isStateLoaded = true
+        if (_avatarState.value != next) {
+            _avatarState.value = next
+        }
     }
 
     fun clearLocalAvatar(context: Context) {
@@ -187,6 +226,8 @@ object AvatarHelper {
             .remove(KEY_AVATAR_BASE64)
             .remove(KEY_AVATAR_PRESET_ID)
             .apply()
+        isStateLoaded = true
+        _avatarState.value = LocalAvatarState()
     }
 
     /**
@@ -299,7 +340,9 @@ object AvatarHelper {
     fun decodeAvatarBitmap(base64: String): ImageBitmap? {
         if (base64.isBlank()) return null
         val cacheKey = "${base64.length}_${base64.hashCode()}"
-        bitmapCache.get(cacheKey)?.let { return it }
+        synchronized(bitmapCache) {
+            bitmapCache.get(cacheKey)
+        }?.let { return it }
 
         return runCatching {
             val cleanBase64 = base64.substringAfter("base64,", base64).trim()
@@ -307,7 +350,9 @@ object AvatarHelper {
             if (bytes.isEmpty()) return null
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
             val imageBmp = bmp.asImageBitmap()
-            bitmapCache.put(cacheKey, imageBmp)
+            synchronized(bitmapCache) {
+                bitmapCache.put(cacheKey, imageBmp)
+            }
             imageBmp
         }.getOrNull()
     }

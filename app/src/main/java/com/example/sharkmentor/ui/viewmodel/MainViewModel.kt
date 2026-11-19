@@ -35,6 +35,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     private var studentBrandingListener: com.google.firebase.firestore.ListenerRegistration? = null
+    private var observedUid: String? = null
+    private var fallbackCheckedForUid: String? = null
+    private var firebaseAuthRef: com.google.firebase.auth.FirebaseAuth? = null
+    private val authStateListener = com.google.firebase.auth.FirebaseAuth.AuthStateListener { auth ->
+        val uid = auth.currentUser?.takeUnless { it.isAnonymous }?.uid
+        attachStudentListenerIfNeeded(uid)
+    }
 
     private val prefs = application.getSharedPreferences("sharkmentor_prefs", Context.MODE_PRIVATE)
     private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -54,34 +61,124 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Listen for institution/coach assignment for dynamic branding
+        // Listen for institution/coach assignment & student profile sync across the app
         com.example.sharkmentor.core.notification.SharkNotificationEngine.init(application)
-        val currentUser = runCatching { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser }.getOrNull()
-            ?: GoogleServicesHelper.getCurrentUser(GoogleServicesHelper.getFirebaseAuth(application), application)
-        val uid = currentUser?.uid
-        if (currentUser != null && uid != null) {
-            com.example.sharkmentor.core.notification.SocialNotificationMonitor.start(application)
-            runCatching {
-                studentBrandingListener = GoogleServicesHelper.getFirebaseFirestore(application)
-                    ?.collection("students")?.document(uid)
-                    ?.addSnapshotListener { snapshot, error ->
-                        if (error != null) {
-                            // Task 6.4: Silently ignore PERMISSION_DENIED or offline errors
-                            return@addSnapshotListener
-                        }
-                        if (snapshot == null || !snapshot.exists()) return@addSnapshotListener
-                        val coachId = snapshot.getString("coachId")
-                        val instId = snapshot.getString("institutionId")
-                        val userMode = snapshot.getString("userMode")
-                        val hasInstitution = !coachId.isNullOrBlank() || !instId.isNullOrBlank() || userMode == "campus"
-                        _uiState.value = _uiState.value.copy(isCampus = hasInstitution)
+        val auth = runCatching { com.google.firebase.auth.FirebaseAuth.getInstance() }.getOrNull()
+            ?: GoogleServicesHelper.getFirebaseAuth(application)
+        firebaseAuthRef = auth
+        runCatching { auth?.addAuthStateListener(authStateListener) }
+
+        val currentUser = auth?.currentUser
+            ?: GoogleServicesHelper.getCurrentUser(auth, application)
+        attachStudentListenerIfNeeded(currentUser?.takeUnless { it.isAnonymous }?.uid)
+    }
+
+    private fun attachStudentListenerIfNeeded(uid: String?) {
+        if (uid == observedUid) return
+        studentBrandingListener?.remove()
+        studentBrandingListener = null
+        observedUid = uid
+        if (uid.isNullOrBlank()) {
+            fallbackCheckedForUid = null
+            _uiState.value = _uiState.value.copy(isCampus = false)
+            return
+        }
+
+        val appContext = getApplication<Application>()
+        val userPrefs = com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(appContext)
+        com.example.sharkmentor.core.notification.SocialNotificationMonitor.start(appContext)
+        val db = GoogleServicesHelper.getFirebaseFirestore(appContext) ?: return
+
+        runCatching {
+            studentBrandingListener = db.collection("students").document(uid)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        // Task 6.4: Silently ignore PERMISSION_DENIED or offline errors
+                        return@addSnapshotListener
                     }
-            }
+                    if (snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    val coachId = snapshot.getString("coachId")
+                    val instId = snapshot.getString("institutionId")
+                    val userMode = snapshot.getString("userMode")
+                    val hasInstitution = !coachId.isNullOrBlank() || !instId.isNullOrBlank() || userMode == "campus"
+                    _uiState.value = _uiState.value.copy(isCampus = hasInstitution)
+
+                    val nameInDb = listOf("name", "displayName", "fullName")
+                        .firstNotNullOfOrNull { field ->
+                            snapshot.getString(field)?.trim()?.takeIf { it.length >= 2 }
+                        }
+                    val gradeInDb = listOf("grade", "gradeLevel", "sinif")
+                        .firstNotNullOfOrNull { field ->
+                            snapshot.getString(field)?.trim()?.takeIf { it.isNotBlank() }
+                        }
+                    val examInDb = listOf("targetExam", "targetExamTitle")
+                        .firstNotNullOfOrNull { field ->
+                            snapshot.getString(field)?.trim()?.takeIf { it.isNotBlank() }
+                        }
+
+                    userPrefs.updateProfileDetails(
+                        name = nameInDb,
+                        grade = gradeInDb,
+                        targetExam = examInDb
+                    )
+
+                    // Keep top bar countdown synced when exam title/date exist in cloud
+                    val cloudExamDate = snapshot.getLong("targetExamDate") ?: 0L
+                    val prefEditor = prefs.edit()
+                    var prefChanged = false
+                    if (!examInDb.isNullOrBlank() && prefs.getString("target_exam_title", "").isNullOrBlank()) {
+                        prefEditor.putString("target_exam_title", examInDb)
+                        prefChanged = true
+                    }
+                    if (cloudExamDate > 0L && prefs.getLong("target_date_millis", 0L) <= 0L) {
+                        prefEditor.putLong("target_date_millis", cloudExamDate)
+                        prefChanged = true
+                    }
+                    if (prefChanged) {
+                        prefEditor.apply()
+                        refreshCountdownText()
+                    }
+
+                    // Live sync profile photo / preset avatar for Side Panel & Profile
+                    val hasAvatarFields = snapshot.contains("avatarBase64") || snapshot.contains("avatarPresetId")
+                    if (hasAvatarFields) {
+                        val remoteBase64 = snapshot.getString("avatarBase64").orEmpty().trim()
+                        val remotePreset = if (remoteBase64.isNotBlank()) "" else snapshot.getString("avatarPresetId").orEmpty().trim()
+                        if (remoteBase64.isNotBlank() || remotePreset.isNotBlank() || !snapshot.metadata.isFromCache) {
+                            com.example.sharkmentor.core.util.AvatarHelper.saveLocalAvatar(
+                                context = appContext,
+                                base64 = remoteBase64,
+                                presetId = remotePreset
+                            )
+                        }
+                    }
+
+                    // One-shot fallback check on users/{uid} if grade or targetExam was written there at registration
+                    if ((gradeInDb.isNullOrBlank() || examInDb.isNullOrBlank()) && fallbackCheckedForUid != uid) {
+                        fallbackCheckedForUid = uid
+                        db.collection("users").document(uid).get().addOnSuccessListener { userDoc ->
+                            if (userDoc != null && userDoc.exists()) {
+                                val fallbackGrade = gradeInDb ?: listOf("grade", "gradeLevel", "sinif")
+                                    .firstNotNullOfOrNull { f -> userDoc.getString(f)?.trim()?.takeIf { it.isNotBlank() } }
+                                val fallbackExam = examInDb ?: listOf("targetExam", "targetExamTitle")
+                                    .firstNotNullOfOrNull { f -> userDoc.getString(f)?.trim()?.takeIf { it.isNotBlank() } }
+                                userPrefs.updateProfileDetails(
+                                    grade = fallbackGrade,
+                                    targetExam = fallbackExam
+                                )
+                            }
+                        }
+                    }
+                }
         }
     }
 
     private fun refreshCountdownText() {
-        val rawTitle = prefs.getString("target_exam_title", "YKS")?.trim().orEmpty()
+        val rawTitle = prefs.getString("target_exam_title", null)?.trim().orEmpty()
+            .ifBlank {
+                com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(getApplication())
+                    .studentTargetExam?.trim().orEmpty()
+            }
         val examTitle = if (rawTitle.isBlank()) "YKS" else rawTitle
         var targetMillis = prefs.getLong("target_date_millis", 0L)
         if (targetMillis <= 0L) {
@@ -111,6 +208,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        runCatching { firebaseAuthRef?.removeAuthStateListener(authStateListener) }
         studentBrandingListener?.remove()
         studentBrandingListener = null
         super.onCleared()

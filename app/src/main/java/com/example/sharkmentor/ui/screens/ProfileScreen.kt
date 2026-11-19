@@ -53,12 +53,38 @@ import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.example.sharkmentor.data.repository.CoachCodeRepository
 import com.example.sharkmentor.service.sync.SyncWorker
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.example.sharkmentor.ui.screens.leaguechat.BadgeShowcaseSelectorSheet
 import com.example.sharkmentor.ui.screens.profile.ProfileBadgesTab
 import com.example.sharkmentor.ui.screens.profile.ProfileViewModel
+import com.google.firebase.auth.userProfileChangeRequest
 import com.google.firebase.firestore.SetOptions
 import java.util.Locale
+
+private val DEFAULT_GRADE_OPTIONS = listOf(
+    "8. Sınıf",
+    "9. Sınıf",
+    "10. Sınıf",
+    "11. Sınıf",
+    "12. Sınıf",
+    "Mezun",
+    "Üniversite"
+)
+
+private val DEFAULT_EXAM_OPTIONS = listOf(
+    "YKS 2026",
+    "YKS 2027",
+    "YKS Sayısal",
+    "YKS Eşit Ağırlık",
+    "YKS Sözel",
+    "LGS 2026",
+    "LGS 2027",
+    "KPSS",
+    "DGS",
+    "ALES"
+)
 
 private fun isMeaningfulProfileName(candidate: String?): Boolean {
     val clean = SyncWorker.sanitizeTurkishText(candidate).trim()
@@ -81,16 +107,19 @@ private fun saveProfileNameLocallyAndCloud(
     val clean = SyncWorker.sanitizeTurkishText(rawName.trim())
     if (!isMeaningfulProfileName(clean)) return
 
-    context.applicationContext
-        .getSharedPreferences("user_preferences", Context.MODE_PRIVATE)
-        .edit()
-        .putString("student_name", clean)
-        .apply()
+    UserPreferences.getInstance(context).updateStudentName(clean)
 
     if (!isGuest && !uid.isNullOrBlank()) {
+        runCatching {
+            GoogleServicesHelper.getCurrentUser(context = context)
+                ?.updateProfile(userProfileChangeRequest { displayName = clean })
+        }
         val db = GoogleServicesHelper.getFirebaseFirestore(context) ?: return
+        val namePayload = mapOf("name" to clean, "displayName" to clean)
         db.collection("students").document(uid)
-            .set(mapOf("name" to clean, "displayName" to clean), SetOptions.merge())
+            .set(namePayload, SetOptions.merge())
+        db.collection("users").document(uid)
+            .set(namePayload, SetOptions.merge())
         db.collection("institutions").document("GLOBAL_INDIVIDUAL")
             .collection("weeklyLeague").document(uid)
             .set(mapOf("displayName" to clean), SetOptions.merge())
@@ -102,7 +131,61 @@ private fun saveProfileNameLocallyAndCloud(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private fun saveStudentGradeLocallyAndCloud(
+    context: Context,
+    uid: String?,
+    isGuest: Boolean,
+    rawGrade: String
+) {
+    val clean = SyncWorker.sanitizeTurkishText(rawGrade.trim())
+    if (clean.isBlank()) return
+
+    UserPreferences.getInstance(context).updateStudentGrade(clean)
+
+    if (!isGuest && !uid.isNullOrBlank()) {
+        val db = GoogleServicesHelper.getFirebaseFirestore(context) ?: return
+        val payload = mapOf("grade" to clean)
+        db.collection("students").document(uid).set(payload, SetOptions.merge())
+        db.collection("users").document(uid).set(payload, SetOptions.merge())
+    }
+}
+
+private fun saveStudentTargetExamLocallyAndCloud(
+    context: Context,
+    uid: String?,
+    isGuest: Boolean,
+    rawExam: String
+) {
+    val clean = SyncWorker.sanitizeTurkishText(rawExam.trim())
+    if (clean.isBlank()) return
+
+    val userPrefs = UserPreferences.getInstance(context)
+    userPrefs.updateStudentTargetExam(clean)
+    userPrefs.countdownExamTitle = clean
+
+    context.applicationContext
+        .getSharedPreferences("sharkmentor_prefs", Context.MODE_PRIVATE)
+        .edit()
+        .putString("target_exam_title", clean)
+        .apply()
+
+    if (!isGuest && !uid.isNullOrBlank()) {
+        val db = GoogleServicesHelper.getFirebaseFirestore(context) ?: return
+        db.collection("students").document(uid).set(
+            mapOf(
+                "targetExam" to clean,
+                "targetExamTitle" to clean
+            ),
+            SetOptions.merge()
+        )
+        db.collection("users").document(uid).set(
+            mapOf("targetExam" to clean),
+            SetOptions.merge()
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ProfileScreen(
     viewModel: ProfileViewModel = viewModel(),
@@ -116,6 +199,10 @@ fun ProfileScreen(
     val uid = user?.uid ?: "ID Alınamadı"
     val isGuest = user == null || user.isAnonymous
 
+    val syncedNamePref by userPrefs.studentNameFlow.collectAsStateWithLifecycle()
+    val syncedGradePref by userPrefs.studentGradeFlow.collectAsStateWithLifecycle()
+    val syncedTargetExamPref by userPrefs.studentTargetExamFlow.collectAsStateWithLifecycle()
+
     var studentName by remember {
         val initial = userPrefs.studentName?.takeIf { isMeaningfulProfileName(it) }
             ?: user?.displayName?.takeIf { isMeaningfulProfileName(it) }
@@ -124,8 +211,40 @@ fun ProfileScreen(
         mutableStateOf(initial)
     }
     var studentEmail by remember { mutableStateOf(user?.email ?: "") }
-    var studentGrade by remember { mutableStateOf("12. Sınıf") }
-    var studentTargetExam by remember { mutableStateOf("YKS 2027") }
+    var studentGrade by remember {
+        mutableStateOf(
+            userPrefs.studentGrade?.takeIf { it.isNotBlank() } ?: "12. Sınıf"
+        )
+    }
+    var studentTargetExam by remember {
+        val fallbackCountdown = context.getSharedPreferences("sharkmentor_prefs", Context.MODE_PRIVATE)
+            .getString("target_exam_title", null)?.takeIf { it.isNotBlank() }
+        mutableStateOf(
+            userPrefs.studentTargetExam?.takeIf { it.isNotBlank() }
+                ?: fallbackCountdown
+                ?: "YKS 2027"
+        )
+    }
+
+    LaunchedEffect(syncedNamePref) {
+        val candidate = syncedNamePref?.takeIf { isMeaningfulProfileName(it) }
+        if (!candidate.isNullOrBlank()) {
+            studentName = SyncWorker.sanitizeTurkishText(candidate)
+        }
+    }
+    LaunchedEffect(syncedGradePref) {
+        val candidate = syncedGradePref?.trim()
+        if (!candidate.isNullOrBlank()) {
+            studentGrade = SyncWorker.sanitizeTurkishText(candidate)
+        }
+    }
+    LaunchedEffect(syncedTargetExamPref) {
+        val candidate = syncedTargetExamPref?.trim()
+        if (!candidate.isNullOrBlank()) {
+            studentTargetExam = SyncWorker.sanitizeTurkishText(candidate)
+        }
+    }
+
     var coachName by remember { mutableStateOf("") }
     var institutionName by remember { mutableStateOf("") }
     var hasCoach by remember { mutableStateOf(false) }
@@ -140,6 +259,8 @@ fun ProfileScreen(
     var showAvatarPickerSheet by remember { mutableStateOf(false) }
     var showBadgeShowcaseSheet by remember { mutableStateOf(false) }
     var showNameEditDialog by remember { mutableStateOf(false) }
+    var showGradeEditDialog by remember { mutableStateOf(false) }
+    var showTargetExamEditDialog by remember { mutableStateOf(false) }
 
     var unlockedBadgeIds by remember { mutableStateOf(SharkBadgeCatalog.getUnlockedBadgeIds(context)) }
     var showcaseBadgeIds by remember { mutableStateOf(SharkBadgeCatalog.getShowcaseBadgeIds(context)) }
@@ -178,7 +299,8 @@ fun ProfileScreen(
         mentorPoints = SharkBadgeCatalog.getMentorPoints(context)
 
         if (user != null && !isGuest) {
-            GoogleServicesHelper.getFirebaseFirestore(context)?.collection("students")?.document(uid)?.get()
+            val db = GoogleServicesHelper.getFirebaseFirestore(context)
+            db?.collection("students")?.document(uid)?.get()
                 ?.addOnSuccessListener { snapshot ->
                     val nameInDb = listOf("name", "displayName", "fullName", "username")
                         .firstNotNullOfOrNull { field ->
@@ -232,15 +354,58 @@ fun ProfileScreen(
                     val emailInDb = snapshot.getString("email")
                     if (!emailInDb.isNullOrBlank()) studentEmail = emailInDb
 
-                    val gradeInDb = snapshot.getString("grade")
-                    if (!gradeInDb.isNullOrBlank()) studentGrade = gradeInDb
+                    val gradeInDb = listOf("grade", "gradeLevel", "sinif")
+                        .firstNotNullOfOrNull { f -> snapshot.getString(f)?.trim()?.takeIf { it.isNotBlank() } }
+                    if (!gradeInDb.isNullOrBlank()) {
+                        studentGrade = SyncWorker.sanitizeTurkishText(gradeInDb)
+                        userPrefs.updateStudentGrade(studentGrade)
+                    }
 
-                    val examInDb = snapshot.getString("targetExam")
-                    if (!examInDb.isNullOrBlank()) studentTargetExam = examInDb
+                    val examInDb = listOf("targetExam", "targetExamTitle")
+                        .firstNotNullOfOrNull { f -> snapshot.getString(f)?.trim()?.takeIf { it.isNotBlank() } }
+                    if (!examInDb.isNullOrBlank()) {
+                        studentTargetExam = SyncWorker.sanitizeTurkishText(examInDb)
+                        userPrefs.updateStudentTargetExam(studentTargetExam)
+                    }
+
+                    // Fallback to users/{uid} if grade or targetExam was stored on the registration document
+                    if (gradeInDb.isNullOrBlank() || examInDb.isNullOrBlank()) {
+                        db.collection("users").document(uid).get().addOnSuccessListener { userDoc ->
+                            if (userDoc != null && userDoc.exists()) {
+                                if (gradeInDb.isNullOrBlank()) {
+                                    val userGrade = listOf("grade", "gradeLevel", "sinif")
+                                        .firstNotNullOfOrNull { f -> userDoc.getString(f)?.trim()?.takeIf { it.isNotBlank() } }
+                                    if (!userGrade.isNullOrBlank()) {
+                                        studentGrade = SyncWorker.sanitizeTurkishText(userGrade)
+                                        saveStudentGradeLocallyAndCloud(context, uid, isGuest = false, rawGrade = studentGrade)
+                                    } else if (!userPrefs.studentGrade.isNullOrBlank()) {
+                                        saveStudentGradeLocallyAndCloud(context, uid, isGuest = false, rawGrade = userPrefs.studentGrade!!)
+                                    }
+                                }
+                                if (examInDb.isNullOrBlank()) {
+                                    val userExam = listOf("targetExam", "targetExamTitle")
+                                        .firstNotNullOfOrNull { f -> userDoc.getString(f)?.trim()?.takeIf { it.isNotBlank() } }
+                                    if (!userExam.isNullOrBlank()) {
+                                        studentTargetExam = SyncWorker.sanitizeTurkishText(userExam)
+                                        saveStudentTargetExamLocallyAndCloud(context, uid, isGuest = false, rawExam = studentTargetExam)
+                                    } else if (!userPrefs.studentTargetExam.isNullOrBlank()) {
+                                        saveStudentTargetExamLocallyAndCloud(context, uid, isGuest = false, rawExam = userPrefs.studentTargetExam!!)
+                                    }
+                                }
+                            } else {
+                                if (gradeInDb.isNullOrBlank() && !userPrefs.studentGrade.isNullOrBlank()) {
+                                    saveStudentGradeLocallyAndCloud(context, uid, isGuest = false, rawGrade = userPrefs.studentGrade!!)
+                                }
+                                if (examInDb.isNullOrBlank() && !userPrefs.studentTargetExam.isNullOrBlank()) {
+                                    saveStudentTargetExamLocallyAndCloud(context, uid, isGuest = false, rawExam = userPrefs.studentTargetExam!!)
+                                }
+                            }
+                        }
+                    }
 
                     val instInDb = snapshot.getString("institutionName")
                     val coachCodeInDb = snapshot.getString("coachCode") ?: snapshot.getString("institutionCode")
-                    
+
                     if (!instInDb.isNullOrBlank() || !coachCodeInDb.isNullOrBlank()) {
                         institutionName = instInDb ?: "Bağlı Kurum"
                         hasCoach = true
@@ -250,8 +415,8 @@ fun ProfileScreen(
 
                     val coachId = snapshot.getString("coachId")
                     if (!coachId.isNullOrBlank()) {
-                        GoogleServicesHelper.getFirebaseFirestore(context)?.collection("coaches")?.document(coachId)?.get()
-                            ?.addOnSuccessListener { cDoc ->
+                        db.collection("coaches").document(coachId).get()
+                            .addOnSuccessListener { cDoc ->
                                 coachName = cDoc.getString("coachName") ?: "Koç"
                                 if (institutionName.isBlank() || institutionName == "Bağlı Kurum") {
                                     institutionName = cDoc.getString("institutionName") ?: "Kurum"
@@ -261,7 +426,7 @@ fun ProfileScreen(
                                 SessionManager.setUserMode(context, "campus")
                                 isLoading = false
                             }
-                            ?.addOnFailureListener { isLoading = false }
+                            .addOnFailureListener { isLoading = false }
                     } else {
                         isLoading = false
                     }
@@ -463,18 +628,20 @@ fun ProfileScreen(
                         value = displayEmail
                     )
 
-                    // Grade Row
+                    // Grade Row (tap to edit without altering visual appearance)
                     ProfileDetailRow(
                         icon = Icons.Default.Grade,
                         label = "Sınıf Seviyesi",
-                        value = studentGrade
+                        value = studentGrade,
+                        onClick = { showGradeEditDialog = true }
                     )
 
-                    // Target Exam Row
+                    // Target Exam Row (tap to edit without altering visual appearance)
                     ProfileDetailRow(
                         icon = Icons.Default.School,
                         label = "Hedef Sınav",
-                        value = studentTargetExam
+                        value = studentTargetExam,
+                        onClick = { showTargetExamEditDialog = true }
                     )
 
                     // Institution / Coach Status Row
@@ -1050,15 +1217,167 @@ fun ProfileScreen(
         }
     }
 
+    if (showGradeEditDialog) {
+        var draftGrade by remember(studentGrade) { mutableStateOf(studentGrade) }
+        AlertDialog(
+            onDismissRequest = { showGradeEditDialog = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            title = {
+                Text(
+                    text = "Sınıf Seviyesi",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        DEFAULT_GRADE_OPTIONS.forEach { option ->
+                            val selected = draftGrade.trim().equals(option, ignoreCase = true)
+                            FilterChip(
+                                selected = selected,
+                                onClick = { draftGrade = option },
+                                label = { Text(option, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = draftGrade,
+                        onValueChange = { draftGrade = it.take(36) },
+                        label = { Text("Sınıf Düzeyi") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clean = SyncWorker.sanitizeTurkishText(draftGrade.trim())
+                        if (clean.isNotBlank()) {
+                            studentGrade = clean
+                            saveStudentGradeLocallyAndCloud(
+                                context = context,
+                                uid = uid,
+                                isGuest = isGuest,
+                                rawGrade = clean
+                            )
+                            showGradeEditDialog = false
+                            Toast.makeText(context, "Sınıf seviyesi kaydedildi.", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = draftGrade.trim().isNotBlank()
+                ) {
+                    Text("Kaydet")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGradeEditDialog = false }) {
+                    Text("İptal")
+                }
+            }
+        )
+    }
+
+    if (showTargetExamEditDialog) {
+        var draftExam by remember(studentTargetExam) { mutableStateOf(studentTargetExam) }
+        AlertDialog(
+            onDismissRequest = { showTargetExamEditDialog = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            title = {
+                Text(
+                    text = "Hedef Sınav",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        DEFAULT_EXAM_OPTIONS.forEach { option ->
+                            val selected = draftExam.trim().equals(option, ignoreCase = true)
+                            FilterChip(
+                                selected = selected,
+                                onClick = { draftExam = option },
+                                label = { Text(option, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = draftExam,
+                        onValueChange = { draftExam = it.take(40) },
+                        label = { Text("Hedef Sınav Adı") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clean = SyncWorker.sanitizeTurkishText(draftExam.trim())
+                        if (clean.isNotBlank()) {
+                            studentTargetExam = clean
+                            saveStudentTargetExamLocallyAndCloud(
+                                context = context,
+                                uid = uid,
+                                isGuest = isGuest,
+                                rawExam = clean
+                            )
+                            showTargetExamEditDialog = false
+                            Toast.makeText(context, "Hedef sınav kaydedildi.", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = draftExam.trim().isNotBlank()
+                ) {
+                    Text("Kaydet")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTargetExamEditDialog = false }) {
+                    Text("İptal")
+                }
+            }
+        )
+    }
+
 }
 
 @Composable
 private fun ProfileDetailRow(
     icon: ImageVector,
     label: String,
-    value: String
+    value: String,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
+        modifier = if (onClick != null) {
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+        } else {
+            Modifier.fillMaxWidth()
+        },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {

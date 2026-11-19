@@ -429,6 +429,17 @@ fun OnboardingScreen(
                             }
                             SyncWorker.enqueueImmediateSync(context)
                         }
+                        prefs.updateProfileDetails(
+                            name = fullName.trim(),
+                            grade = selectedGrade.trim(),
+                            targetExam = targetExam.trim()
+                        )
+                        if (targetExam.isNotBlank()) {
+                            context.getSharedPreferences("sharkmentor_prefs", android.content.Context.MODE_PRIVATE)
+                                .edit()
+                                .putString("target_exam_title", targetExam.trim())
+                                .apply()
+                        }
 
                         onOnboardingComplete()
                     } catch (e: Exception) {

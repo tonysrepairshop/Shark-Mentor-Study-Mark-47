@@ -11,8 +11,10 @@ import com.example.sharkmentor.core.blocker.BlockerPreferences
 import com.example.sharkmentor.core.data.ThemePreferences
 import com.example.sharkmentor.core.theme.ThemeManager
 import com.example.sharkmentor.core.util.AppIconManager
+import com.example.sharkmentor.core.util.AvatarHelper
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.core.util.SessionManager
+import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.example.sharkmentor.service.notification.NotificationChannels
 import com.example.sharkmentor.service.sync.SyncWorker
 import com.google.firebase.FirebaseApp
@@ -34,6 +36,8 @@ class SharkMentorApplication : Application() {
         UserAiPreferences.initialize(this)
         ThemeManager.init(this)
         SessionManager.init(this)
+        AvatarHelper.init(this)
+        UserPreferences.getInstance(this)
         BlockerPreferences.initialize(this)
         NotificationChannels.registerAll(this)
 

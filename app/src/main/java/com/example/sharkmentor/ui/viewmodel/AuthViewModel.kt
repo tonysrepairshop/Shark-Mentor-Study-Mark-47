@@ -49,18 +49,39 @@ class AuthViewModel : ViewModel() {
             return
         }
 
-        val studentData = hashMapOf(
-            "name" to fullName.trim(),
-            "email" to email.trim(),
-            "grade" to grade.trim(),
-            "targetExam" to targetExam.trim(),
+        val cleanName = fullName.trim()
+        val cleanEmail = email.trim()
+        val cleanGrade = grade.trim()
+        val cleanExam = targetExam.trim()
+        val studentData = hashMapOf<String, Any>(
+            "name" to cleanName,
+            "displayName" to cleanName,
+            "email" to cleanEmail,
+            "grade" to cleanGrade,
+            "targetExam" to cleanExam,
             "isStudying" to false,
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
+        if (cleanExam.isNotBlank()) {
+            studentData["targetExamTitle"] = cleanExam
+        }
 
-        val profileUpdates = userProfileChangeRequest { displayName = fullName.trim() }
+        val profileUpdates = userProfileChangeRequest { displayName = cleanName }
         user.updateProfile(profileUpdates)
+
+        database.collection("users").document(user.uid)
+            .set(
+                hashMapOf(
+                    "uid" to user.uid,
+                    "name" to cleanName,
+                    "email" to cleanEmail,
+                    "grade" to cleanGrade,
+                    "targetExam" to cleanExam,
+                    "role" to "STUDENT"
+                ),
+                SetOptions.merge()
+            )
 
         database.collection("students").document(user.uid)
             .set(studentData, SetOptions.merge())
