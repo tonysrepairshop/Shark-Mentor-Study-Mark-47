@@ -761,6 +761,12 @@ object GeminiAiFactory {
                             )
                         }
                     }
+                    attempt.lastError?.let { fbErr ->
+                        lastException = fbErr
+                        failureNotes.add(
+                            "#${keyIndex + 1} (${ApiKeyRotator.maskApiKey(activeKey)} • $CONTROLLED_404_FALLBACK_MODEL): ${formatError(fbErr)}"
+                        )
+                    }
                 }
             }
 
@@ -831,11 +837,14 @@ object GeminiAiFactory {
                 }
                 lastError = e
                 safeLogE("Gemini REST failed ($modelName, retry=$retry): ${e.message}", e)
-                if (GeminiRestClient.isNetworkUnreachableError(e)) {
+                if (GeminiRestClient.isNetworkUnreachableError(e) && !GeminiRestClient.isTimeoutError(e)) {
                     return KeyAttemptOutcome(
                         lastError = e,
-                        fallbackEligibleError = if (isFallbackEligibleFailure(e)) e else null
+                        fallbackEligibleError = null
                     )
+                }
+                if (GeminiRestClient.isTimeoutError(e)) {
+                    break
                 }
                 val isTransient = (e as? GeminiApiException)?.isOverloadOrTransient == true
                 if (isTransient && retry < maxRetries) {
@@ -988,7 +997,35 @@ object GeminiAiFactory {
         val idToken: String
     )
 
+    private const val PROXY_COOLDOWN_MS = 10L * 60L * 1_000L
+
+    @Volatile
+    private var proxyCooldownUntilMs: Long = 0L
+
+    internal fun isProxyCoolingDown(nowMs: Long = System.currentTimeMillis()): Boolean =
+        nowMs < proxyCooldownUntilMs
+
+    internal fun markProxyUnavailable(
+        httpCode: Int?,
+        rawMessage: String?,
+        nowMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        val msg = rawMessage.orEmpty().lowercase()
+        val shouldCooldown = httpCode in setOf(403, 404) ||
+            (httpCode == 503 && (msg.contains("not configured") || msg.contains("missing gemini"))) ||
+            msg.contains("not found")
+        if (shouldCooldown) {
+            proxyCooldownUntilMs = nowMs + PROXY_COOLDOWN_MS
+        }
+        return shouldCooldown
+    }
+
+    internal fun resetProxyCircuitBreakerForTesting() {
+        proxyCooldownUntilMs = 0L
+    }
+
     private suspend fun resolveFirebaseProxyContext(): FirebaseProxyContext? {
+        if (isProxyCoolingDown()) return null
         val projectId = runCatching {
             FirebaseApp.getInstance().options.projectId
         }.getOrNull()
@@ -1044,6 +1081,7 @@ object GeminiAiFactory {
             if (response.text.isBlank() && response.functionCalls.isEmpty()) {
                 null to IllegalStateException("Firebase proxy boş yanıt döndürdü.")
             } else {
+                proxyCooldownUntilMs = 0L
                 response to null
             }
         } catch (ce: CancellationException) {
@@ -1057,6 +1095,8 @@ object GeminiAiFactory {
                     endpoint = GeminiEndpointType.FIREBASE_PROXY
                 ) to null
             } else {
+                val apiEx = e as? GeminiApiException
+                markProxyUnavailable(apiEx?.httpCode, e.message)
                 safeLogW("Firebase Gemini proxy failed; falling back to direct built-in path: ${e.message}")
                 null to e
             }

@@ -45,6 +45,7 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
         com.google.firebase.firestore.FirebaseFirestore.getInstance(),
         com.google.firebase.auth.FirebaseAuth.getInstance()
     )
+    private var institutionScheduleListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     init {
         institutionSyncListener.start()
@@ -53,6 +54,8 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun onCleared() {
+        institutionScheduleListener?.remove()
+        institutionScheduleListener = null
         institutionSyncListener.stop()
         super.onCleared()
     }
@@ -120,8 +123,9 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 if (currentUser != null && instId != null && db != null) {
+                    institutionScheduleListener?.remove()
                     runCatching {
-                        db.collection("institutions").document(instId).addSnapshotListener { snap, err ->
+                        institutionScheduleListener = db.collection("institutions").document(instId).addSnapshotListener { snap, err ->
                             if (err != null) return@addSnapshotListener
                             if (snap != null && snap.exists()) {
                                 val text = snap.getString("weeklySchedule")

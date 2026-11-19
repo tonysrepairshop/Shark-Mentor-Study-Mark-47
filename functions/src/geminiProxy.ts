@@ -77,11 +77,35 @@ function sanitize(message: string, keys: string[]): string {
 
 function endpointsFor(apiKey: string, model: string, stream: boolean): string[] {
   const method = stream ? "streamGenerateContent?alt=sse" : "generateContent";
-  const studio = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${method}`;
+  // Vertex AI Express (`AQ.`) keys belong strictly to aiplatform.googleapis.com;
+  // hitting generativelanguage.googleapis.com with an `AQ.` key always yields HTTP 400
+  // and would overwrite the real Vertex diagnostic error.
   if (apiKey.startsWith("AQ.")) {
-    return [`https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:${method}`, studio];
+    return [`https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:${method}`];
   }
-  return [studio];
+  return [`https://generativelanguage.googleapis.com/v1beta/models/${model}:${method}`];
+}
+
+function isThinkingConfigRejected(status: number, errorText: string): boolean {
+  if (status !== 400) return false;
+  const lower = (errorText || "").toLowerCase();
+  return lower.includes("thinkingconfig") ||
+    lower.includes("thinking_config") ||
+    lower.includes("thinkingbudget") ||
+    lower.includes("thinking_budget") ||
+    lower.includes("thinkinglevel") ||
+    lower.includes("thinking_level");
+}
+
+function stripThinkingConfigBody(upstreamBody: Record<string, unknown>): string | null {
+  const genCfg = upstreamBody.generationConfig;
+  if (!genCfg || typeof genCfg !== "object") return null;
+  const cfgObj = genCfg as Record<string, unknown>;
+  if (!("thinkingConfig" in cfgObj) && !("thinking_config" in cfgObj)) return null;
+  const cloneCfg: Record<string, unknown> = { ...cfgObj };
+  delete cloneCfg.thinkingConfig;
+  delete cloneCfg.thinking_config;
+  return JSON.stringify({ ...upstreamBody, generationConfig: cloneCfg });
 }
 
 function orderedModels(requested: unknown): string[] {
@@ -181,6 +205,7 @@ export const geminiProxy = onRequest(
     if (payload.toolConfig) upstreamBody.toolConfig = payload.toolConfig;
     if (payload.safetySettings) upstreamBody.safetySettings = payload.safetySettings;
     const bodyStr = JSON.stringify(upstreamBody);
+    const bodyWithoutThinking = stripThinkingConfigBody(upstreamBody);
     if (Buffer.byteLength(bodyStr) > MAX_BODY_BYTES) {
       res.status(413).json({ error: { code: 413, status: "INVALID_ARGUMENT", message: "Payload too large" } });
       return;
@@ -201,7 +226,10 @@ export const geminiProxy = onRequest(
       let fallbackEligible = false;
       for (const apiKey of keys) {
         for (const url of endpointsFor(apiKey, model, stream)) {
-          const attempt = await callUpstream(url, apiKey, bodyStr);
+          let attempt = await callUpstream(url, apiKey, bodyStr);
+          if (!attempt.response && bodyWithoutThinking && isThinkingConfigRejected(attempt.status, attempt.errorText)) {
+            attempt = await callUpstream(url, apiKey, bodyWithoutThinking);
+          }
           if (attempt.response) {
             res.set("X-Shark-Model", model);
             res.set("Cache-Control", "no-cache");

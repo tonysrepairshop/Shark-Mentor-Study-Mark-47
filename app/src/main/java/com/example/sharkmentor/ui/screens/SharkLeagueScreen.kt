@@ -20,17 +20,24 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.MilitaryTech
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
@@ -56,6 +63,8 @@ import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.badges.SharkBadgeChip
 import com.example.sharkmentor.core.badges.SharkBadgeDef
 import com.example.sharkmentor.core.badges.SharkBadgeShowcaseRow
+import com.example.sharkmentor.core.league.LeagueRankZone
+import com.example.sharkmentor.core.league.SharkLeagueRules
 import com.example.sharkmentor.core.util.SharkAvatar
 import com.example.sharkmentor.core.util.SharkVisualKit
 import com.example.sharkmentor.ui.screens.leaguechat.BadgeShowcaseSelectorSheet
@@ -73,6 +82,10 @@ import com.example.sharkmentor.ui.viewmodel.SharkTier
 import com.example.sharkmentor.ui.viewmodel.StudyGroupSummary
 import com.example.sharkmentor.ui.viewmodel.nextThreshold
 import com.example.sharkmentor.ui.viewmodel.previousThreshold
+
+private val PODIUM_GOLD_COLOR = Color(0xFFD97706)
+private val PODIUM_SILVER_COLOR = Color(0xFF64748B)
+private val PODIUM_BRONZE_COLOR = Color(0xFFB45309)
 
 @Composable
 private fun SharkTier.themeAwareAccentColor(): Color {
@@ -104,9 +117,17 @@ fun SharkLeagueScreen(
     var showJoinByCodeDialog by rememberSaveable { mutableStateOf(false) }
     var showBadgeShowcaseSheet by rememberSaveable { mutableStateOf(false) }
     var showNameEditDialog by rememberSaveable { mutableStateOf(false) }
+    var showLeagueTiersSheet by rememberSaveable { mutableStateOf(false) }
+    var sheetSelectedTierName by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedMemberForProfile by remember { mutableStateOf<LeagueEntry?>(null) }
     var inspectedMyShowcaseBadge by remember { mutableStateOf<SharkBadgeDef?>(null) }
     var activeChatDestination by remember { mutableStateOf<LeagueChatDestination?>(null) }
+
+    fun openLeagueTiersExplorer(initialTier: SharkTier? = null) {
+        val targetTier = initialTier ?: uiState.selectedTierFilter ?: uiState.myEntry?.tier ?: SharkTier.CAMGOZ
+        sheetSelectedTierName = targetTier.name
+        showLeagueTiersSheet = true
+    }
 
     BackHandler(enabled = activeChatDestination != null) {
         activeChatDestination = null
@@ -179,7 +200,11 @@ fun SharkLeagueScreen(
                 TopAppBar(
                     expandedHeight = 52.dp,
                     title = {
-                        Column {
+                        Column(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { openLeagueTiersExplorer() }
+                        ) {
                             Text(
                                 text = "Shark Ligi",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
@@ -191,10 +216,12 @@ fun SharkLeagueScreen(
                                         uiState.groupName.orEmpty()
                                     uiState.activeTab == LeagueTab.GROUPS_AND_FRIENDS ->
                                         "Gruplar & Arkadaşlar"
+                                    uiState.selectedTierFilter != null ->
+                                        "${uiState.selectedTierFilter!!.label} Ligi • ${SharkLeagueRules.TOTAL_LEAGUES} Lig"
                                     uiState.useInstitutionFilter && uiState.institutionCode.isNotBlank() ->
-                                        "Kurum Ligi (${uiState.institutionCode})"
+                                        "Kurum Ligi (${uiState.institutionCode}) • ${SharkLeagueRules.TOTAL_LEAGUES} Lig"
                                     else ->
-                                        "Genel Lig"
+                                        "Genel Lig • ${SharkLeagueRules.TOTAL_LEAGUES} Lig"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -332,6 +359,8 @@ fun SharkLeagueScreen(
                         onOpenBadgeShowcase = { showBadgeShowcaseSheet = true },
                         onShowcaseBadgeClick = { inspectedMyShowcaseBadge = it },
                         onOpenEditName = { showNameEditDialog = true },
+                        onOpenLeagueTiers = { tier -> openLeagueTiersExplorer(tier) },
+                        onSelectTierFilter = { viewModel.selectTierFilter(it) },
                         onSelectGroupFilter = { viewModel.selectGroupFilter(it) },
                         onToggleInstitutionFilter = { viewModel.toggleInstitutionLeague(it) },
                         onNudgeMember = { viewModel.nudgeLeagueMember(it) },
@@ -341,6 +370,28 @@ fun SharkLeagueScreen(
                 }
             }
         }
+    }
+
+    if (showLeagueTiersSheet) {
+        val currentSheetTier = SharkLeagueRules.parseTierOrNull(sheetSelectedTierName)
+            ?: uiState.myEntry?.tier
+            ?: SharkTier.CAMGOZ
+        SharkLeagueTiersSheet(
+            selectedTier = currentSheetTier,
+            myTier = uiState.myEntry?.tier,
+            entriesByTier = uiState.entriesByTier,
+            tierCounts = uiState.tierCounts,
+            onSelectTier = { sheetSelectedTierName = it.name },
+            onApplyTierFilter = { tier ->
+                viewModel.selectTierFilter(tier)
+                showLeagueTiersSheet = false
+            },
+            onMemberClick = { member ->
+                showLeagueTiersSheet = false
+                selectedMemberForProfile = member
+            },
+            onDismiss = { showLeagueTiersSheet = false }
+        )
     }
 
     if (showCreateGroupDialog) {
@@ -597,6 +648,8 @@ private fun LeagueContent(
     onOpenBadgeShowcase: () -> Unit,
     onShowcaseBadgeClick: (SharkBadgeDef) -> Unit,
     onOpenEditName: () -> Unit,
+    onOpenLeagueTiers: (SharkTier?) -> Unit,
+    onSelectTierFilter: (SharkTier?) -> Unit,
     onSelectGroupFilter: (String?) -> Unit,
     onToggleInstitutionFilter: (Boolean) -> Unit,
     onNudgeMember: (LeagueEntry) -> Unit,
@@ -605,21 +658,29 @@ private fun LeagueContent(
 ) {
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-
-    val activeList = if (uiState.activeTab == LeagueTab.GLOBAL_INDIVIDUAL) {
-        uiState.leaderboard
-    } else {
-        uiState.friendsAndGroupMembers
-    }
-
     val isGroupsTab = uiState.activeTab == LeagueTab.GROUPS_AND_FRIENDS
+    val activeTierFilter = if (!isGroupsTab) uiState.selectedTierFilter else null
+
+    val activeList = when {
+        isGroupsTab -> uiState.friendsAndGroupMembers
+        activeTierFilter != null -> uiState.entriesByTier[activeTierFilter].orEmpty()
+        else -> uiState.leaderboard
+    }
+    val relegationStartRank = if (!isGroupsTab) {
+        SharkLeagueRules.relegationStartRank(activeList.size)
+    } else {
+        null
+    }
 
     val listHeaderTitle = when (uiState.activeTab) {
         LeagueTab.GLOBAL_INDIVIDUAL -> {
-            if (uiState.useInstitutionFilter && uiState.institutionCode.isNotBlank()) {
-                "KURUM LİGİ (${uiState.institutionCode})"
-            } else {
-                "GENEL LİG"
+            when {
+                activeTierFilter != null ->
+                    "${activeTierFilter.label.uppercase()} LİGİ (${activeList.size})"
+                uiState.useInstitutionFilter && uiState.institutionCode.isNotBlank() ->
+                    "KURUM LİGİ (${uiState.institutionCode})"
+                else ->
+                    "GENEL LİG (${activeList.size})"
             }
         }
         LeagueTab.GROUPS_AND_FRIENDS -> {
@@ -650,6 +711,11 @@ private fun LeagueContent(
                         entry = me,
                         myFriendCode = uiState.myFriendCode,
                         unlockedBadgeCount = uiState.myUnlockedBadges.size,
+                        myTierRank = uiState.myTierRank,
+                        myTierTotal = uiState.myTierTotal,
+                        lastWeekOutcome = uiState.myLastWeekOutcome,
+                        relegatedFromTier = uiState.myRelegatedFromTier,
+                        onOpenLeagueTiers = { onOpenLeagueTiers(me.tier) },
                         onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) },
                         onShareFriendCode = {
                             onShareText(
@@ -684,6 +750,8 @@ private fun LeagueContent(
                 item {
                     LeagueFilterSection(
                         uiState = uiState,
+                        onOpenLeagueTiers = onOpenLeagueTiers,
+                        onSelectTierFilter = onSelectTierFilter,
                         onSelectGroupFilter = onSelectGroupFilter,
                         onToggleInstitutionFilter = onToggleInstitutionFilter,
                         onCopyGroupCode = { code -> onCopyCode("Grup davet kodu", code) },
@@ -697,31 +765,71 @@ private fun LeagueContent(
                 }
 
                 item {
-                    Text(
-                        text = listHeaderTitle,
-                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.4.sp),
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = !isGroupsTab) { onOpenLeagueTiers(activeTierFilter) }
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = listHeaderTitle,
+                            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.4.sp),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (!isGroupsTab) {
+                            Text(
+                                text = "İlk 3 Öne Çıkar • Son 5 Düşer",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
 
                 if (activeList.isEmpty()) {
                     item {
                         EmptyLeagueStateCard(
                             isGroupsTab = isGroupsTab,
+                            selectedTier = activeTierFilter,
+                            onClearTierFilter = { onSelectTierFilter(null) },
                             onOpenCreateGroup = onOpenCreateGroup,
                             onOpenJoinByCode = onOpenJoinByCode
                         )
                     }
                 } else {
                     itemsIndexed(activeList, key = { _, e -> e.studentId.ifBlank { e.displayName } }) { index, entry ->
-                        LeaderboardRow(
-                            rank = index + 1,
-                            entry = entry,
-                            showNudgeButton = isGroupsTab && !entry.isCurrentUser,
-                            onNudgeClick = { onNudgeMember(entry) },
-                            onMemberClick = { onMemberClick(entry) }
-                        )
+                        val rank = index + 1
+                        val rankZone = if (isGroupsTab) {
+                            when (rank) {
+                                1 -> LeagueRankZone.TOP_1
+                                2 -> LeagueRankZone.TOP_2
+                                3 -> LeagueRankZone.TOP_3
+                                else -> LeagueRankZone.SAFE
+                            }
+                        } else {
+                            SharkLeagueRules.resolveZoneForRank(
+                                rank = rank,
+                                totalInTier = activeList.size,
+                                tier = activeTierFilter ?: entry.tier
+                            )
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (relegationStartRank != null && rank == relegationStartRank) {
+                                RelegationZoneDivider(tier = activeTierFilter)
+                            }
+                            LeaderboardRow(
+                                rank = rank,
+                                entry = entry,
+                                rankZone = rankZone,
+                                showNudgeButton = isGroupsTab && !entry.isCurrentUser,
+                                onNudgeClick = { onNudgeMember(entry) },
+                                onMemberClick = { onMemberClick(entry) }
+                            )
+                        }
                     }
                 }
             }
@@ -740,6 +848,11 @@ private fun LeagueContent(
                         entry = me,
                         myFriendCode = uiState.myFriendCode,
                         unlockedBadgeCount = uiState.myUnlockedBadges.size,
+                        myTierRank = uiState.myTierRank,
+                        myTierTotal = uiState.myTierTotal,
+                        lastWeekOutcome = uiState.myLastWeekOutcome,
+                        relegatedFromTier = uiState.myRelegatedFromTier,
+                        onOpenLeagueTiers = { onOpenLeagueTiers(me.tier) },
                         onCopyFriendCode = { onCopyCode("Arkadaş kodun", uiState.myFriendCode) },
                         onShareFriendCode = {
                             onShareText(
@@ -770,6 +883,8 @@ private fun LeagueContent(
             item {
                 LeagueFilterSection(
                     uiState = uiState,
+                    onOpenLeagueTiers = onOpenLeagueTiers,
+                    onSelectTierFilter = onSelectTierFilter,
                     onSelectGroupFilter = onSelectGroupFilter,
                     onToggleInstitutionFilter = onToggleInstitutionFilter,
                     onCopyGroupCode = { code -> onCopyCode("Grup davet kodu", code) },
@@ -783,25 +898,39 @@ private fun LeagueContent(
             }
 
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    HorizontalDivider(
-                        modifier = Modifier.weight(1f),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                    )
-                    Text(
-                        text = listHeaderTitle,
-                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.3.sp),
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    HorizontalDivider(
-                        modifier = Modifier.weight(1f),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = !isGroupsTab) { onOpenLeagueTiers(activeTierFilter) },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        HorizontalDivider(
+                            modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        )
+                        Text(
+                            text = listHeaderTitle,
+                            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.3.sp),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        )
+                    }
+                    if (!isGroupsTab) {
+                        Text(
+                            text = "İlk 3 öne çıkar • Son 5 alt lige düşer (alt lig yoksa aynı lig tekrar)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
 
@@ -809,19 +938,42 @@ private fun LeagueContent(
                 item {
                     EmptyLeagueStateCard(
                         isGroupsTab = isGroupsTab,
+                        selectedTier = activeTierFilter,
+                        onClearTierFilter = { onSelectTierFilter(null) },
                         onOpenCreateGroup = onOpenCreateGroup,
                         onOpenJoinByCode = onOpenJoinByCode
                     )
                 }
             } else {
                 itemsIndexed(activeList, key = { _, e -> e.studentId.ifBlank { e.displayName } }) { index, entry ->
-                    LeaderboardRow(
-                        rank = index + 1,
-                        entry = entry,
-                        showNudgeButton = isGroupsTab && !entry.isCurrentUser,
-                        onNudgeClick = { onNudgeMember(entry) },
-                        onMemberClick = { onMemberClick(entry) }
-                    )
+                    val rank = index + 1
+                    val rankZone = if (isGroupsTab) {
+                        when (rank) {
+                            1 -> LeagueRankZone.TOP_1
+                            2 -> LeagueRankZone.TOP_2
+                            3 -> LeagueRankZone.TOP_3
+                            else -> LeagueRankZone.SAFE
+                        }
+                    } else {
+                        SharkLeagueRules.resolveZoneForRank(
+                            rank = rank,
+                            totalInTier = activeList.size,
+                            tier = activeTierFilter ?: entry.tier
+                        )
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (relegationStartRank != null && rank == relegationStartRank) {
+                            RelegationZoneDivider(tier = activeTierFilter)
+                        }
+                        LeaderboardRow(
+                            rank = rank,
+                            entry = entry,
+                            rankZone = rankZone,
+                            showNudgeButton = isGroupsTab && !entry.isCurrentUser,
+                            onNudgeClick = { onNudgeMember(entry) },
+                            onMemberClick = { onMemberClick(entry) }
+                        )
+                    }
                 }
             }
         }
@@ -831,6 +983,8 @@ private fun LeagueContent(
 @Composable
 private fun LeagueFilterSection(
     uiState: SharkLeagueUiState,
+    onOpenLeagueTiers: (SharkTier?) -> Unit,
+    onSelectTierFilter: (SharkTier?) -> Unit,
     onSelectGroupFilter: (String?) -> Unit,
     onToggleInstitutionFilter: (Boolean) -> Unit,
     onCopyGroupCode: (String) -> Unit,
@@ -838,30 +992,80 @@ private fun LeagueFilterSection(
     onOpenGroupChat: () -> Unit
 ) {
     if (uiState.activeTab == LeagueTab.GLOBAL_INDIVIDUAL) {
-        if (uiState.institutionCode.isNotBlank()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (uiState.institutionCode.isNotBlank()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = !uiState.useInstitutionFilter,
+                        onClick = { onToggleInstitutionFilter(false) },
+                        label = { Text("Genel Lig", fontWeight = FontWeight.SemiBold) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    )
+                    FilterChip(
+                        selected = uiState.useInstitutionFilter,
+                        onClick = { onToggleInstitutionFilter(true) },
+                        label = { Text("Kurum Ligi (${uiState.institutionCode})", fontWeight = FontWeight.SemiBold) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    )
+                }
+            }
+
+            LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                FilterChip(
-                    selected = !uiState.useInstitutionFilter,
-                    onClick = { onToggleInstitutionFilter(false) },
-                    label = { Text("Genel Lig", fontWeight = FontWeight.SemiBold) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                item {
+                    AssistChip(
+                        onClick = { onOpenLeagueTiers(uiState.selectedTierFilter ?: uiState.myEntry?.tier) },
+                        label = {
+                            Text(
+                                text = "${SharkLeagueRules.TOTAL_LEAGUES} Lig İncele",
+                                fontWeight = FontWeight.Bold
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Layers,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     )
-                )
-                FilterChip(
-                    selected = uiState.useInstitutionFilter,
-                    onClick = { onToggleInstitutionFilter(true) },
-                    label = { Text("Kurum Ligi (${uiState.institutionCode})", fontWeight = FontWeight.SemiBold) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                }
+                item {
+                    FilterChip(
+                        selected = uiState.selectedTierFilter == null,
+                        onClick = { onSelectTierFilter(null) },
+                        label = { Text("Tümü (${uiState.leaderboard.size})", fontWeight = FontWeight.SemiBold) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     )
-                )
+                }
+                items(SharkLeagueRules.LADDER_HIGH_TO_LOW, key = { it.name }) { tier ->
+                    val count = uiState.tierCounts[tier] ?: 0
+                    val selected = uiState.selectedTierFilter == tier
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onSelectTierFilter(if (selected) null else tier) },
+                        label = { Text("${tier.label} ($count)", fontWeight = FontWeight.Medium) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    )
+                }
             }
         }
     } else {
@@ -1109,6 +1313,11 @@ private fun MyTierCard(
     entry: LeagueEntry,
     myFriendCode: String,
     unlockedBadgeCount: Int,
+    myTierRank: Int = 0,
+    myTierTotal: Int = 0,
+    lastWeekOutcome: String? = null,
+    relegatedFromTier: SharkTier? = null,
+    onOpenLeagueTiers: () -> Unit = {},
     onCopyFriendCode: () -> Unit,
     onShareFriendCode: () -> Unit,
     onEditBadgesClick: () -> Unit,
@@ -1126,6 +1335,11 @@ private fun MyTierCard(
         ((currentSecs - prevThresh).toFloat() / (nextThresh - prevThresh).toFloat()).coerceIn(0f, 1f)
     } else {
         1f
+    }
+    val myRankZone = if (myTierRank > 0 && myTierTotal > 0) {
+        SharkLeagueRules.resolveZoneForRank(myTierRank, myTierTotal, tier)
+    } else {
+        LeagueRankZone.SAFE
     }
 
     val hours = focusSecs / 3600
@@ -1151,9 +1365,12 @@ private fun MyTierCard(
                     modifier = Modifier.weight(1f)
                 ) {
                     Image(
-                        painter = painterResource(id = SharkVisualKit.getTierBadge((currentSecs / 60).toInt())),
+                        painter = painterResource(id = SharkVisualKit.getTierBadge((tier.previousThreshold() / 60L).toInt())),
                         contentDescription = tier.label,
-                        modifier = Modifier.size(44.dp)
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onOpenLeagueTiers() }
                     )
                     Column {
                         Row(
@@ -1176,11 +1393,43 @@ private fun MyTierCard(
                             )
                         }
                         Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = tier.label,
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
-                            color = accentColor
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onOpenLeagueTiers() }
+                        ) {
+                            Text(
+                                text = tier.label,
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                                color = accentColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = "${SharkLeagueRules.TOTAL_LEAGUES} Lig",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Default.ChevronRight,
+                                        contentDescription = "Ligleri İncele",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1222,6 +1471,102 @@ private fun MyTierCard(
                             )
                         }
                     }
+                }
+            }
+
+            if (myTierRank > 0 && myTierTotal > 0) {
+                Spacer(Modifier.height(10.dp))
+                val (statusBg, statusFg, statusLabel) = when (myRankZone) {
+                    LeagueRankZone.TOP_1 -> Triple(
+                        PODIUM_GOLD_COLOR.copy(alpha = 0.14f),
+                        PODIUM_GOLD_COLOR,
+                        "${tier.label} Ligi • #$myTierRank / $myTierTotal • 1. Lider"
+                    )
+                    LeagueRankZone.TOP_2 -> Triple(
+                        PODIUM_SILVER_COLOR.copy(alpha = 0.16f),
+                        PODIUM_SILVER_COLOR,
+                        "${tier.label} Ligi • #$myTierRank / $myTierTotal • İlk 3 Podyum"
+                    )
+                    LeagueRankZone.TOP_3 -> Triple(
+                        PODIUM_BRONZE_COLOR.copy(alpha = 0.14f),
+                        PODIUM_BRONZE_COLOR,
+                        "${tier.label} Ligi • #$myTierRank / $myTierTotal • İlk 3 Podyum"
+                    )
+                    LeagueRankZone.RELEGATION_DROP -> Triple(
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.75f),
+                        MaterialTheme.colorScheme.onErrorContainer,
+                        "${tier.label} Ligi • #$myTierRank / $myTierTotal • Düşme Hattı (Son 5)"
+                    )
+                    LeagueRankZone.RELEGATION_REPEAT -> Triple(
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                        MaterialTheme.colorScheme.onErrorContainer,
+                        "${tier.label} Ligi • #$myTierRank / $myTierTotal • Lig Tekrar Hattı (Son 5)"
+                    )
+                    LeagueRankZone.SAFE -> Triple(
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                        "${tier.label} Ligi • #$myTierRank / $myTierTotal • Güvenli Bölge"
+                    )
+                }
+                Surface(
+                    color = statusBg,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onOpenLeagueTiers() }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = statusLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = statusFg,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = "Ligleri Gör",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = statusFg
+                        )
+                    }
+                }
+            }
+
+            if (lastWeekOutcome == "RELEGATED" && relegatedFromTier != null) {
+                Spacer(Modifier.height(6.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Geçen hafta son 5 içinde yer aldığın için ${relegatedFromTier.label} liginden ${tier.label} ligine geçtin.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            } else if (lastWeekOutcome == "REPEATED_CAMGOZ") {
+                Spacer(Modifier.height(6.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Geçen hafta son 5 içinde yer aldın; alt lig olmadığı için Camgöz ligini tekrar ediyorsun.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
                 }
             }
 
@@ -1454,9 +1799,49 @@ private fun MetricStatBox(
 }
 
 @Composable
+private fun RelegationZoneDivider(
+    tier: SharkTier?,
+    modifier: Modifier = Modifier
+) {
+    val isRepeatOnly = tier != null && SharkLeagueRules.lowerTier(tier) == null
+    val bannerColor = MaterialTheme.colorScheme.error
+    val bannerBg = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+    val bannerTextColor = MaterialTheme.colorScheme.onErrorContainer
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = bannerBg,
+        border = BorderStroke(1.dp, bannerColor.copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = if (isRepeatOnly) Icons.Default.Repeat else Icons.Default.ArrowDownward,
+                contentDescription = null,
+                tint = bannerColor,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = SharkLeagueRules.relegationBannerText(tier),
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = bannerTextColor,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
 private fun LeaderboardRow(
     rank: Int,
     entry: LeagueEntry,
+    rankZone: LeagueRankZone = LeagueRankZone.SAFE,
     showNudgeButton: Boolean,
     onNudgeClick: () -> Unit,
     onMemberClick: () -> Unit
@@ -1470,6 +1855,25 @@ private fun LeaderboardRow(
     val nowMs = System.currentTimeMillis()
     val canNudge = entry.canBeNudged(nowMs)
 
+    val podiumAccentColor: Color? = when (rankZone) {
+        LeagueRankZone.TOP_1 -> PODIUM_GOLD_COLOR
+        LeagueRankZone.TOP_2 -> PODIUM_SILVER_COLOR
+        LeagueRankZone.TOP_3 -> PODIUM_BRONZE_COLOR
+        else -> null
+    }
+    val podiumBadgeLabel: String? = when (rankZone) {
+        LeagueRankZone.TOP_1 -> "1. LİDER"
+        LeagueRankZone.TOP_2 -> "2. SIRA"
+        LeagueRankZone.TOP_3 -> "3. SIRA"
+        else -> null
+    }
+    val podiumIcon = when (rankZone) {
+        LeagueRankZone.TOP_1 -> Icons.Default.EmojiEvents
+        LeagueRankZone.TOP_2 -> Icons.Default.WorkspacePremium
+        LeagueRankZone.TOP_3 -> Icons.Default.MilitaryTech
+        else -> null
+    }
+
     val validMemberShowcase = remember(entry.showcaseBadges) {
         entry.showcaseBadges
             .map { it.trim().substringBefore(":") }
@@ -1478,21 +1882,29 @@ private fun LeaderboardRow(
             .take(SharkBadgeCatalog.MAX_SHOWCASE_BADGES)
     }
 
+    val containerColor = when {
+        entry.isCurrentUser -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f)
+        podiumAccentColor != null -> podiumAccentColor.copy(alpha = 0.08f)
+        rankZone.isRelegationZone -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.22f)
+        else -> MaterialTheme.colorScheme.surface
+    }
+    val borderWidth = when {
+        rankZone == LeagueRankZone.TOP_1 || entry.isCurrentUser -> 1.8.dp
+        rankZone.isTopThree -> 1.5.dp
+        rankZone.isRelegationZone -> 1.2.dp
+        else -> 1.dp
+    }
+    val borderColor = when {
+        podiumAccentColor != null -> podiumAccentColor.copy(alpha = if (rankZone == LeagueRankZone.TOP_1) 0.9f else 0.7f)
+        rankZone.isRelegationZone -> MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
+        entry.isCurrentUser -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+    }
+
     Surface(
-        color = if (entry.isCurrentUser) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f)
-        } else {
-            MaterialTheme.colorScheme.surface
-        },
+        color = containerColor,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(
-            width = if (rank <= 3 || entry.isCurrentUser) 1.5.dp else 1.dp,
-            color = when {
-                entry.isCurrentUser -> MaterialTheme.colorScheme.primary
-                rank <= 3 -> MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
-                else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-            }
-        ),
+        border = BorderStroke(width = borderWidth, color = borderColor),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onMemberClick() }
@@ -1507,22 +1919,53 @@ private fun LeaderboardRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Sıralama Rozeti
+                // Sıralama Rozeti (İlk 3 için Altın/Gümüş/Bronz Podyum ikonu)
                 Surface(
                     shape = CircleShape,
-                    color = if (rank <= 3) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant
+                    color = when {
+                        podiumAccentColor != null -> podiumAccentColor.copy(alpha = 0.18f)
+                        rankZone.isRelegationZone -> MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
+                        else -> MaterialTheme.colorScheme.surfaceVariant
                     },
-                    modifier = Modifier.size(34.dp)
+                    border = if (podiumAccentColor != null) {
+                        BorderStroke(1.dp, podiumAccentColor.copy(alpha = 0.6f))
+                    } else null,
+                    modifier = Modifier.size(36.dp)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = "#$rank",
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
-                            color = if (rank <= 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    if (podiumIcon != null && podiumAccentColor != null) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Icon(
+                                imageVector = podiumIcon,
+                                contentDescription = podiumBadgeLabel,
+                                tint = podiumAccentColor,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "#$rank",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Black,
+                                    lineHeight = 10.sp
+                                ),
+                                color = podiumAccentColor
+                            )
+                        }
+                    } else {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "#$rank",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                                color = if (rankZone.isRelegationZone) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
                     }
                 }
 
@@ -1541,7 +1984,7 @@ private fun LeaderboardRow(
                         Text(
                             text = entry.displayName,
                             style = MaterialTheme.typography.bodyMedium.copy(
-                                fontWeight = if (entry.isCurrentUser || rank <= 3) FontWeight.Bold else FontWeight.SemiBold
+                                fontWeight = if (entry.isCurrentUser || rankZone.isTopThree) FontWeight.Bold else FontWeight.SemiBold
                             ),
                             color = if (entry.isCurrentUser) {
                                 MaterialTheme.colorScheme.onPrimaryContainer
@@ -1552,6 +1995,37 @@ private fun LeaderboardRow(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
                         )
+                        if (podiumBadgeLabel != null && podiumAccentColor != null) {
+                            Surface(
+                                color = podiumAccentColor.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = podiumBadgeLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black
+                                    ),
+                                    color = podiumAccentColor,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
+                        } else if (rankZone.isRelegationZone) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = if (rankZone == LeagueRankZone.RELEGATION_REPEAT) "Tekrar" else "Düşme",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                         if (entry.isStudyingNow) {
                             Surface(
                                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
@@ -1603,7 +2077,7 @@ private fun LeaderboardRow(
                     Text(
                         text = "${effHours}s ${effMins}dk",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                        color = accentColor
+                        color = podiumAccentColor ?: accentColor
                     )
                     if (bonusMins > 0L) {
                         Text(
@@ -1664,9 +2138,316 @@ private fun LeaderboardRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SharkLeagueTiersSheet(
+    selectedTier: SharkTier,
+    myTier: SharkTier?,
+    entriesByTier: Map<SharkTier, List<LeagueEntry>>,
+    tierCounts: Map<SharkTier, Int>,
+    onSelectTier: (SharkTier) -> Unit,
+    onApplyTierFilter: (SharkTier) -> Unit,
+    onMemberClick: (LeagueEntry) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val selectedEntries = entriesByTier[selectedTier].orEmpty()
+    val relegationStartRank = SharkLeagueRules.relegationStartRank(selectedEntries.size)
+    val lowerTier = SharkLeagueRules.lowerTier(selectedTier)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.86f)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Shark Ligleri (${SharkLeagueRules.TOTAL_LEAGUES} Lig)",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Her ligdeki öğrencileri ve sıralama kurallarını incele",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Kapat",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Kural özeti: İlk 3 Podyum + Son 5 Düşme Limiti
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = PODIUM_GOLD_COLOR.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, PODIUM_GOLD_COLOR.copy(alpha = 0.35f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.EmojiEvents,
+                            contentDescription = null,
+                            tint = PODIUM_GOLD_COLOR,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = "İlk 3: Podyum",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = PODIUM_GOLD_COLOR
+                        )
+                    }
+                }
+                Surface(
+                    modifier = Modifier.weight(1.3f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowDownward,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = "Son 5: Alt Lige Düşer",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
+
+            // 6 Lig Seçicisi (Megalodon -> Camgöz)
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(vertical = 2.dp)
+            ) {
+                items(SharkLeagueRules.LADDER_HIGH_TO_LOW, key = { it.name }) { tier ->
+                    val isSelected = tier == selectedTier
+                    val isMyTier = tier == myTier
+                    val count = tierCounts[tier] ?: 0
+                    val tierAccent = tier.themeAwareAccentColor()
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                        },
+                        border = BorderStroke(
+                            width = if (isSelected) 1.6.dp else 1.dp,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            }
+                        ),
+                        modifier = Modifier
+                            .width(122.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onSelectTier(tier) }
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Image(
+                                    painter = painterResource(
+                                        id = SharkVisualKit.getTierBadge((tier.previousThreshold() / 60L).toInt())
+                                    ),
+                                    contentDescription = tier.label,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                if (isMyTier) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "Sen",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Black
+                                            ),
+                                            color = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                text = tier.label,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else tierAccent,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "$count kişi • ${SharkLeagueRules.weeklyRequirementLabel(tier)}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Seçili Lig Özet Kartı
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "${selectedTier.label} Ligi (${selectedEntries.size} öğrenci)",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (lowerTier != null) {
+                                "Haftalık eşik: ${SharkLeagueRules.weeklyRequirementLabel(selectedTier)} • Son 5 → ${lowerTier.label}"
+                            } else {
+                                "Haftalık eşik: ${SharkLeagueRules.weeklyRequirementLabel(selectedTier)} • Alt lig yok (Son 5 tekrar)"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(
+                        onClick = { onApplyTierFilter(selectedTier) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "Filtrele",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                }
+            }
+
+            // Seçili Ligdeki Öğrenciler Listesi
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (selectedEntries.isEmpty()) {
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "${selectedTier.label} liginde henüz öğrenci yok",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    textAlign = TextAlign.Center
+                                )
+                                Text(
+                                    text = "Bu lige yükselmek için hedef: ${SharkLeagueRules.weeklyRequirementLabel(selectedTier)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    itemsIndexed(
+                        selectedEntries,
+                        key = { _, e -> "sheet_${selectedTier.name}_${e.studentId.ifBlank { e.displayName }}" }
+                    ) { index, entry ->
+                        val rank = index + 1
+                        val rankZone = SharkLeagueRules.resolveZoneForRank(
+                            rank = rank,
+                            totalInTier = selectedEntries.size,
+                            tier = selectedTier
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (relegationStartRank != null && rank == relegationStartRank) {
+                                RelegationZoneDivider(tier = selectedTier)
+                            }
+                            LeaderboardRow(
+                                rank = rank,
+                                entry = entry,
+                                rankZone = rankZone,
+                                showNudgeButton = false,
+                                onNudgeClick = {},
+                                onMemberClick = { onMemberClick(entry) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun EmptyLeagueStateCard(
     isGroupsTab: Boolean,
+    selectedTier: SharkTier? = null,
+    onClearTierFilter: () -> Unit = {},
     onOpenCreateGroup: () -> Unit,
     onOpenJoinByCode: () -> Unit
 ) {
@@ -1684,16 +2465,26 @@ private fun EmptyLeagueStateCard(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = if (isGroupsTab) {
-                    "Grup veya arkadaş yok"
-                } else {
-                    "Bu hafta veri yok"
+                text = when {
+                    isGroupsTab -> "Grup veya arkadaş yok"
+                    selectedTier != null -> "${selectedTier.label} liginde henüz öğrenci yok"
+                    else -> "Bu hafta veri yok"
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center
             )
-            if (isGroupsTab) {
+            if (selectedTier != null && !isGroupsTab) {
+                Text(
+                    text = "Haftalık eşik: ${SharkLeagueRules.weeklyRequirementLabel(selectedTier)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                OutlinedButton(onClick = onClearTierFilter) {
+                    Text("Tüm Ligleri Göster")
+                }
+            } else if (isGroupsTab) {
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onOpenJoinByCode) {

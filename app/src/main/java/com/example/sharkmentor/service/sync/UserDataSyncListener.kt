@@ -19,6 +19,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -44,7 +45,7 @@ class UserDataSyncListener(private val context: Context) {
         }
 
     private val listeners = mutableListOf<ListenerRegistration>()
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun startListening() {
         stopListening() // ensure clean state
@@ -130,6 +131,12 @@ class UserDataSyncListener(private val context: Context) {
                             return@forEach
                         }
 
+                        val remoteModified = doc.getSafeLong("lastModifiedMillis") ?: System.currentTimeMillis()
+                        val existing = db.targetDao().getTargetById(remoteId)
+                        if (existing != null && (!existing.isSynced || existing.lastModifiedMillis > remoteModified)) {
+                            return@forEach
+                        }
+
                         val entity = TargetEntity(
                             id = remoteId,
                             title = doc.getSafeString("title") ?: "",
@@ -142,7 +149,7 @@ class UserDataSyncListener(private val context: Context) {
                             createdAt = doc.getSafeLong("createdAt") ?: doc.getSafeString("createdAt")?.toLongOrNull() ?: System.currentTimeMillis(),
                             isSynced = true,
                             isDeleted = false,
-                            lastModifiedMillis = doc.getSafeLong("lastModifiedMillis") ?: System.currentTimeMillis(),
+                            lastModifiedMillis = remoteModified,
                             cloudId = doc.id
                         )
                         db.targetDao().upsertTarget(entity)
@@ -239,15 +246,22 @@ class UserDataSyncListener(private val context: Context) {
                 return@addSnapshotListener
             }
             scope.launch {
+                val localById = db.trainingFolderDao().getAll().associateBy { it.id }
                 snapshot?.documents?.forEach { doc ->
                     try {
+                        val remoteDeleted = doc.getSafeBoolean("isDeleted") ?: false
+                        val remoteModified = doc.getSafeLong("lastModifiedMillis") ?: System.currentTimeMillis()
+                        val existing = localById[doc.id]
+                        if (existing != null && (!existing.isSynced || existing.lastModifiedMillis > remoteModified)) {
+                            return@forEach
+                        }
                         val entity = TrainingFolderEntity(
                             id = doc.id,
-                            title = doc.getSafeString("title") ?: "",
-                            createdAt = doc.getSafeLong("createdAt") ?: System.currentTimeMillis(),
+                            title = doc.getSafeString("title") ?: existing?.title ?: "",
+                            createdAt = doc.getSafeLong("createdAt") ?: existing?.createdAt ?: System.currentTimeMillis(),
                             isSynced = true,
-                            isDeleted = false,
-                            lastModifiedMillis = doc.getSafeLong("lastModifiedMillis") ?: System.currentTimeMillis(),
+                            isDeleted = remoteDeleted,
+                            lastModifiedMillis = remoteModified,
                             cloudId = doc.id
                         )
                         db.trainingFolderDao().insertFolder(entity)
@@ -267,20 +281,27 @@ class UserDataSyncListener(private val context: Context) {
                 return@addSnapshotListener
             }
             scope.launch {
+                val localById = db.trainingQuestionDao().getAllQuestions().associateBy { it.id }
                 snapshot?.documents?.forEach { doc ->
                     try {
+                        val remoteDeleted = doc.getSafeBoolean("isDeleted") ?: false
+                        val remoteModified = doc.getSafeLong("lastModifiedMillis") ?: System.currentTimeMillis()
+                        val existing = localById[doc.id]
+                        if (existing != null && (!existing.isSynced || existing.lastModifiedMillis > remoteModified)) {
+                            return@forEach
+                        }
                         val entity = TrainingQuestionEntity(
                             id = doc.id,
-                            folderId = doc.getSafeString("folderId") ?: "",
-                            questionText = doc.getSafeString("questionText") ?: "",
-                            imageUri = doc.getSafeString("imageUri"),
-                            correctAnswer = doc.getSafeString("correctAnswer") ?: "",
-                            userAnswer = doc.getSafeString("userAnswer") ?: "",
-                            isSolved = doc.getSafeBoolean("isSolved") ?: false,
-                            reviewCount = doc.getSafeInt("reviewCount") ?: 0,
+                            folderId = doc.getSafeString("folderId") ?: existing?.folderId ?: "",
+                            questionText = doc.getSafeString("questionText") ?: existing?.questionText ?: "",
+                            imageUri = doc.getSafeString("imageUri") ?: existing?.imageUri,
+                            correctAnswer = doc.getSafeString("correctAnswer") ?: existing?.correctAnswer ?: "",
+                            userAnswer = doc.getSafeString("userAnswer") ?: existing?.userAnswer ?: "",
+                            isSolved = doc.getSafeBoolean("isSolved") ?: existing?.isSolved ?: false,
+                            reviewCount = doc.getSafeInt("reviewCount") ?: existing?.reviewCount ?: 0,
                             isSynced = true,
-                            isDeleted = false,
-                            lastModifiedMillis = doc.getSafeLong("lastModifiedMillis") ?: System.currentTimeMillis(),
+                            isDeleted = remoteDeleted,
+                            lastModifiedMillis = remoteModified,
                             cloudId = doc.id
                         )
                         db.trainingQuestionDao().insertQuestion(entity)
@@ -302,14 +323,25 @@ class UserDataSyncListener(private val context: Context) {
             scope.launch {
                 snapshot?.documents?.forEach { doc ->
                     try {
+                        if (doc.getSafeBoolean("isDeleted") == true) {
+                            db.noteDao().deleteNoteById(doc.id)
+                            return@forEach
+                        }
+                        val remoteUpdatedAt = doc.getSafeLong("updatedAt")
+                            ?: doc.getSafeLong("lastModifiedMillis")
+                            ?: System.currentTimeMillis()
+                        val existing = db.noteDao().getNoteById(doc.id)
+                        if (existing != null && (!existing.isSynced || existing.updatedAt > remoteUpdatedAt)) {
+                            return@forEach
+                        }
                         val entity = NoteEntity(
                             id = doc.id,
                             title = doc.getSafeString("title") ?: "",
                             content = doc.getSafeString("content") ?: "",
                             colorHex = doc.getSafeString("colorHex") ?: "#F8FAFC",
                             isPinned = doc.getSafeBoolean("isPinned") ?: doc.getSafeBoolean("pinned") ?: false,
-                            createdAt = doc.getSafeLong("createdAt") ?: System.currentTimeMillis(),
-                            updatedAt = doc.getSafeLong("updatedAt") ?: System.currentTimeMillis(),
+                            createdAt = doc.getSafeLong("createdAt") ?: existing?.createdAt ?: System.currentTimeMillis(),
+                            updatedAt = remoteUpdatedAt,
                             isSynced = true
                         )
                         db.noteDao().upsertNote(entity)

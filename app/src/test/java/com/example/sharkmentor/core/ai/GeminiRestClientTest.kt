@@ -477,4 +477,51 @@ class GeminiRestClientTest {
         val disallowedRoot = JsonParser.parseString(disallowedJson).asJsonObject
         assertEquals("gemini-3.6-flash", disallowedRoot.get("model").asString)
     }
+
+    @Test
+    fun obfuscatedBuiltInKeys_decodeThreeDistinctVertexExpressKeys() {
+        val keys = ApiKeyRotator.DEFAULT_BUILTIN_GEMINI_KEYS
+        assertEquals(3, keys.size)
+        assertEquals(3, keys.distinct().size)
+        keys.forEach { key ->
+            assertTrue("Expected Vertex Express AQ. prefix", key.startsWith("AQ."))
+            assertEquals(53, key.length)
+        }
+        assertEquals(listOf("tlKw", "8RZA", "6ozw"), keys.map { it.takeLast(4) })
+    }
+
+    @Test
+    fun proxyCircuitBreaker_tripsOnlyOnUnconfiguredOrMissingProxy_andResetsCleanly() {
+        GeminiAiFactory.resetProxyCircuitBreakerForTesting()
+        val now = 1_000_000L
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now))
+
+        // Transient quota or server errors should NOT trip the 10-minute cooldown
+        assertFalse(GeminiAiFactory.markProxyUnavailable(httpCode = 429, rawMessage = "Quota exceeded", nowMs = now))
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 100L))
+        assertFalse(GeminiAiFactory.markProxyUnavailable(httpCode = 500, rawMessage = "Internal error", nowMs = now))
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 100L))
+        assertFalse(GeminiAiFactory.markProxyUnavailable(httpCode = 503, rawMessage = "Overloaded", nowMs = now))
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 100L))
+
+        // 404 (not deployed), 403 (forbidden), or 503 missing secret SHOULD trip cooldown
+        assertTrue(GeminiAiFactory.markProxyUnavailable(httpCode = 404, rawMessage = "Function not found", nowMs = now))
+        assertTrue(GeminiAiFactory.isProxyCoolingDown(now + 1_000L))
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 11L * 60L * 1_000L))
+
+        GeminiAiFactory.resetProxyCircuitBreakerForTesting()
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 1_000L))
+
+        assertTrue(
+            GeminiAiFactory.markProxyUnavailable(
+                httpCode = 503,
+                rawMessage = "Proxy server missing GEMINI_API_KEY configuration",
+                nowMs = now
+            )
+        )
+        assertTrue(GeminiAiFactory.isProxyCoolingDown(now + 5_000L))
+
+        GeminiAiFactory.resetProxyCircuitBreakerForTesting()
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 5_000L))
+    }
 }

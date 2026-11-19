@@ -34,6 +34,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
+    private var studentBrandingListener: com.google.firebase.firestore.ListenerRegistration? = null
+
     private val prefs = application.getSharedPreferences("sharkmentor_prefs", Context.MODE_PRIVATE)
     private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "target_date_millis" || key == "target_exam_title") {
@@ -60,7 +62,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (currentUser != null && uid != null) {
             com.example.sharkmentor.core.notification.SocialNotificationMonitor.start(application)
             runCatching {
-                GoogleServicesHelper.getFirebaseFirestore(application)
+                studentBrandingListener = GoogleServicesHelper.getFirebaseFirestore(application)
                     ?.collection("students")?.document(uid)
                     ?.addSnapshotListener { snapshot, error ->
                         if (error != null) {
@@ -109,6 +111,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        studentBrandingListener?.remove()
+        studentBrandingListener = null
         super.onCleared()
         runCatching { prefs.unregisterOnSharedPreferenceChangeListener(prefsListener) }
     }
