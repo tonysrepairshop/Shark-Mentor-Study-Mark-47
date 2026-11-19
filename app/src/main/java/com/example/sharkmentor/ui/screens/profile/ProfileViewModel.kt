@@ -44,6 +44,18 @@ class ProfileViewModel @JvmOverloads constructor(
     private val _avatarMessage = MutableSharedFlow<String>()
     val avatarMessage = _avatarMessage.asSharedFlow()
 
+    init {
+        AvatarHelper.ensureLoaded(application)
+        viewModelScope.launch {
+            AvatarHelper.avatarState.collect { local ->
+                _avatarState.value = _avatarState.value.copy(
+                    avatarBase64 = local.avatarBase64,
+                    avatarPresetId = local.avatarPresetId
+                )
+            }
+        }
+    }
+
     // Live list of student's meetings
     val studentMeetings: StateFlow<List<Meeting>> = callbackFlow {
         val currentUser = runCatching { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser }.getOrNull()
@@ -150,13 +162,14 @@ class ProfileViewModel @JvmOverloads constructor(
         val uid = currentUid
         if (uid.isBlank() || uid == "local_student") return
         val db = GoogleServicesHelper.getFirebaseFirestore(ctx) ?: return
-        db.collection("students").document(uid).set(
-            mapOf(
-                "avatarBase64" to base64,
-                "avatarPresetId" to presetId
-            ),
-            SetOptions.merge()
+        val payload = mapOf(
+            "avatarBase64" to base64,
+            "avatarPresetId" to presetId
         )
+        db.collection("students").document(uid).set(payload, SetOptions.merge())
+        db.collection("institutions").document("GLOBAL_INDIVIDUAL")
+            .collection("weeklyLeague").document(uid)
+            .set(payload, SetOptions.merge())
     }
 
     fun updateUserMode(mode: String) {

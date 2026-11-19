@@ -2,9 +2,33 @@ package com.example.sharkmentor.data.local.preferences
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class UserPreferences private constructor(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private val _studentNameFlow = MutableStateFlow(prefs.getString(KEY_STUDENT_NAME, null))
+    val studentNameFlow: StateFlow<String?> = _studentNameFlow.asStateFlow()
+
+    private val _studentGradeFlow = MutableStateFlow(prefs.getString(KEY_STUDENT_GRADE, null))
+    val studentGradeFlow: StateFlow<String?> = _studentGradeFlow.asStateFlow()
+
+    private val _studentTargetExamFlow = MutableStateFlow(prefs.getString(KEY_STUDENT_TARGET_EXAM, null))
+    val studentTargetExamFlow: StateFlow<String?> = _studentTargetExamFlow.asStateFlow()
+
+    private val prefsChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { shared, key ->
+        when (key) {
+            KEY_STUDENT_NAME -> _studentNameFlow.value = shared.getString(KEY_STUDENT_NAME, null)
+            KEY_STUDENT_GRADE -> _studentGradeFlow.value = shared.getString(KEY_STUDENT_GRADE, null)
+            KEY_STUDENT_TARGET_EXAM -> _studentTargetExamFlow.value = shared.getString(KEY_STUDENT_TARGET_EXAM, null)
+        }
+    }
+
+    init {
+        prefs.registerOnSharedPreferenceChangeListener(prefsChangeListener)
+    }
 
     var isOnboarded: Boolean
         get() = prefs.getBoolean(KEY_IS_ONBOARDED, false)
@@ -12,7 +36,24 @@ class UserPreferences private constructor(context: Context) {
 
     var studentName: String?
         get() = prefs.getString(KEY_STUDENT_NAME, null)
-        private set(value) = prefs.edit().putString(KEY_STUDENT_NAME, value).apply()
+        private set(value) {
+            prefs.edit().putString(KEY_STUDENT_NAME, value).apply()
+            _studentNameFlow.value = value
+        }
+
+    var studentGrade: String?
+        get() = prefs.getString(KEY_STUDENT_GRADE, null)
+        private set(value) {
+            prefs.edit().putString(KEY_STUDENT_GRADE, value).apply()
+            _studentGradeFlow.value = value
+        }
+
+    var studentTargetExam: String?
+        get() = prefs.getString(KEY_STUDENT_TARGET_EXAM, null)
+        private set(value) {
+            prefs.edit().putString(KEY_STUDENT_TARGET_EXAM, value).apply()
+            _studentTargetExamFlow.value = value
+        }
 
     var institutionId: String?
         get() = prefs.getString(KEY_INSTITUTION_ID, null)
@@ -37,6 +78,68 @@ class UserPreferences private constructor(context: Context) {
     var countdownUpdatedAt: Long
         get() = prefs.getLong(KEY_COUNTDOWN_UPDATED_AT, 0L)
         set(value) = prefs.edit().putLong(KEY_COUNTDOWN_UPDATED_AT, value).apply()
+
+    fun updateStudentName(name: String?) {
+        val clean = name?.trim()?.takeIf { it.isNotBlank() }
+        if (clean == studentName) return
+        studentName = clean
+    }
+
+    fun updateStudentGrade(grade: String?) {
+        val clean = grade?.trim()?.takeIf { it.isNotBlank() }
+        if (clean == studentGrade) return
+        studentGrade = clean
+    }
+
+    fun updateStudentTargetExam(exam: String?) {
+        val clean = exam?.trim()?.takeIf { it.isNotBlank() }
+        if (clean == studentTargetExam) return
+        studentTargetExam = clean
+    }
+
+    fun updateProfileDetails(
+        name: String? = null,
+        grade: String? = null,
+        targetExam: String? = null
+    ) {
+        val editor = prefs.edit()
+        var changed = false
+        name?.trim()?.takeIf { it.isNotBlank() }?.let { clean ->
+            if (clean != _studentNameFlow.value) {
+                editor.putString(KEY_STUDENT_NAME, clean)
+                _studentNameFlow.value = clean
+                changed = true
+            }
+        }
+        grade?.trim()?.takeIf { it.isNotBlank() }?.let { clean ->
+            if (clean != _studentGradeFlow.value) {
+                editor.putString(KEY_STUDENT_GRADE, clean)
+                _studentGradeFlow.value = clean
+                changed = true
+            }
+        }
+        targetExam?.trim()?.takeIf { it.isNotBlank() }?.let { clean ->
+            if (clean != _studentTargetExamFlow.value) {
+                editor.putString(KEY_STUDENT_TARGET_EXAM, clean)
+                _studentTargetExamFlow.value = clean
+                changed = true
+            }
+        }
+        if (changed) editor.apply()
+    }
+
+    fun clearSessionProfile() {
+        prefs.edit()
+            .remove(KEY_STUDENT_NAME)
+            .remove(KEY_STUDENT_GRADE)
+            .remove(KEY_STUDENT_TARGET_EXAM)
+            .remove(KEY_INSTITUTION_ID)
+            .putBoolean(KEY_IS_INDIVIDUAL, true)
+            .apply()
+        _studentNameFlow.value = null
+        _studentGradeFlow.value = null
+        _studentTargetExamFlow.value = null
+    }
 
     fun completeOnboardingAsIndividual(name: String) {
         studentName = name
@@ -102,6 +205,8 @@ class UserPreferences private constructor(context: Context) {
         private const val PREFS_NAME = "user_preferences"
         private const val KEY_IS_ONBOARDED = "is_onboarded"
         private const val KEY_STUDENT_NAME = "student_name"
+        private const val KEY_STUDENT_GRADE = "student_grade"
+        private const val KEY_STUDENT_TARGET_EXAM = "student_target_exam"
         private const val KEY_INSTITUTION_ID = "institution_id"
         private const val KEY_IS_INDIVIDUAL = "is_individual"
         private const val KEY_BLOCKED_APPS = "blocked_apps"

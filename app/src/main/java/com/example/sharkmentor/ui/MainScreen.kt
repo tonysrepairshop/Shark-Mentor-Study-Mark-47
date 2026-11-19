@@ -120,9 +120,6 @@ fun MainScreen(
     val themePrefs = ThemePreferences.instance
     val themeMode by themePrefs.themeMode.collectAsStateWithLifecycle()
     val currentPalette by themePrefs.palette.collectAsStateWithLifecycle()
-    val isZenModePref by themePrefs.isZenMode.collectAsStateWithLifecycle()
-    val isZenMinimalist by ThemeManager.isZenMinimalist.collectAsStateWithLifecycle()
-    val isZenMode = isZenModePref || isZenMinimalist
 
     val navController       = rememberNavController()
     var showSplash by rememberSaveable { mutableStateOf(importedNote == null && targetRoute == null) }
@@ -170,126 +167,150 @@ fun MainScreen(
         }
     }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val countdownText = uiState.targetCountdownText
 
-    // Wrap the entire scaffold in SharkMentorTheme so palette switches are instant
-    SharkMentorTheme(themeMode = themeMode, palette = currentPalette, isZenMode = isZenMode) {
-        if (showSplash) {
-            com.example.sharkmentor.ui.splash.SplashScreen(onTimeout = { showSplash = false })
-        } else {
-            val drawerState = androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
-            val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val errorBankViewModel: ErrorBankViewModel = viewModel()
+    val dueQuestionsCount by errorBankViewModel.dueQuestionsCount.collectAsStateWithLifecycle(initialValue = 0)
+    val primaryTabRoutes = remember {
+        setOf(
+            Screen.Focus.route,
+            Screen.Dashboard.route,
+            Screen.Notes.route,
+            Screen.Resources.route,
+            Screen.Shark.route,
+            Screen.ErrorBank.route
+        )
+    }
 
-            val isNotesRoute = currentDestination?.route == Screen.Notes.route
-            val activeNoteEditor = isNoteEditorOpen && isNotesRoute
-            val isNotesContext = isNotesRoute || activeNoteEditor
-            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                ModalNavigationDrawer(
-                    drawerState = drawerState,
-                    gesturesEnabled = drawerState.isOpen || !isNotesContext,
-                    drawerContent = {
-                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                            ModalDrawerSheet(
-                                modifier = Modifier.fillMaxWidth(0.82f),
-                                drawerContainerColor = MaterialTheme.colorScheme.surface
-                            ) {
-                                ControlPanelContent(
-                                    themeMode       = themeMode,
-                                    onThemeToggle   = { themePrefs.setThemeMode(it) },
-                                    currentPalette  = currentPalette,
-                                    onPaletteChange = { themePrefs.setPalette(it) },
-                                    onDismiss       = { scope.launch { drawerState.close() } },
-                                    currentRoute    = currentDestination?.route,
-                                    onNavigate      = { route ->
-                                        scope.launch { drawerState.close() }
-                                        if (currentDestination?.route != route) {
-                                            navController.navigate(route) { launchSingleTop = true }
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                ) {
+    val performCleanLogout: () -> Unit = remember(context, navController) {
+        {
+            GoogleServicesHelper.signOut()
+            com.example.sharkmentor.core.util.AvatarHelper.clearLocalAvatar(context)
+            com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(context).clearSessionProfile()
+            com.example.sharkmentor.core.util.SessionManager.setLinkedToInstitution(context, false)
+            com.example.sharkmentor.core.util.SessionManager.setUserMode(context, "study")
+            navController.navigate(Screen.Login.route) {
+                popUpTo(0) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+    }
+
+    // Root SharkMentorTheme is applied once in MainActivity to avoid double theming & redundant SideEffects
+    if (showSplash) {
+        com.example.sharkmentor.ui.splash.SplashScreen(onTimeout = { showSplash = false })
+    } else {
+        val drawerState = androidx.compose.material3.rememberDrawerState(initialValue = DrawerValue.Closed)
+        val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+        val isNotesRoute = currentDestination?.route == Screen.Notes.route
+        val activeNoteEditor = isNoteEditorOpen && isNotesRoute
+        val isNotesContext = isNotesRoute || activeNoteEditor
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                gesturesEnabled = drawerState.isOpen || !isNotesContext,
+                drawerContent = {
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                        val isPaceKeep = currentDestination?.route == Screen.PaceKeep.route
-                        val topBarRoutes = remember {
-                            setOf(
-                                Screen.Focus.route,
-                                Screen.Dashboard.route,
-                                Screen.Notes.route,
-                                Screen.Resources.route,
-                                Screen.Shark.route,
-                                Screen.ErrorBank.route,
-                                "ai_zen_coach"
+                        ModalDrawerSheet(
+                            modifier = Modifier.fillMaxWidth(0.82f),
+                            drawerContainerColor = MaterialTheme.colorScheme.surface
+                        ) {
+                            ControlPanelContent(
+                                themeMode       = themeMode,
+                                onThemeToggle   = { themePrefs.setThemeMode(it) },
+                                currentPalette  = currentPalette,
+                                onPaletteChange = { themePrefs.setPalette(it) },
+                                onDismiss       = { scope.launch { drawerState.close() } },
+                                currentRoute    = currentDestination?.route,
+                                onNavigate      = { route ->
+                                    scope.launch { drawerState.close() }
+                                    if (currentDestination?.route != route) {
+                                        navController.navigate(route) { launchSingleTop = true }
+                                    }
+                                },
+                                onLogout        = {
+                                    scope.launch { drawerState.close() }
+                                    performCleanLogout()
+                                }
                             )
                         }
-                        val shouldShowTopBar = (currentDestination?.route in topBarRoutes) && !isPaceKeep && !activeNoteEditor
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    if (isPaceKeep) androidx.compose.ui.graphics.Color(0xFF071426)
-                                    else MaterialTheme.colorScheme.background
-                                ),
-                        ) {
-                            Scaffold(
-                                modifier = Modifier.fillMaxSize(),
-                                contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                                containerColor = if (isPaceKeep) androidx.compose.ui.graphics.Color(0xFF071426) else MaterialTheme.colorScheme.background,
-                                topBar = {
-                                    if (shouldShowTopBar) {
-                                        SharkMentorTopBar(
-                                            countdown = countdownText, 
-                                            isCampus = uiState.isCampus,
-                                            onCountdownClick = {
-                                                navController.navigate("countdown_settings") {
-                                                    launchSingleTop = true
-                                                }
-                                            },
-                                            onMenuClick = { scope.launch { drawerState.open() } }
-                                        )
-                                    }
-                                },
-                                bottomBar = {
-                                    val errorBankViewModel: ErrorBankViewModel = viewModel()
-                                    val dueQuestionsCount by errorBankViewModel.dueQuestionsCount.collectAsStateWithLifecycle(initialValue = 0)
-                                    val isImeOpen = WindowInsets.isImeVisible
-                                    val primaryTabRoutes = remember { setOf("home", "plans", "notes_screen", "resources", "analytics", "error_bank") }
-                                    val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !activeNoteEditor
+                    }
+                }
+            ) {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    val isPaceKeep = currentDestination?.route == Screen.PaceKeep.route
+                    val topBarRoutes = remember {
+                        setOf(
+                            Screen.Focus.route,
+                            Screen.Dashboard.route,
+                            Screen.Notes.route,
+                            Screen.Resources.route,
+                            Screen.Shark.route,
+                            Screen.ErrorBank.route,
+                            "ai_zen_coach"
+                        )
+                    }
+                    val shouldShowTopBar = (currentDestination?.route in topBarRoutes) && !isPaceKeep && !activeNoteEditor
+                    val isImeOpen = WindowInsets.isImeVisible
+                    val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !activeNoteEditor
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                if (isPaceKeep) androidx.compose.ui.graphics.Color(0xFF071426)
+                                else MaterialTheme.colorScheme.background
+                            ),
+                    ) {
+                        Scaffold(
+                            modifier = Modifier.fillMaxSize(),
+                            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                            containerColor = if (isPaceKeep) androidx.compose.ui.graphics.Color(0xFF071426) else MaterialTheme.colorScheme.background,
+                            topBar = {
+                                if (shouldShowTopBar) {
+                                    SharkMentorTopBar(
+                                        countdown = countdownText,
+                                        isCampus = uiState.isCampus,
+                                        onCountdownClick = {
+                                            navController.navigate("countdown_settings") {
+                                                launchSingleTop = true
+                                            }
+                                        },
+                                        onMenuClick = { scope.launch { drawerState.open() } }
+                                    )
+                                }
+                            },
+                            bottomBar = {
+                                AnimatedVisibility(
+                                    visible = shouldShowBottomBar,
+                                    enter = slideInVertically(initialOffsetY = { it }),
+                                    exit = slideOutVertically(targetOffsetY = { it })
+                                ) {
+                                    SharkMentorBottomBar(
+                                        currentDestination = currentDestination,
+                                        onTabSelected = { screen ->
+                                            navController.navigate(screen.route) {
+                                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                                launchSingleTop = true
+                                                restoreState    = true
+                                            }
+                                        },
+                                        dueQuestionsCount = dueQuestionsCount
+                                    )
+                                }
+                            },
+                        ) { innerPadding ->
+                            val effectiveTopPadding = if (shouldShowTopBar) innerPadding.calculateTopPadding() else 0.dp
+                            val effectiveBottomPadding = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
 
-                                    AnimatedVisibility(
-                                        visible = shouldShowBottomBar,
-                                        enter = slideInVertically(initialOffsetY = { it }),
-                                        exit = slideOutVertically(targetOffsetY = { it })
-                                    ) {
-                                        SharkMentorBottomBar(
-                                            currentDestination = currentDestination,
-                                            onTabSelected = { screen ->
-                                                navController.navigate(screen.route) {
-                                                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                                                    launchSingleTop = true
-                                                    restoreState    = true
-                                                }
-                                            },
-                                            dueQuestionsCount = dueQuestionsCount
-                                        )
-                                    }
-                                },
-                            ) { innerPadding ->
-                                val isImeOpen = WindowInsets.isImeVisible
-                                val primaryTabRoutes = remember { setOf("home", "plans", "notes_screen", "resources", "analytics", "error_bank") }
-                                val shouldShowBottomBar = (currentDestination?.route in primaryTabRoutes) && !isImeOpen && !activeNoteEditor
-                                val effectiveTopPadding = if (shouldShowTopBar) innerPadding.calculateTopPadding() else 0.dp
-                                val effectiveBottomPadding = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
-
-                                NavHost(
-                                    navController    = navController,
-                                    startDestination = Screen.Focus.route,
-                                    modifier         = Modifier
+                            NavHost(
+                                navController    = navController,
+                                startDestination = Screen.Focus.route,
+                                modifier         = Modifier
                                         .fillMaxSize()
                                         .padding(
                                             top = effectiveTopPadding,
@@ -463,12 +484,7 @@ fun MainScreen(
                         composable(Screen.Profile.route) {
                             ProfileScreen(
                                 onBackClick = { navController.popBackStack() },
-                                onLogoutClick = {
-                                    GoogleServicesHelper.signOut()
-                                    navController.navigate(Screen.Login.route) {
-                                        popUpTo(0) { inclusive = true }
-                                    }
-                                },
+                                onLogoutClick = performCleanLogout,
                                 onLoginClick = {
                                     navController.navigate(Screen.Login.route)
                                 }
@@ -499,7 +515,6 @@ fun MainScreen(
             }
         }
     }
-}
 }
 }
 }

@@ -99,7 +99,7 @@ private fun SharkTier.themeAwareAccentColor(): Color {
         SharkTier.CEKICBAS -> secondary
         SharkTier.KAPLAN -> tertiary
         SharkTier.BUYUK_BEYAZ -> primary
-        SharkTier.MEGALODON -> Color(0xFFDC2626)
+        SharkTier.MEGALODON -> MaterialTheme.colorScheme.error
     }
 }
 

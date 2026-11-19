@@ -432,9 +432,15 @@ fun PenPackagePickerPanel(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val isLightSurface = colorScheme.surface.luminance() > 0.5f
+            val isZenMonochrome = colorScheme.primary == Color.White && colorScheme.background == Color.Black
             DrawingTool.PEN_PACKAGES.forEach { pkg ->
                 val isSelected = currentPen == pkg && activeTool.isPenTool
-                val accent = if (pkg == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else primaryColor
+                val accent = when {
+                    isZenMonochrome -> primaryColor
+                    pkg == DrawingTool.HIGHLIGHTER -> if (isLightSurface) Color(0xFFB45309) else Color(0xFFFBC02D)
+                    else -> primaryColor
+                }
                 Surface(
                     onClick = {
                         controller.selectTool(pkg)

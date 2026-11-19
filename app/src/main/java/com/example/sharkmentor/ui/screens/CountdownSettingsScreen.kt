@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharkmentor.core.util.GoogleServicesHelper
+import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
@@ -29,8 +30,14 @@ fun CountdownSettingsScreen(
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("sharkmentor_prefs", Context.MODE_PRIVATE) }
+    val userPrefs = remember { UserPreferences.getInstance(context) }
     var selectedMillis by remember { mutableLongStateOf(prefs.getLong("target_date_millis", 0L)) }
-    var targetTitle by remember { mutableStateOf(prefs.getString("target_exam_title", "") ?: "") }
+    var targetTitle by remember {
+        val initial = prefs.getString("target_exam_title", null)?.takeIf { it.isNotBlank() }
+            ?: userPrefs.studentTargetExam?.takeIf { it.isNotBlank() }
+            ?: ""
+        mutableStateOf(initial)
+    }
     var showDatePicker by remember { mutableStateOf(false) }
 
     val datePickerState = rememberDatePickerState(
@@ -146,22 +153,36 @@ fun CountdownSettingsScreen(
 }
 
 private fun saveExamTarget(context: Context, title: String, millis: Long) {
+    val cleanTitle = title.trim().ifBlank { "Hedef Sınav" }
     val prefs = context.getSharedPreferences("sharkmentor_prefs", Context.MODE_PRIVATE)
     prefs.edit()
         .putLong("target_date_millis", millis)
-        .putString("target_exam_title", title)
+        .putString("target_exam_title", cleanTitle)
         .apply()
+
+    val userPrefs = UserPreferences.getInstance(context)
+    userPrefs.countdownExamTitle = cleanTitle
+    userPrefs.countdownTargetDateMillis = millis
+    userPrefs.countdownUpdatedAt = System.currentTimeMillis()
+    if (cleanTitle != "Hedef Sınav") {
+        userPrefs.updateStudentTargetExam(cleanTitle)
+    }
 
     val uid = GoogleServicesHelper.getCurrentUser(context = context)?.uid
     if (uid != null) {
-        GoogleServicesHelper.getFirebaseFirestore(context)?.collection("students")?.document(uid)
-            ?.set(
-                hashMapOf(
-                    "targetExamTitle" to title,
-                    "targetExamDate" to millis
-                ),
-                SetOptions.merge()
-            )
+        val db = GoogleServicesHelper.getFirebaseFirestore(context)
+        val payload = hashMapOf<String, Any>(
+            "targetExamTitle" to cleanTitle,
+            "targetExamDate" to millis
+        )
+        if (cleanTitle != "Hedef Sınav") {
+            payload["targetExam"] = cleanTitle
+        }
+        db?.collection("students")?.document(uid)?.set(payload, SetOptions.merge())
+        if (cleanTitle != "Hedef Sınav") {
+            db?.collection("users")?.document(uid)
+                ?.set(mapOf("targetExam" to cleanTitle), SetOptions.merge())
+        }
     }
 
     Toast.makeText(context, "Hedef sınav tarihi kaydedildi.", Toast.LENGTH_SHORT).show()

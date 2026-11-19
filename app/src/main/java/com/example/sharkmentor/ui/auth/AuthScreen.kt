@@ -27,6 +27,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -36,6 +37,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.sharkmentor.core.util.GoogleServicesHelper
+import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.google.firebase.auth.userProfileChangeRequest
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.SetOptions
@@ -45,6 +47,7 @@ fun AuthScreen(
     onAuthSuccess: () -> Unit,
     onGuestContinue: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
     var isRegisterMode by remember { mutableStateOf(false) }
     var fullName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
@@ -305,13 +308,42 @@ fun AuthScreen(
                                 
                                 user.updateProfile(userProfileChangeRequest { displayName = cleanName })
 
-                                val profile = hashMapOf(
+                                val cleanGrade = grade.trim()
+                                val cleanExam = targetExam.trim()
+                                UserPreferences.getInstance(context).updateProfileDetails(
+                                    name = cleanName,
+                                    grade = cleanGrade,
+                                    targetExam = cleanExam
+                                )
+                                if (cleanExam.isNotBlank()) {
+                                    context.getSharedPreferences("sharkmentor_prefs", android.content.Context.MODE_PRIVATE)
+                                        .edit()
+                                        .putString("target_exam_title", cleanExam)
+                                        .apply()
+                                }
+
+                                val profile = hashMapOf<String, Any>(
                                     "name" to cleanName,
+                                    "displayName" to cleanName,
                                     "email" to cleanEmail,
-                                    "grade" to grade.trim(),
-                                    "targetExam" to targetExam.trim(),
+                                    "grade" to cleanGrade,
+                                    "targetExam" to cleanExam,
                                     "createdAt" to FieldValue.serverTimestamp(),
                                     "isStudying" to false
+                                )
+                                if (cleanExam.isNotBlank()) {
+                                    profile["targetExamTitle"] = cleanExam
+                                }
+                                dbObj.collection("users").document(uid).set(
+                                    hashMapOf(
+                                        "uid" to uid,
+                                        "name" to cleanName,
+                                        "email" to cleanEmail,
+                                        "grade" to cleanGrade,
+                                        "targetExam" to cleanExam,
+                                        "role" to "STUDENT"
+                                    ),
+                                    SetOptions.merge()
                                 )
                                 dbObj.collection("students").document(uid).set(profile, SetOptions.merge())
                                     .addOnSuccessListener {

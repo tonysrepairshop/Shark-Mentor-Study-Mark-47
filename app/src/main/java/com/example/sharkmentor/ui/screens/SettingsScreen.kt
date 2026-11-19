@@ -278,9 +278,19 @@ fun SettingsScreen(
         ) {
             ThemeSelectorSection(
                 themeMode = themeMode,
-                onThemeModeToggle = { themePrefs.setThemeMode(it) },
+                onThemeModeToggle = { mode ->
+                    if (com.example.sharkmentor.core.theme.ThemeManager.isZenMode.value) {
+                        com.example.sharkmentor.core.theme.ThemeManager.setZenMode(context, false)
+                    }
+                    themePrefs.setThemeMode(mode)
+                },
                 currentPalette = currentPalette,
-                onSelectPalette = { themePrefs.setPalette(it) }
+                onSelectPalette = { palette ->
+                    if (com.example.sharkmentor.core.theme.ThemeManager.isZenMode.value) {
+                        com.example.sharkmentor.core.theme.ThemeManager.setZenMode(context, false)
+                    }
+                    themePrefs.setPalette(palette)
+                }
             )
 
             HorizontalDivider()
@@ -438,14 +448,17 @@ fun ThemeSelectorSection(
                     .width(120.dp)
                     .clickable { onSelectPalette(palette) },
                 colors = CardDefaults.cardColors(containerColor = Color(palette.bgHex)),
-                border = BorderStroke(2.dp, if (isSelected) Color(palette.primaryHex) else Color.Transparent),
+                border = BorderStroke(
+                    width = if (isSelected) 2.dp else 1.dp,
+                    color = if (isSelected) Color(palette.primaryHex) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                ),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Column(modifier = Modifier.padding(10.dp)) {
                     Box(modifier = Modifier.size(18.dp).background(Color(palette.primaryHex), CircleShape))
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(palette.title, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
-                    Text(palette.desc, color = Color.Gray, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    Text(palette.desc, color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelSmall, maxLines = 1)
                 }
             }
         }
@@ -498,6 +511,10 @@ fun executePermanentAccountDeletion(context: Context, onComplete: () -> Unit) {
                     user.delete()
                         .addOnSuccessListener {
                             auth?.signOut()
+                            com.example.sharkmentor.core.util.AvatarHelper.clearLocalAvatar(context)
+                            com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(context).clearSessionProfile()
+                            com.example.sharkmentor.core.util.SessionManager.setLinkedToInstitution(context, false)
+                            com.example.sharkmentor.core.util.SessionManager.setUserMode(context, "study")
                             Toast.makeText(context, "Hesap silindi", Toast.LENGTH_SHORT).show()
                             onComplete()
                         }
