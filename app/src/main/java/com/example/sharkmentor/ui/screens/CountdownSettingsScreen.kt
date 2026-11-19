@@ -68,6 +68,7 @@ fun CountdownSettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text("Hedef Sınav Tarihi Belirle") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {

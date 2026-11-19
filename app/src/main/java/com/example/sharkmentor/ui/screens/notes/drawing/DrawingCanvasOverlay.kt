@@ -106,6 +106,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingScreenshotHelper.findActivity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -251,8 +252,17 @@ fun DrawingCanvasOverlay(
         }
     }
 
+    val prefPressureEnabled by NoteDrawingPreferences.pressureSensitivityEnabled.collectAsStateWithLifecycle()
+    val prefPressureStrength by NoteDrawingPreferences.pressureSensitivityStrength.collectAsStateWithLifecycle()
+    val prefScribbleToErase by NoteDrawingPreferences.scribbleToEraseEnabled.collectAsStateWithLifecycle()
+    val prefAutoShape by NoteDrawingPreferences.autoShapeRecognitionEnabled.collectAsStateWithLifecycle()
+
     LaunchedEffect(controller, context) {
         controller.bindPreferencesContext(context)
+    }
+
+    LaunchedEffect(controller, prefPressureEnabled, prefPressureStrength, prefScribbleToErase, prefAutoShape) {
+        controller.syncFromNotePreferences()
     }
 
     // Adapt strokes if loaded from a different canvas width (e.g. orientation change or PDF resize)
@@ -324,6 +334,9 @@ fun DrawingCanvasOverlay(
             controller.stylusOnlyMode,
             controller.smartPalmRejectionEnabled,
             controller.pressureSensitivityEnabled,
+            controller.pressureSensitivityStrength,
+            controller.scribbleToEraseEnabled,
+            controller.autoShapeRecognitionEnabled,
             onTwoFingerScroll != null
         ) {
             awaitEachGesture {
@@ -390,7 +403,8 @@ fun DrawingCanvasOverlay(
                     prevPoint = null,
                     prevTimeMs = gestureStartMs,
                     nowTimeMs = gestureStartMs,
-                    enabled = controller.pressureSensitivityEnabled
+                    enabled = controller.pressureSensitivityEnabled,
+                    strength = controller.pressureSensitivityStrength
                 )
                 val startPoint = DrawingPoint(startX, startY, initialPressure)
 
@@ -537,7 +551,8 @@ fun DrawingCanvasOverlay(
                                 prevPoint = last,
                                 prevTimeMs = lastSampleTimeMs,
                                 nowTimeMs = nowMs,
-                                enabled = controller.pressureSensitivityEnabled
+                                enabled = controller.pressureSensitivityEnabled,
+                                strength = controller.pressureSensitivityStrength
                             )
                             val current = DrawingPoint(pos.x, pos.y, pointPressure)
                             if (last == null || last.distanceTo(current) >= 2.2f) {
@@ -590,11 +605,11 @@ fun DrawingCanvasOverlay(
                             if (inProgressPoints.isNotEmpty()) {
                                 val gestureDurationMs = SystemClock.elapsedRealtime() - gestureStartMs
                                 val rawPoints = inProgressPoints.toList()
-                                val isFreehandPen = effectiveTool == DrawingTool.FOUNTAIN_PEN ||
-                                    effectiveTool == DrawingTool.TECHNICAL_PEN ||
-                                    effectiveTool == DrawingTool.HIGHLIGHTER
+                                val isFreehandPen = effectiveTool.isPenTool &&
+                                    effectiveTool != DrawingTool.UNDERLINE_MARKER
 
                                 val erasedByScribble = if (
+                                    controller.scribbleToEraseEnabled &&
                                     isFreehandPen &&
                                     controller.strokes.isNotEmpty() &&
                                     ScribbleDetector.isScribbleGesture(rawPoints, gestureDurationMs)
@@ -608,25 +623,52 @@ fun DrawingCanvasOverlay(
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     feedbackMessage = "Karalama ile $erasedByScribble çizim silindi"
                                 } else {
-                                    val finalPoints = if (rawPoints.size == 1) {
-                                        val p = rawPoints.first()
-                                        listOf(p, DrawingPoint(p.x + 0.5f, p.y + 0.5f, p.pressure))
+                                    val recognizedShape = if (
+                                        controller.autoShapeRecognitionEnabled &&
+                                        effectiveTool.supportsAutoShape
+                                    ) {
+                                        AutoShapeRecognizer.recognize(rawPoints)
                                     } else {
-                                        rawPoints
+                                        null
                                     }
-                                    controller.addStroke(
-                                        DrawingStroke(
-                                            tool = effectiveTool,
-                                            shapeKind = ShapeKind.NONE,
-                                            colorArgb = controller.penColor.toArgb(),
-                                            strokeWidth = controller.strokeWidth,
-                                            alpha = controller.alpha,
-                                            points = finalPoints,
-                                            canvasWidth = canvasSize.width.toFloat().coerceAtLeast(1f),
-                                            canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f),
-                                            pressureSensitive = controller.pressureSensitivityEnabled
+
+                                    if (recognizedShape != null) {
+                                        controller.addStroke(
+                                            DrawingStroke(
+                                                tool = effectiveTool,
+                                                shapeKind = recognizedShape.shapeKind,
+                                                colorArgb = controller.penColor.toArgb(),
+                                                strokeWidth = controller.strokeWidth,
+                                                alpha = controller.alpha,
+                                                points = recognizedShape.points,
+                                                canvasWidth = canvasSize.width.toFloat().coerceAtLeast(1f),
+                                                canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f),
+                                                pressureSensitive = false
+                                            )
                                         )
-                                    )
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        feedbackMessage = "Şekil düzeltildi: ${recognizedShape.labelTr}"
+                                    } else {
+                                        val finalPoints = if (rawPoints.size == 1) {
+                                            val p = rawPoints.first()
+                                            listOf(p, DrawingPoint(p.x + 0.5f, p.y + 0.5f, p.pressure))
+                                        } else {
+                                            rawPoints
+                                        }
+                                        controller.addStroke(
+                                            DrawingStroke(
+                                                tool = effectiveTool,
+                                                shapeKind = ShapeKind.NONE,
+                                                colorArgb = controller.penColor.toArgb(),
+                                                strokeWidth = controller.strokeWidth,
+                                                alpha = controller.alpha,
+                                                points = finalPoints,
+                                                canvasWidth = canvasSize.width.toFloat().coerceAtLeast(1f),
+                                                canvasHeight = canvasSize.height.toFloat().coerceAtLeast(1f),
+                                                pressureSensitive = controller.pressureSensitivityEnabled
+                                            )
+                                        )
+                                    }
                                 }
                             }
                             inProgressPoints.clear()
@@ -1228,22 +1270,28 @@ internal fun resolvePointerPressure(
     prevPoint: DrawingPoint?,
     prevTimeMs: Long,
     nowTimeMs: Long,
-    enabled: Boolean
+    enabled: Boolean,
+    strength: Float = 1.15f
 ): Float {
     if (!enabled) return 1.0f
+    val gain = strength.coerceIn(0.5f, 1.8f)
+    fun modulate(base: Float): Float {
+        return (0.85f + (base - 0.85f) * gain).coerceIn(0.04f, 1.95f)
+    }
+
     val raw = change.pressure
     if (change.type == PointerType.Stylus) {
         val norm = if (raw <= 0.001f) 0.72f else raw.coerceIn(0.02f, 1.40f)
-        val curved = (norm.pow(0.70f) * 1.38f).coerceIn(0.04f, 1.88f)
+        val curved = modulate((norm.pow(0.70f) * 1.38f).coerceIn(0.04f, 1.88f))
         val prevP = prevPoint?.pressure ?: curved
-        return (prevP * 0.16f + curved * 0.84f).coerceIn(0.04f, 1.88f)
+        return (prevP * 0.16f + curved * 0.84f).coerceIn(0.04f, 1.95f)
     }
 
     // Touch or other pointer types
     if (raw > 0.01f && abs(raw - 1.0f) > 0.015f) {
-        val curved = (raw.coerceIn(0.05f, 1.40f).pow(0.75f) * 1.25f).coerceIn(0.08f, 1.65f)
+        val curved = modulate((raw.coerceIn(0.05f, 1.40f).pow(0.75f) * 1.25f).coerceIn(0.08f, 1.65f))
         val prevP = prevPoint?.pressure ?: curved
-        return (prevP * 0.25f + curved * 0.75f).coerceIn(0.08f, 1.65f)
+        return (prevP * 0.25f + curved * 0.75f).coerceIn(0.08f, 1.85f)
     }
 
     // Velocity-based natural taper when touch reports constant 1.0f
@@ -1251,8 +1299,8 @@ internal fun resolvePointerPressure(
     val dist = kotlin.math.hypot(change.position.x - prevPoint.x, change.position.y - prevPoint.y)
     val dt = (nowTimeMs - prevTimeMs).coerceAtLeast(4L).toFloat()
     val speedPxPerMs = dist / dt
-    val velocityPressure = (1.42f - (speedPxPerMs * 0.28f)).coerceIn(0.20f, 1.50f)
-    return (prevPoint.pressure * 0.35f + velocityPressure * 0.65f).coerceIn(0.18f, 1.55f)
+    val velocityPressure = modulate((1.42f - (speedPxPerMs * 0.28f)).coerceIn(0.20f, 1.50f))
+    return (prevPoint.pressure * 0.35f + velocityPressure * 0.65f).coerceIn(0.14f, 1.85f)
 }
 
 /**
@@ -1265,7 +1313,11 @@ fun DrawScope.drawStrokeElement(
     val pts = stroke.points
     if (pts.isEmpty()) return
 
-    val paintColor = stroke.composeColor
+    val paintColor = if (stroke.tool == DrawingTool.PENCIL) {
+        Color(stroke.colorArgb).copy(alpha = (stroke.alpha * 0.78f).coerceIn(0.15f, 0.92f))
+    } else {
+        stroke.composeColor
+    }
     val widthPx = stroke.strokeWidth.coerceAtLeast(1f)
     val cap = when (stroke.tool) {
         DrawingTool.HIGHLIGHTER -> StrokeCap.Square
@@ -1345,9 +1397,15 @@ fun DrawScope.drawStrokeElement(
             }
             ShapeKind.TRIANGLE -> {
                 val triPath = Path().apply {
-                    moveTo((left + right) * 0.5f, top)
-                    lineTo(right, bottom)
-                    lineTo(left, bottom)
+                    if (pts.size >= 3) {
+                        moveTo(pts[0].x, pts[0].y)
+                        lineTo(pts[1].x, pts[1].y)
+                        lineTo(pts[2].x, pts[2].y)
+                    } else {
+                        moveTo((left + right) * 0.5f, top)
+                        lineTo(right, bottom)
+                        lineTo(left, bottom)
+                    }
                     close()
                 }
                 drawPath(
@@ -1364,8 +1422,13 @@ fun DrawScope.drawStrokeElement(
     // Freehand stroke rendering with smooth quadratic Bezier curves
     if (pts.size == 1) {
         val p0 = pts[0]
-        val pFactor = if (pressureSensitivityEnabled) {
-            (0.16f + 1.50f * p0.pressure.coerceIn(0.04f, 1.88f)).coerceIn(0.16f, 2.40f)
+        val pFactor = if (pressureSensitivityEnabled && stroke.pressureSensitive) {
+            when (stroke.tool) {
+                DrawingTool.BRUSH_PEN -> (0.14f + 2.05f * p0.pressure.coerceIn(0.04f, 1.95f)).coerceIn(0.14f, 2.85f)
+                DrawingTool.BALLPOINT_PEN -> (0.84f + 0.26f * p0.pressure.coerceIn(0.04f, 1.95f)).coerceIn(0.75f, 1.32f)
+                DrawingTool.PENCIL -> (0.55f + 0.72f * p0.pressure.coerceIn(0.04f, 1.95f)).coerceIn(0.45f, 1.65f)
+                else -> (0.16f + 1.50f * p0.pressure.coerceIn(0.04f, 1.95f)).coerceIn(0.16f, 2.40f)
+            }
         } else {
             1.0f
         }
@@ -1379,44 +1442,90 @@ fun DrawScope.drawStrokeElement(
 
     val isPressurePen = pressureSensitivityEnabled &&
         stroke.pressureSensitive &&
-        (stroke.tool == DrawingTool.FOUNTAIN_PEN || stroke.tool == DrawingTool.TECHNICAL_PEN)
+        (stroke.tool == DrawingTool.FOUNTAIN_PEN ||
+            stroke.tool == DrawingTool.TECHNICAL_PEN ||
+            stroke.tool == DrawingTool.BRUSH_PEN ||
+            stroke.tool == DrawingTool.PENCIL ||
+            stroke.tool == DrawingTool.BALLPOINT_PEN)
 
     if (isPressurePen) {
         var prevAnchorX = pts[0].x
         var prevAnchorY = pts[0].y
         val segPath = Path()
+        val isBrush = stroke.tool == DrawingTool.BRUSH_PEN
+        val isPencil = stroke.tool == DrawingTool.PENCIL
+        val isBallpoint = stroke.tool == DrawingTool.BALLPOINT_PEN
+        val pencilGrainColor = if (isPencil) {
+            Color(stroke.colorArgb).copy(alpha = (stroke.alpha * 0.26f).coerceIn(0.06f, 0.34f))
+        } else {
+            Color.Transparent
+        }
+
         for (i in 1 until pts.size) {
             val prev = pts[i - 1]
             val curr = pts[i]
             val endX = if (i == pts.lastIndex) curr.x else (prev.x + curr.x) * 0.5f
             val endY = if (i == pts.lastIndex) curr.y else (prev.y + curr.y) * 0.5f
 
-            val pPrev2 = pts[(i - 2).coerceAtLeast(0)].pressure.coerceIn(0.04f, 1.88f)
-            val pPrev = prev.pressure.coerceIn(0.04f, 1.88f)
-            val pCurr = curr.pressure.coerceIn(0.04f, 1.88f)
+            val pPrev2 = pts[(i - 2).coerceAtLeast(0)].pressure.coerceIn(0.04f, 1.95f)
+            val pPrev = prev.pressure.coerceIn(0.04f, 1.95f)
+            val pCurr = curr.pressure.coerceIn(0.04f, 1.95f)
             val smoothedPressure = pPrev2 * 0.20f + pPrev * 0.45f + pCurr * 0.35f
 
-            // Taper endpoints gently so pen entry/exit looks like a responsive fountain nib
             val edgeTaper = when {
+                isBallpoint -> 1.0f
+                isBrush && pts.size >= 5 && i == 1 -> 0.55f
+                isBrush && pts.size >= 5 && i == pts.lastIndex -> 0.48f
                 pts.size >= 5 && i == 1 -> 0.78f
                 pts.size >= 5 && i == pts.lastIndex -> 0.74f
                 else -> 1.0f
             }
-            val widthI = (widthPx * (0.14f + 1.52f * smoothedPressure) * edgeTaper)
-                .coerceIn(max(0.45f, widthPx * 0.14f), widthPx * 2.45f)
+
+            val widthI = when {
+                isBrush -> (widthPx * (0.12f + 2.05f * smoothedPressure) * edgeTaper)
+                    .coerceIn(max(0.55f, widthPx * 0.12f), widthPx * 2.85f)
+                isBallpoint -> (widthPx * (0.84f + 0.26f * smoothedPressure))
+                    .coerceIn(max(0.75f, widthPx * 0.76f), widthPx * 1.32f)
+                isPencil -> (widthPx * (0.55f + 0.72f * smoothedPressure) * edgeTaper)
+                    .coerceIn(max(0.55f, widthPx * 0.45f), widthPx * 1.65f)
+                else -> (widthPx * (0.14f + 1.52f * smoothedPressure) * edgeTaper)
+                    .coerceIn(max(0.45f, widthPx * 0.14f), widthPx * 2.45f)
+            }
+
+            val segColor = if (isPencil) {
+                val pencilAlpha = (stroke.alpha * (0.52f + 0.36f * smoothedPressure)).coerceIn(0.18f, 0.90f)
+                Color(stroke.colorArgb).copy(alpha = pencilAlpha)
+            } else {
+                paintColor
+            }
 
             segPath.reset()
             segPath.moveTo(prevAnchorX, prevAnchorY)
             segPath.quadraticTo(prev.x, prev.y, endX, endY)
             drawPath(
                 path = segPath,
-                color = paintColor,
+                color = segColor,
                 style = Stroke(
                     width = widthI,
                     cap = StrokeCap.Round,
                     join = StrokeJoin.Round
                 )
             )
+            if (isPencil) {
+                // Subtle offset graphite texture pass for authentic pencil feel
+                segPath.reset()
+                segPath.moveTo(prevAnchorX + 0.75f, prevAnchorY + 0.55f)
+                segPath.quadraticTo(prev.x + 0.75f, prev.y + 0.55f, endX + 0.75f, endY + 0.55f)
+                drawPath(
+                    path = segPath,
+                    color = pencilGrainColor,
+                    style = Stroke(
+                        width = (widthI * 0.65f).coerceAtLeast(0.6f),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round
+                    )
+                )
+            }
             prevAnchorX = endX
             prevAnchorY = endY
         }
@@ -1456,6 +1565,29 @@ fun DrawScope.drawStrokeElement(
             join = join
         )
     )
+    if (stroke.tool == DrawingTool.PENCIL) {
+        val grainPath = Path().apply {
+            moveTo(pts[0].x + 0.75f, pts[0].y + 0.55f)
+            for (i in 1 until pts.size) {
+                val prev = pts[i - 1]
+                val curr = pts[i]
+                val midX = (prev.x + curr.x) * 0.5f + 0.75f
+                val midY = (prev.y + curr.y) * 0.5f + 0.55f
+                quadraticTo(prev.x + 0.75f, prev.y + 0.55f, midX, midY)
+            }
+            val last = pts.last()
+            lineTo(last.x + 0.75f, last.y + 0.55f)
+        }
+        drawPath(
+            path = grainPath,
+            color = Color(stroke.colorArgb).copy(alpha = (stroke.alpha * 0.24f).coerceIn(0.06f, 0.30f)),
+            style = Stroke(
+                width = (widthPx * 0.65f).coerceAtLeast(0.6f),
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round
+            )
+        )
+    }
 }
 
 private fun DrawScope.drawLassoLoop(points: List<DrawingPoint>) {

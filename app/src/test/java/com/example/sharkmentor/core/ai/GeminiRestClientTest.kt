@@ -15,19 +15,29 @@ class GeminiRestClientTest {
     @Before
     fun setUp() {
         UserAiPreferences.resetForTesting()
+        GeminiRestClient.clearEndpointCacheForTesting()
     }
 
     @After
     fun tearDown() {
         UserAiPreferences.resetForTesting()
+        GeminiRestClient.clearEndpointCacheForTesting()
     }
 
     @Test
     fun resolveEndpointsForKey_routesVertexFirstForAqAndAiStudioOnlyForAiza() {
-        val aqEndpoints = GeminiRestClient.resolveEndpointsForKey("AQ.AbC1234567890_test_key")
+        val aqKey = "AQ.AbC1234567890_test_key"
+        val aqEndpoints = GeminiRestClient.resolveEndpointsForKey(aqKey)
         assertEquals(
             listOf(GeminiEndpointType.VERTEX_AI_EXPRESS, GeminiEndpointType.GOOGLE_AI_STUDIO),
             aqEndpoints
+        )
+
+        // Once an AQ. key succeeds on AI Studio, subsequent calls route to AI Studio first.
+        GeminiRestClient.recordEndpointSuccess(aqKey, GeminiEndpointType.GOOGLE_AI_STUDIO)
+        assertEquals(
+            listOf(GeminiEndpointType.GOOGLE_AI_STUDIO, GeminiEndpointType.VERTEX_AI_EXPRESS),
+            GeminiRestClient.resolveEndpointsForKey(aqKey)
         )
 
         val aizaEndpoints = GeminiRestClient.resolveEndpointsForKey("AIzaSyDummyKeyForUnitTest12345")
@@ -35,6 +45,33 @@ class GeminiRestClientTest {
             listOf(GeminiEndpointType.GOOGLE_AI_STUDIO),
             aizaEndpoints
         )
+    }
+
+    @Test
+    fun mergeEndpointErrors_preserves404FromAiStudioAndRetainsBothEndpointDiagnostics() {
+        val vertex403 = GeminiApiException(
+            message = "Agent Platform API has not been used in project 137114597839",
+            httpCode = 403,
+            apiStatus = "PERMISSION_DENIED",
+            endpoint = GeminiEndpointType.VERTEX_AI_EXPRESS,
+            modelName = "gemini-3.6-flash"
+        )
+        val studio404 = GeminiApiException(
+            message = "models/gemini-3.6-flash is not found for API version v1beta",
+            httpCode = 404,
+            apiStatus = "NOT_FOUND",
+            endpoint = GeminiEndpointType.GOOGLE_AI_STUDIO,
+            modelName = "gemini-3.6-flash",
+            usedEndpointFallback = true
+        )
+
+        val merged = GeminiRestClient.mergeEndpointErrors(vertex403, studio404, "gemini-3.6-flash")
+        assertEquals(404, merged.httpCode)
+        assertTrue(merged.isModelNotFound)
+        assertTrue(merged.message.contains("Vertex AI Express"))
+        assertTrue(merged.message.contains("Google AI Studio"))
+        assertTrue(merged.message.contains("137114597839"))
+        assertTrue(merged.message.contains("not found"))
     }
 
     @Test

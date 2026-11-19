@@ -38,6 +38,7 @@ fun HistoryScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text("Çalışma Geçmişi") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {

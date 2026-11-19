@@ -1097,16 +1097,16 @@ object GeminiAiFactory {
 
     private fun formatError(t: Throwable?): String {
         if (t == null) return "Bilinmeyen hata"
-        return (t.localizedMessage ?: t.message ?: t.javaClass.simpleName).take(160)
+        return (t.localizedMessage ?: t.message ?: t.javaClass.simpleName).take(220)
     }
 
     private fun buildFailureMessage(lastException: Throwable?, notes: List<String>): String {
         val raw = "${lastException?.message} ${lastException?.cause?.message}".lowercase()
-        val detail = notes.lastOrNull().orEmpty()
+        val detail = notes.joinToString(" | ").take(480)
         val apiEx = lastException as? GeminiApiException
         return when {
-            apiEx?.isAuthOrKeyError == true || raw.contains("401") || raw.contains("403") || raw.contains("api_key") ->
-                "API anahtarı doğrulama hatası. Ayarlardan anahtarınızı kontrol edin. [$detail]"
+            apiEx?.isAuthOrKeyError == true || raw.contains("401") || raw.contains("403") || raw.contains("api_key") || raw.contains("api key not valid") ->
+                "API anahtarı doğrulama hatası. Ayarlardan kendi anahtarınızı girebilir veya standart anahtarları kontrol edebilirsiniz. [$detail]"
             apiEx?.isQuotaOrRateLimit == true || raw.contains("429") || raw.contains("quota") ->
                 "API kota limiti doldu (429). Kısa süre sonra tekrar deneyin veya yeni bir anahtar ekleyin."
             apiEx?.isOverloadOrTransient == true || raw.contains("503") || raw.contains("unavailable") ->

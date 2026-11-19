@@ -165,7 +165,6 @@ fun SharkAiScreen(
     val inputText by viewModel.inputText.collectAsStateWithLifecycle()
     val selectedAttachmentUri by viewModel.selectedAttachmentUri.collectAsStateWithLifecycle()
     val attachmentPreview by viewModel.attachmentPreview.collectAsStateWithLifecycle()
-    val activeModelDisplay by viewModel.activeModelDisplay.collectAsStateWithLifecycle()
     val detectedEngine by viewModel.detectedEngine.collectAsStateWithLifecycle()
     val lockedEngine by viewModel.lockedEngine.collectAsStateWithLifecycle()
     val pendingHandoff by SharkAiHandoffManager.pendingHandoff.collectAsStateWithLifecycle()
@@ -257,7 +256,7 @@ fun SharkAiScreen(
         topBar = {
             Surface(
                 color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
+                tonalElevation = 1.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 val activeModeTitle = when {
@@ -275,57 +274,79 @@ fun SharkAiScreen(
                 }
                 val hasNonDefaultMode = uiState.currentPersona != AiPersona.SHARK_COACH || lockedEngine != null
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // 1. Satır: Shark AI başlık + Sohbetler + Yeni Sohbet
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 6.dp)
-                                .clickable { showPersonaSheet = true }
+                        Box(
+                            modifier = Modifier.weight(1f),
+                            contentAlignment = Alignment.CenterStart
                         ) {
-                            Box(
+                            Surface(
+                                color = if (hasNonDefaultMode) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (hasNonDefaultMode) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                    } else {
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+                                    }
+                                ),
                                 modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)),
-                                contentAlignment = Alignment.Center
+                                    .heightIn(min = 32.dp)
+                                    .clickable { showPersonaSheet = true }
                             ) {
-                                Icon(
-                                    imageVector = activeModeIcon,
-                                    contentDescription = activeModeTitle,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f, fill = false)) {
-                                Text(
-                                    text = "Shark AI",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = activeModelDisplay,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = activeModeIcon,
+                                        contentDescription = activeModeTitle,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = activeModeTitle,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (hasNonDefaultMode) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (hasNonDefaultMode) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Sıfırla",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .clickable { viewModel.resetToDefaultPersona() }
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Mod Seç",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
 
@@ -335,15 +356,15 @@ fun SharkAiScreen(
                         ) {
                             Surface(
                                 onClick = { showChatHistorySheet = true },
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
                                 shape = RoundedCornerShape(16.dp),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
-                                modifier = Modifier.heightIn(min = 34.dp)
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+                                modifier = Modifier.heightIn(min = 32.dp)
                             ) {
                                 Row(
                                     modifier = Modifier
-                                        .heightIn(min = 34.dp)
-                                        .padding(horizontal = 9.dp, vertical = 6.dp),
+                                        .heightIn(min = 32.dp)
+                                        .padding(horizontal = 9.dp, vertical = 5.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
@@ -372,23 +393,23 @@ fun SharkAiScreen(
                                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
                                 shape = RoundedCornerShape(16.dp),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-                                modifier = Modifier.heightIn(min = 34.dp)
+                                modifier = Modifier.heightIn(min = 32.dp)
                             ) {
                                 Row(
                                     modifier = Modifier
-                                        .heightIn(min = 34.dp)
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        .heightIn(min = 32.dp)
+                                        .padding(horizontal = 9.dp, vertical = 5.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Add,
                                         contentDescription = "Yeni Sohbet",
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(15.dp)
+                                        modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = "Yeni Sohbet",
+                                        text = "Yeni",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.primary,
@@ -398,68 +419,7 @@ fun SharkAiScreen(
                             }
                         }
                     }
-
-                    // 2. Satır: Aktif mod çipi
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Start,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            color = if (hasNonDefaultMode) {
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                            } else {
-                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                            },
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(
-                                1.dp,
-                                if (hasNonDefaultMode) {
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
-                                } else {
-                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                                }
-                            ),
-                            modifier = Modifier
-                                .heightIn(min = 30.dp)
-                                .clickable { showPersonaSheet = true }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = activeModeIcon,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = activeModeTitle,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (hasNonDefaultMode) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                if (hasNonDefaultMode) {
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Sıfırla",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .clickable { viewModel.resetToDefaultPersona() }
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                 }
             }
         }

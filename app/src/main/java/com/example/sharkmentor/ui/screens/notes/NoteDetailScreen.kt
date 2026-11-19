@@ -14,10 +14,12 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -184,7 +186,9 @@ import com.example.sharkmentor.ui.screens.notes.drawing.DrawingCanvasOverlay
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
+import com.example.sharkmentor.ui.screens.notes.drawing.PenCustomColorDialog
 import com.example.sharkmentor.ui.screens.notes.drawing.PenLassoActionsPanel
+import com.example.sharkmentor.ui.screens.notes.drawing.PenPackagePickerPanel
 import com.example.sharkmentor.ui.screens.notes.drawing.PenPalmRejectionGlyph
 import com.example.sharkmentor.ui.screens.notes.drawing.PenRedoGlyph
 import com.example.sharkmentor.ui.screens.notes.drawing.PenShapePickerPanel
@@ -260,7 +264,7 @@ enum class ActiveColorPanel {
 }
 
 enum class ActivePenPanel {
-    NONE, SETTINGS, SHAPES, LASSO
+    NONE, SETTINGS, SHAPES, LASSO, PEN_PACKAGES
 }
 
 enum class ToolbarDockState {
@@ -614,7 +618,7 @@ fun NoteDetailScreen(
             activePenPanel = ActivePenPanel.NONE
         } else {
             keyboardController?.hide()
-            drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+            drawingController.selectActiveOrLastPen()
             isToolbarCollapsed = false
             activeColorPanel = ActiveColorPanel.NONE
         }
@@ -959,10 +963,10 @@ fun NoteDetailScreen(
         modifier = modifier
             .fillMaxSize()
             .background(bgColor)
-            .statusBarsPadding()
             .padding(bottom = effectiveBottomPadding)
     ) {
         TopAppBar(
+            expandedHeight = 50.dp,
             title = {
                 Column(
                     modifier = Modifier.width(IntrinsicSize.Max),
@@ -2658,7 +2662,7 @@ fun NoteDetailScreen(
                     onSelectPenMode = {
                         keyboardController?.hide()
                         if (!drawingController.isDrawingActive) {
-                            drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                            drawingController.selectActiveOrLastPen()
                         }
                         activeColorPanel = ActiveColorPanel.NONE
                     },
@@ -2731,6 +2735,10 @@ fun NoteDetailScreen(
                                 )
                             } else {
                                 when (activePenPanel) {
+                                    ActivePenPanel.PEN_PACKAGES -> PenPackagePickerPanel(
+                                        controller = drawingController,
+                                        onDismiss = { activePenPanel = ActivePenPanel.NONE }
+                                    )
                                     ActivePenPanel.SETTINGS -> PenStrokeSettingsPanel(
                                         controller = drawingController,
                                         onDismiss = { activePenPanel = ActivePenPanel.NONE }
@@ -3225,6 +3233,8 @@ fun RichTextFormattingToolbar(
     val isVertical = dockState == ToolbarDockState.LEFT || dockState == ToolbarDockState.RIGHT
     val isPenMode = drawingController.isDrawingActive
     val activeDrawTool = drawingController.activeTool
+    val currentPenTool = if (activeDrawTool.isPenTool) activeDrawTool else drawingController.lastSelectedPenTool
+    val haptic = LocalHapticFeedback.current
 
     val shape = when (dockState) {
         ToolbarDockState.BOTTOM -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -3404,56 +3414,24 @@ fun RichTextFormattingToolbar(
                     )
                 } else {
                     PenVerticalToolButton(
-                        isSelected = activeDrawTool == DrawingTool.FOUNTAIN_PEN,
-                        accentColor = drawingController.penColor,
+                        isSelected = activeDrawTool.isPenTool || activePenPanel == ActivePenPanel.PEN_PACKAGES,
+                        accentColor = if (currentPenTool == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else drawingController.penColor,
                         onSurfaceColor = onSurfaceColor,
                         primaryColor = primaryColor,
                         onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                            if (activePenPanel == ActivePenPanel.SHAPES ||
+                                activePenPanel == ActivePenPanel.LASSO ||
+                                activePenPanel == ActivePenPanel.PEN_PACKAGES
+                            ) {
                                 onTogglePenPanel(ActivePenPanel.NONE)
                             }
-                            drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                            drawingController.selectActiveOrLastPen()
+                        },
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onTogglePenPanel(ActivePenPanel.PEN_PACKAGES)
                         }
-                    ) { tint -> PenToolGlyph(tool = DrawingTool.FOUNTAIN_PEN, tint = tint) }
-
-                    PenVerticalToolButton(
-                        isSelected = activeDrawTool == DrawingTool.HIGHLIGHTER,
-                        accentColor = Color(0xFFFBC02D),
-                        onSurfaceColor = onSurfaceColor,
-                        primaryColor = primaryColor,
-                        onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
-                                onTogglePenPanel(ActivePenPanel.NONE)
-                            }
-                            drawingController.selectTool(DrawingTool.HIGHLIGHTER)
-                        }
-                    ) { tint -> PenToolGlyph(tool = DrawingTool.HIGHLIGHTER, tint = tint) }
-
-                    PenVerticalToolButton(
-                        isSelected = activeDrawTool == DrawingTool.TECHNICAL_PEN,
-                        accentColor = drawingController.penColor,
-                        onSurfaceColor = onSurfaceColor,
-                        primaryColor = primaryColor,
-                        onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
-                                onTogglePenPanel(ActivePenPanel.NONE)
-                            }
-                            drawingController.selectTool(DrawingTool.TECHNICAL_PEN)
-                        }
-                    ) { tint -> PenToolGlyph(tool = DrawingTool.TECHNICAL_PEN, tint = tint) }
-
-                    PenVerticalToolButton(
-                        isSelected = activeDrawTool == DrawingTool.UNDERLINE_MARKER,
-                        accentColor = drawingController.penColor,
-                        onSurfaceColor = onSurfaceColor,
-                        primaryColor = primaryColor,
-                        onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
-                                onTogglePenPanel(ActivePenPanel.NONE)
-                            }
-                            drawingController.selectTool(DrawingTool.UNDERLINE_MARKER)
-                        }
-                    ) { tint -> PenToolGlyph(tool = DrawingTool.UNDERLINE_MARKER, tint = tint) }
+                    ) { tint -> PenToolGlyph(tool = currentPenTool, tint = tint) }
 
                     PenVerticalToolButton(
                         isSelected = activeDrawTool == DrawingTool.STROKE_ERASER,
@@ -3461,7 +3439,10 @@ fun RichTextFormattingToolbar(
                         onSurfaceColor = onSurfaceColor,
                         primaryColor = primaryColor,
                         onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                            if (activePenPanel == ActivePenPanel.SHAPES ||
+                                activePenPanel == ActivePenPanel.LASSO ||
+                                activePenPanel == ActivePenPanel.PEN_PACKAGES
+                            ) {
                                 onTogglePenPanel(ActivePenPanel.NONE)
                             }
                             drawingController.selectTool(DrawingTool.STROKE_ERASER)
@@ -3474,7 +3455,10 @@ fun RichTextFormattingToolbar(
                         onSurfaceColor = onSurfaceColor,
                         primaryColor = primaryColor,
                         onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                            if (activePenPanel == ActivePenPanel.SHAPES ||
+                                activePenPanel == ActivePenPanel.LASSO ||
+                                activePenPanel == ActivePenPanel.PEN_PACKAGES
+                            ) {
                                 onTogglePenPanel(ActivePenPanel.NONE)
                             }
                             drawingController.selectTool(DrawingTool.AREA_ERASER)
@@ -3501,6 +3485,9 @@ fun RichTextFormattingToolbar(
                         primaryColor = primaryColor,
                         onClick = {
                             if (activeDrawTool != DrawingTool.LASSO) {
+                                if (activePenPanel == ActivePenPanel.PEN_PACKAGES || activePenPanel == ActivePenPanel.SHAPES) {
+                                    onTogglePenPanel(ActivePenPanel.NONE)
+                                }
                                 drawingController.selectTool(DrawingTool.LASSO)
                             } else {
                                 onTogglePenPanel(ActivePenPanel.LASSO)
@@ -3759,59 +3746,33 @@ fun RichTextFormattingToolbar(
                             )
                         } else {
                             StudioToolButton(
-                                label = "Dolma",
-                                isSelected = activeDrawTool == DrawingTool.FOUNTAIN_PEN,
-                                accentColor = drawingController.penColor,
+                                label = currentPenTool.shortLabel,
+                                isSelected = activeDrawTool.isPenTool || activePenPanel == ActivePenPanel.PEN_PACKAGES,
+                                accentColor = if (currentPenTool == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else drawingController.penColor,
                                 onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                    if (activePenPanel == ActivePenPanel.SHAPES ||
+                                        activePenPanel == ActivePenPanel.LASSO ||
+                                        activePenPanel == ActivePenPanel.PEN_PACKAGES
+                                    ) {
                                         onTogglePenPanel(ActivePenPanel.NONE)
                                     }
-                                    drawingController.selectTool(DrawingTool.FOUNTAIN_PEN)
+                                    drawingController.selectActiveOrLastPen()
+                                },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onTogglePenPanel(ActivePenPanel.PEN_PACKAGES)
                                 }
-                            ) { tint -> PenToolGlyph(tool = DrawingTool.FOUNTAIN_PEN, tint = tint) }
-
-                            StudioToolButton(
-                                label = "Fosforlu",
-                                isSelected = activeDrawTool == DrawingTool.HIGHLIGHTER,
-                                accentColor = Color(0xFFFBC02D),
-                                onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
-                                        onTogglePenPanel(ActivePenPanel.NONE)
-                                    }
-                                    drawingController.selectTool(DrawingTool.HIGHLIGHTER)
-                                }
-                            ) { tint -> PenToolGlyph(tool = DrawingTool.HIGHLIGHTER, tint = tint) }
-
-                            StudioToolButton(
-                                label = "Teknik",
-                                isSelected = activeDrawTool == DrawingTool.TECHNICAL_PEN,
-                                accentColor = drawingController.penColor,
-                                onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
-                                        onTogglePenPanel(ActivePenPanel.NONE)
-                                    }
-                                    drawingController.selectTool(DrawingTool.TECHNICAL_PEN)
-                                }
-                            ) { tint -> PenToolGlyph(tool = DrawingTool.TECHNICAL_PEN, tint = tint) }
-
-                            StudioToolButton(
-                                label = "Alt Çizgi",
-                                isSelected = activeDrawTool == DrawingTool.UNDERLINE_MARKER,
-                                accentColor = drawingController.penColor,
-                                onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
-                                        onTogglePenPanel(ActivePenPanel.NONE)
-                                    }
-                                    drawingController.selectTool(DrawingTool.UNDERLINE_MARKER)
-                                }
-                            ) { tint -> PenToolGlyph(tool = DrawingTool.UNDERLINE_MARKER, tint = tint) }
+                            ) { tint -> PenToolGlyph(tool = currentPenTool, tint = tint) }
 
                             StudioToolButton(
                                 label = "Çizgi Sil",
                                 isSelected = activeDrawTool == DrawingTool.STROKE_ERASER,
                                 accentColor = Color(0xFFEF4444),
                                 onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                    if (activePenPanel == ActivePenPanel.SHAPES ||
+                                        activePenPanel == ActivePenPanel.LASSO ||
+                                        activePenPanel == ActivePenPanel.PEN_PACKAGES
+                                    ) {
                                         onTogglePenPanel(ActivePenPanel.NONE)
                                     }
                                     drawingController.selectTool(DrawingTool.STROKE_ERASER)
@@ -3823,7 +3784,10 @@ fun RichTextFormattingToolbar(
                                 isSelected = activeDrawTool == DrawingTool.AREA_ERASER,
                                 accentColor = Color(0xFFEF4444),
                                 onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.LASSO) {
+                                    if (activePenPanel == ActivePenPanel.SHAPES ||
+                                        activePenPanel == ActivePenPanel.LASSO ||
+                                        activePenPanel == ActivePenPanel.PEN_PACKAGES
+                                    ) {
                                         onTogglePenPanel(ActivePenPanel.NONE)
                                     }
                                     drawingController.selectTool(DrawingTool.AREA_ERASER)
@@ -3847,7 +3811,7 @@ fun RichTextFormattingToolbar(
                                 isSelected = activeDrawTool == DrawingTool.LASSO,
                                 accentColor = Color(0xFF0288D1),
                                 onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES) {
+                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.PEN_PACKAGES) {
                                         onTogglePenPanel(ActivePenPanel.NONE)
                                     }
                                     drawingController.selectTool(DrawingTool.LASSO)
@@ -3855,7 +3819,7 @@ fun RichTextFormattingToolbar(
                             ) { tint -> PenToolGlyph(tool = DrawingTool.LASSO, tint = tint) }
 
                             StudioToolButton(
-                                label = "Kalem",
+                                label = "Yalnızca Kalem",
                                 isSelected = drawingController.stylusOnlyMode,
                                 accentColor = Color(0xFF10B981),
                                 onClick = { drawingController.toggleStylusOnlyMode() }
@@ -4007,9 +3971,25 @@ private fun HorizontalToolbarSubPanels(
             HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.12f))
         }
     } else {
+        val showPenPackages = activePenPanel == ActivePenPanel.PEN_PACKAGES
         val showShapes = activePenPanel == ActivePenPanel.SHAPES || drawingController.activeTool.isShapeTool
         val showLasso = drawingController.activeTool == DrawingTool.LASSO
         val showSettings = activePenPanel == ActivePenPanel.SETTINGS
+
+        AnimatedVisibility(
+            visible = showPenPackages,
+            enter = expandVertically(expandFrom = expandOrigin) + fadeIn(),
+            exit = shrinkVertically(shrinkTowards = expandOrigin) + fadeOut()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                PenPackagePickerPanel(
+                    controller = drawingController,
+                    onDismiss = { onTogglePenPanel(ActivePenPanel.NONE) }
+                )
+                if (!expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+            }
+        }
 
         AnimatedVisibility(
             visible = showShapes,
@@ -4075,6 +4055,7 @@ private fun ToolbarModeChip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PenVerticalToolButton(
     isSelected: Boolean,
@@ -4082,6 +4063,7 @@ private fun PenVerticalToolButton(
     onSurfaceColor: Color,
     primaryColor: Color,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     iconContent: @Composable (tint: Color) -> Unit
 ) {
     val surfaceColor = MaterialTheme.colorScheme.surface
@@ -4095,14 +4077,29 @@ private fun PenVerticalToolButton(
     val contentTint = if (isSelected) effectiveAccent else onSurfaceColor.copy(alpha = 0.8f)
 
     Surface(
-        onClick = onClick,
         shape = RoundedCornerShape(8.dp),
         color = bgColor,
         border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, borderColor) else null,
-        modifier = Modifier.size(34.dp)
+        modifier = Modifier
+            .size(34.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
             iconContent(contentTint)
+            if (onLongClick != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(3.dp)
+                        .size(4.dp)
+                        .clip(CircleShape)
+                        .background(contentTint.copy(alpha = 0.7f))
+                )
+            }
         }
     }
 }
@@ -4687,184 +4684,14 @@ fun CustomColorPickerDialog(
     onDismissRequest: () -> Unit,
     onColorSelected: (Color) -> Unit
 ) {
-    var hue by remember { mutableFloatStateOf(0f) }
-    var saturation by remember { mutableFloatStateOf(0.85f) }
-    var value by remember { mutableFloatStateOf(0.9f) }
-
-    fun hsvToColor(h: Float, s: Float, v: Float): Color {
-        val hsv = floatArrayOf(h.coerceIn(0f, 360f), s.coerceIn(0f, 1f), v.coerceIn(0f, 1f))
-        return Color(android.graphics.Color.HSVToColor(hsv))
-    }
-
-    var selectedPreviewColor by remember {
-        mutableStateOf(if (isHighlightMode) initialColor.copy(alpha = highlightIntensity) else initialColor)
-    }
-
-    var hexText by remember {
-        mutableStateOf(NoteRichTextHelper.colorToHex(initialColor))
-    }
-
-    val updateColorFromHsv = {
-        val computed = hsvToColor(hue, saturation, value)
-        selectedPreviewColor = if (isHighlightMode) computed.copy(alpha = highlightIntensity) else computed
-        hexText = NoteRichTextHelper.colorToHex(computed)
-    }
-
-    val presetColors = listOf(
-        Color(0xFFE53935), Color(0xFF1E88E5), Color(0xFF00C853), Color(0xFFFF6D00),
-        Color(0xFFAA00FF), Color(0xFFFF4081), Color(0xFF00E5FF), Color(0xFFFFD600)
-    )
-
-    AlertDialog(
-        onDismissRequest = onDismissRequest,
-        title = {
-            Text(
-                text = if (isHighlightMode) "Özel Vurgu Rengi Oluştur" else "Özel Kalem Rengi Oluştur",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // Live Color Preview
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = selectedPreviewColor,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(54.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (isHighlightMode) "Vurgu Önizleme Metni" else "Yazı Rengi Önizlemesi",
-                            fontWeight = FontWeight.Bold,
-                            color = if (isHighlightMode) Color(0xFF212121) else Color.White,
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-
-                // Hue Slider
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Renk Tonu (Hue):", style = MaterialTheme.typography.labelSmall)
-                        Text("${hue.toInt()}°", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    }
-                    Slider(
-                        value = hue,
-                        onValueChange = {
-                            hue = it
-                            updateColorFromHsv()
-                        },
-                        valueRange = 0f..360f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = selectedPreviewColor,
-                            activeTrackColor = selectedPreviewColor
-                        )
-                    )
-                }
-
-                // Saturation Slider
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Canlılık (Doygunluk):", style = MaterialTheme.typography.labelSmall)
-                        Text("${(saturation * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    }
-                    Slider(
-                        value = saturation,
-                        onValueChange = {
-                            saturation = it
-                            updateColorFromHsv()
-                        },
-                        valueRange = 0f..1f
-                    )
-                }
-
-                // Brightness Slider
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Parlaklık:", style = MaterialTheme.typography.labelSmall)
-                        Text("${(value * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    }
-                    Slider(
-                        value = value,
-                        onValueChange = {
-                            value = it
-                            updateColorFromHsv()
-                        },
-                        valueRange = 0f..1f
-                    )
-                }
-
-                // Quick Presets
-                Text("Hazır Renkler:", style = MaterialTheme.typography.labelSmall)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    presetColors.forEach { preset ->
-                        Box(
-                            modifier = Modifier
-                                .size(28.dp)
-                                .clip(CircleShape)
-                                .background(if (isHighlightMode) preset.copy(alpha = highlightIntensity) else preset)
-                                .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f), CircleShape)
-                            .clickable {
-                                val finalColor = if (isHighlightMode) preset.copy(alpha = highlightIntensity) else preset
-                                selectedPreviewColor = finalColor
-                                hexText = NoteRichTextHelper.colorToHex(preset)
-                            }
-                        )
-                    }
-                }
-
-                // HEX input field
-                OutlinedTextField(
-                    value = hexText,
-                    onValueChange = { input ->
-                        hexText = input
-                        val parsed = NoteRichTextHelper.parseHexColor(input)
-                        if (parsed != null) {
-                            selectedPreviewColor = if (isHighlightMode) parsed.copy(alpha = 0.65f) else parsed
-                        }
-                    },
-                    label = { Text("HEX Kodu (Örn: #E91E63)", fontSize = 12.sp) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp)
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onColorSelected(selectedPreviewColor)
-                }
-            ) {
-                Text("Bu Rengi Seç")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismissRequest) {
-                Text("İptal")
-            }
-        }
+    PenCustomColorDialog(
+        initialColor = initialColor,
+        onDismiss = onDismissRequest,
+        onColorSelected = onColorSelected,
+        title = if (isHighlightMode) "Özel Vurgu Rengi Oluştur" else "Özel Renk Oluştur",
+        confirmLabel = "Bu Rengi Seç",
+        isHighlightMode = isHighlightMode,
+        highlightIntensity = highlightIntensity
     )
 }
 

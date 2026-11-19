@@ -98,6 +98,7 @@ fun ZenRoomScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text("Zen Odası & Zihin Tazeleyici") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {

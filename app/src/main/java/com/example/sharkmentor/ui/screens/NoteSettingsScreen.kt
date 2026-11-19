@@ -1,0 +1,321 @@
+package com.example.sharkmentor.ui.screens
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.Gesture
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.sharkmentor.ui.screens.notes.drawing.NoteDrawingPreferences
+import kotlin.math.PI
+import kotlin.math.roundToInt
+import kotlin.math.sin
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NoteSettingsScreen(
+    onBackClick: () -> Unit
+) {
+    val context = LocalContext.current
+    LaunchedEffect(context) {
+        NoteDrawingPreferences.ensureLoaded(context)
+    }
+
+    val pressureEnabled by NoteDrawingPreferences.pressureSensitivityEnabled.collectAsStateWithLifecycle()
+    val pressureStrength by NoteDrawingPreferences.pressureSensitivityStrength.collectAsStateWithLifecycle()
+    val scribbleEnabled by NoteDrawingPreferences.scribbleToEraseEnabled.collectAsStateWithLifecycle()
+    val autoShapeEnabled by NoteDrawingPreferences.autoShapeRecognitionEnabled.collectAsStateWithLifecycle()
+
+    val colorScheme = MaterialTheme.colorScheme
+    val primaryColor = colorScheme.primary
+    val onSurfaceColor = colorScheme.onSurface
+
+    val strengthLabel = when {
+        pressureStrength < 0.85f -> "Düşük"
+        pressureStrength < 1.12f -> "Normal"
+        pressureStrength < 1.45f -> "Yüksek"
+        else -> "Çok Yüksek"
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                expandedHeight = 50.dp,
+                title = { Text("Not Özellikleri") },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Geri")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Kalem ve Çizim Davranışı",
+                style = MaterialTheme.typography.labelMedium,
+                color = primaryColor
+            )
+
+            // 1. Basınç Hassasiyeti
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    NoteFeatureSwitchHeader(
+                        icon = Icons.Default.Brush,
+                        title = "Basınç Hassasiyeti",
+                        subtitle = "Kalem baskısına ve çizim hızına göre çizgi kalınlığını dinamik olarak ayarlar.",
+                        checked = pressureEnabled,
+                        onCheckedChange = { enabled ->
+                            NoteDrawingPreferences.setPressureSensitivityEnabled(context, enabled)
+                        }
+                    )
+
+                    AnimatedVisibility(visible = pressureEnabled) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            HorizontalDivider(color = colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Hassasiyet Seviyesi",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = onSurfaceColor.copy(alpha = 0.85f)
+                                )
+                                Text(
+                                    text = "$strengthLabel (%${(pressureStrength * 100).roundToInt()})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = primaryColor
+                                )
+                            }
+
+                            Slider(
+                                value = pressureStrength,
+                                onValueChange = { value ->
+                                    NoteDrawingPreferences.setPressureSensitivityStrength(context, value)
+                                },
+                                valueRange = 0.6f..1.8f,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = primaryColor,
+                                    activeTrackColor = primaryColor
+                                )
+                            )
+
+                            // Live stroke taper preview
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(42.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colorScheme.surface)
+                                    .border(
+                                        1.dp,
+                                        colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Canvas(modifier = Modifier.fillMaxSize()) {
+                                    val segments = 32
+                                    val startX = 6f
+                                    val endX = (size.width - 6f).coerceAtLeast(startX + 12f)
+                                    val midY = size.height * 0.5f
+                                    val amp = (size.height * 0.28f).coerceAtLeast(3f)
+                                    val baseW = 5.5f
+
+                                    var prevX = startX
+                                    var prevY = midY
+                                    for (i in 1..segments) {
+                                        val t = i.toFloat() / segments.toFloat()
+                                        val x = startX + (endX - startX) * t
+                                        val y = midY - sin(t * PI.toFloat() * 2f) * amp
+                                        val bell = sin(t * PI.toFloat()).coerceIn(0.05f, 1.0f)
+                                        val modulated = (0.85f + (bell - 0.5f) * 1.15f * pressureStrength)
+                                            .coerceIn(0.08f, 1.95f)
+                                        val segW = (baseW * (0.16f + 1.35f * modulated))
+                                            .coerceIn(1.2f, size.height * 0.85f)
+                                        drawLine(
+                                            color = primaryColor,
+                                            start = Offset(prevX, prevY),
+                                            end = Offset(x, y),
+                                            strokeWidth = segW,
+                                            cap = StrokeCap.Round
+                                        )
+                                        prevX = x
+                                        prevY = y
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Karalayarak Silme
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(modifier = Modifier.padding(14.dp)) {
+                    NoteFeatureSwitchHeader(
+                        icon = Icons.Default.Gesture,
+                        title = "Karalayarak Silme",
+                        subtitle = "Çizim üzerinde hızlı zikzak karalayarak temas eden çizgileri silgiye geçmeden siler.",
+                        checked = scribbleEnabled,
+                        onCheckedChange = { enabled ->
+                            NoteDrawingPreferences.setScribbleToEraseEnabled(context, enabled)
+                        }
+                    )
+                }
+            }
+
+            // 3. Otomatik Şekil Algılama
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(modifier = Modifier.padding(14.dp)) {
+                    NoteFeatureSwitchHeader(
+                        icon = Icons.Default.AutoFixHigh,
+                        title = "Otomatik Şekil Algılama",
+                        subtitle = "Serbest elle çizilen eğri çizgi, üçgen, dikdörtgen ve daireleri otomatik olarak düzgünleştirir.",
+                        checked = autoShapeEnabled,
+                        onCheckedChange = { enabled ->
+                            NoteDrawingPreferences.setAutoShapeRecognitionEnabled(context, enabled)
+                        }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "Bu ayarlar hem Notlar hem de PDF okuyucu çizim araçlarında anlık olarak geçerlidir. Kalem paketlerini (Dolma, Tükenmez, Kurşun, Fırça, Fosforlu) değiştirmek için araç çubuğundaki kalem simgesine uzun basabilirsiniz.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colorScheme.onSurfaceVariant,
+                lineHeight = 18.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun NoteFeatureSwitchHeader(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = colorScheme.primary,
+            modifier = Modifier.size(22.dp)
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = colorScheme.onSurfaceVariant,
+                lineHeight = 16.sp
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = colorScheme.primary
+            )
+        )
+    }
+}

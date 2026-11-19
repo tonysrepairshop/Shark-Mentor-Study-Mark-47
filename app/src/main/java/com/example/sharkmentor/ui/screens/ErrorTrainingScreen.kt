@@ -112,6 +112,7 @@ fun ErrorTrainingScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = {
                     val activeState = uiState as? TrainingUiState.Active
                     val resolvedTitle = when {

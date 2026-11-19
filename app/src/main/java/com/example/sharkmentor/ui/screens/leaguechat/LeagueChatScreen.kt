@@ -285,6 +285,7 @@ fun LeagueChatScreen(
             containerColor = Color.Transparent,
             topBar = {
                 TopAppBar(
+                    expandedHeight = 52.dp,
                     title = {
                         when (uiState.mode) {
                             LeagueChatMode.GROUP_CHAT -> {

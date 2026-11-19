@@ -8,9 +8,13 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +35,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -43,8 +48,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
@@ -60,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -68,10 +72,17 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -92,9 +103,8 @@ val STUDIO_COLOR_PALETTE = listOf(
 
 /**
  * Full-featured modular Drawing & Annotation Studio Toolbar.
- * Supports Fountain Pen, Highlighter, Technical Pen, Underline, Stroke/Area Erasers,
- * 5 Geometric Shapes (Line, Arrow, Rectangle, Ellipse, Triangle), Lasso (Move/Cut/Copy/Paste/Delete/Recolor),
- * and 60-step Undo/Redo.
+ * Supports 5 Pen Packages via long-press (Fountain, Ballpoint, Pencil, Brush, Highlighter),
+ * Stroke/Area Erasers, 5 Geometric Shapes, Lasso, and 60-step Undo/Redo.
  */
 @Composable
 fun DrawingStudioBar(
@@ -107,11 +117,14 @@ fun DrawingStudioBar(
     val surfaceColor = colorScheme.surface
     val onSurfaceColor = colorScheme.onSurface
     val primaryColor = colorScheme.primary
+    val haptic = LocalHapticFeedback.current
 
     var showStrokeSettings by remember { mutableStateOf(false) }
     var showShapesRow by remember { mutableStateOf(false) }
+    var showPenPackages by remember { mutableStateOf(false) }
 
     val activeTool = controller.activeTool
+    val currentPenTool = if (activeTool.isPenTool) activeTool else controller.lastSelectedPenTool
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -122,6 +135,21 @@ fun DrawingStudioBar(
         border = BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.12f))
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
+            // 0. Expandable Pen Packages Picker Row (opened via long-press on Pen)
+            AnimatedVisibility(
+                visible = showPenPackages,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    PenPackagePickerPanel(
+                        controller = controller,
+                        onDismiss = { showPenPackages = false }
+                    )
+                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                }
+            }
+
             // 1. Expandable Shape Picker Row
             AnimatedVisibility(
                 visible = showShapesRow || activeTool.isShapeTool,
@@ -146,7 +174,7 @@ fun DrawingStudioBar(
                 }
             }
 
-            // 3. Expandable Color, Thickness & Opacity Panel
+            // 3. Expandable Color, Thickness & (Highlighter-only) Opacity Panel
             AnimatedVisibility(
                 visible = showStrokeSettings,
                 enter = expandVertically() + fadeIn(),
@@ -174,62 +202,30 @@ fun DrawingStudioBar(
                     accentColor = primaryColor,
                     onClick = {
                         showShapesRow = false
+                        showPenPackages = false
                         controller.selectTool(DrawingTool.NONE)
                     }
                 ) { tint ->
                     PenToolGlyph(tool = DrawingTool.NONE, tint = tint)
                 }
 
-                // Fountain Pen
+                // Unified Pen Tool Button (Tap: select active/last pen, Long-press: Pen Packages)
                 StudioToolButton(
-                    label = "Dolma",
-                    isSelected = activeTool == DrawingTool.FOUNTAIN_PEN,
-                    accentColor = controller.penColor,
+                    label = currentPenTool.shortLabel,
+                    isSelected = activeTool.isPenTool || showPenPackages,
+                    accentColor = if (currentPenTool == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else controller.penColor,
                     onClick = {
                         showShapesRow = false
-                        controller.selectTool(DrawingTool.FOUNTAIN_PEN)
-                    }
-                ) { tint ->
-                    PenToolGlyph(tool = DrawingTool.FOUNTAIN_PEN, tint = tint)
-                }
-
-                // Highlighter
-                StudioToolButton(
-                    label = "Fosforlu",
-                    isSelected = activeTool == DrawingTool.HIGHLIGHTER,
-                    accentColor = Color(0xFFFBC02D),
-                    onClick = {
+                        showPenPackages = false
+                        controller.selectActiveOrLastPen()
+                    },
+                    onLongClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         showShapesRow = false
-                        controller.selectTool(DrawingTool.HIGHLIGHTER)
+                        showPenPackages = !showPenPackages
                     }
                 ) { tint ->
-                    PenToolGlyph(tool = DrawingTool.HIGHLIGHTER, tint = tint)
-                }
-
-                // Technical Fine Pen
-                StudioToolButton(
-                    label = "Teknik",
-                    isSelected = activeTool == DrawingTool.TECHNICAL_PEN,
-                    accentColor = controller.penColor,
-                    onClick = {
-                        showShapesRow = false
-                        controller.selectTool(DrawingTool.TECHNICAL_PEN)
-                    }
-                ) { tint ->
-                    PenToolGlyph(tool = DrawingTool.TECHNICAL_PEN, tint = tint)
-                }
-
-                // Underline Marker
-                StudioToolButton(
-                    label = "Alt Çizgi",
-                    isSelected = activeTool == DrawingTool.UNDERLINE_MARKER,
-                    accentColor = controller.penColor,
-                    onClick = {
-                        showShapesRow = false
-                        controller.selectTool(DrawingTool.UNDERLINE_MARKER)
-                    }
-                ) { tint ->
-                    PenToolGlyph(tool = DrawingTool.UNDERLINE_MARKER, tint = tint)
+                    PenToolGlyph(tool = currentPenTool, tint = tint)
                 }
 
                 // Stroke Eraser
@@ -239,6 +235,7 @@ fun DrawingStudioBar(
                     accentColor = Color(0xFFEF4444),
                     onClick = {
                         showShapesRow = false
+                        showPenPackages = false
                         controller.selectTool(DrawingTool.STROKE_ERASER)
                     }
                 ) { tint ->
@@ -252,6 +249,7 @@ fun DrawingStudioBar(
                     accentColor = Color(0xFFEF4444),
                     onClick = {
                         showShapesRow = false
+                        showPenPackages = false
                         controller.selectTool(DrawingTool.AREA_ERASER)
                     }
                 ) { tint ->
@@ -264,6 +262,7 @@ fun DrawingStudioBar(
                     isSelected = activeTool.isShapeTool || showShapesRow,
                     accentColor = primaryColor,
                     onClick = {
+                        showPenPackages = false
                         showShapesRow = !showShapesRow
                         if (!activeTool.isShapeTool && showShapesRow) {
                             controller.selectTool(DrawingTool.SHAPE_RECTANGLE)
@@ -280,6 +279,7 @@ fun DrawingStudioBar(
                     accentColor = Color(0xFF0288D1),
                     onClick = {
                         showShapesRow = false
+                        showPenPackages = false
                         controller.selectTool(DrawingTool.LASSO)
                     }
                 ) { tint ->
@@ -288,7 +288,7 @@ fun DrawingStudioBar(
 
                 // Stylus-Only / Palm Rejection Toggle
                 StudioToolButton(
-                    label = "Kalem",
+                    label = "Yalnızca Kalem",
                     isSelected = controller.stylusOnlyMode,
                     accentColor = Color(0xFF10B981),
                     onClick = { controller.toggleStylusOnlyMode() }
@@ -372,6 +372,99 @@ fun DrawingStudioBar(
                             tint = onSurfaceColor.copy(alpha = 0.65f),
                             modifier = Modifier.size(17.dp)
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PenPackagePickerPanel(
+    controller: DrawingController,
+    modifier: Modifier = Modifier,
+    onDismiss: (() -> Unit)? = null
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val onSurfaceColor = colorScheme.onSurface
+    val primaryColor = colorScheme.primary
+    val activeTool = controller.activeTool
+    val currentPen = if (activeTool.isPenTool) activeTool else controller.lastSelectedPenTool
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Kalem Paketleri",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = onSurfaceColor
+            )
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Kapat",
+                        tint = onSurfaceColor.copy(alpha = 0.6f),
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            DrawingTool.PEN_PACKAGES.forEach { pkg ->
+                val isSelected = currentPen == pkg && activeTool.isPenTool
+                val accent = if (pkg == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else primaryColor
+                Surface(
+                    onClick = {
+                        controller.selectTool(pkg)
+                        onDismiss?.invoke()
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSelected) accent.copy(alpha = 0.16f) else onSurfaceColor.copy(alpha = 0.04f),
+                    border = BorderStroke(
+                        width = if (isSelected) 1.5.dp else 1.dp,
+                        color = if (isSelected) accent else onSurfaceColor.copy(alpha = 0.14f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        PenToolGlyph(
+                            tool = pkg,
+                            tint = if (isSelected) accent else onSurfaceColor.copy(alpha = 0.85f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Column {
+                            Text(
+                                text = pkg.displayName,
+                                fontSize = 11.5.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                color = if (isSelected) accent else onSurfaceColor
+                            )
+                            Text(
+                                text = pkg.packageDescription,
+                                fontSize = 9.5.sp,
+                                color = onSurfaceColor.copy(alpha = 0.6f)
+                            )
+                        }
                     }
                 }
             }
@@ -678,7 +771,7 @@ fun PenStrokeSettingsPanel(
             )
         }
 
-        if (!activeTool.isEraserTool) {
+        if (activeTool == DrawingTool.HIGHLIGHTER) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -693,7 +786,7 @@ fun PenStrokeSettingsPanel(
                 Slider(
                     value = controller.alpha,
                     onValueChange = { controller.updateAlpha(it) },
-                    valueRange = 0.15f..1.0f,
+                    valueRange = 0.15f..0.85f,
                     modifier = Modifier
                         .weight(1f)
                         .height(28.dp),
@@ -710,93 +803,134 @@ fun PenStrokeSettingsPanel(
                     modifier = Modifier.width(38.dp)
                 )
             }
+        }
+    }
+}
 
-            // Basınç Hassasiyeti (Pressure Sensitivity) toggle + live tapered stroke preview
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Column(modifier = Modifier.width(112.dp)) {
-                    Text(
-                        text = "Basınç Hassasiyeti",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = onSurfaceColor
-                    )
-                    Text(
-                        text = if (controller.pressureSensitivityEnabled) "Yüksek (Kalem/Hız)" else "Sabit Çizgi",
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = onSurfaceColor.copy(alpha = 0.6f)
-                    )
-                }
-
-                // Live pressure-tapered stroke preview canvas
-                val previewColor = controller.penColor.copy(
-                    alpha = controller.alpha.coerceIn(0.2f, 1.0f)
+@Composable
+fun HsvColorWheel(
+    hue: Float,
+    saturation: Float,
+    brightness: Float,
+    onHueSaturationChanged: (hue: Float, saturation: Float) -> Unit,
+    modifier: Modifier = Modifier,
+    wheelSize: Dp = 208.dp
+) {
+    val latestCallback = androidx.compose.runtime.rememberUpdatedState(onHueSaturationChanged)
+    val wheelColors = remember {
+        listOf(
+            Color(0xFFFF0000), // 0 deg - Red
+            Color(0xFFFFFF00), // 60 deg - Yellow
+            Color(0xFF00FF00), // 120 deg - Green
+            Color(0xFF00FFFF), // 180 deg - Cyan
+            Color(0xFF0000FF), // 240 deg - Blue
+            Color(0xFFFF00FF), // 300 deg - Magenta
+            Color(0xFFFF0000)  // 360 deg - Red
+        )
+    }
+    val selectedColor = remember(hue, saturation, brightness) {
+        Color(
+            AndroidColor.HSVToColor(
+                floatArrayOf(
+                    hue.coerceIn(0f, 360f),
+                    saturation.coerceIn(0f, 1f),
+                    brightness.coerceIn(0f, 1f)
                 )
-                val basePreviewWidth = controller.strokeWidth.coerceIn(1.5f, 28f)
-                val isPressureOn = controller.pressureSensitivityEnabled
+            )
+        )
+    }
+    val borderColor = MaterialTheme.colorScheme.outlineVariant
 
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(30.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(onSurfaceColor.copy(alpha = 0.05f))
-                        .border(1.dp, onSurfaceColor.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Canvas(modifier = Modifier.fillMaxWidth().height(22.dp)) {
-                        val segments = 24
-                        val startX = 6f
-                        val endX = (size.width - 6f).coerceAtLeast(startX + 10f)
-                        val midY = size.height / 2f
-                        val amplitude = (size.height * 0.26f).coerceAtLeast(2f)
+    fun updateFromPointer(pos: Offset, width: Float, height: Float) {
+        val cx = width * 0.5f
+        val cy = height * 0.5f
+        val radius = (minOf(width, height) * 0.5f).coerceAtLeast(1f)
+        val dx = pos.x - cx
+        val dy = pos.y - cy
+        val angleDeg = ((Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()) + 360f) % 360f
+        val sat = (hypot(dx, dy) / radius).coerceIn(0f, 1f)
+        latestCallback.value(angleDeg, sat)
+    }
 
-                        var prevX = startX
-                        var prevY = midY
-                        for (i in 1..segments) {
-                            val t = i.toFloat() / segments.toFloat()
-                            val x = startX + (endX - startX) * t
-                            val y = midY - sin(t * Math.PI.toFloat() * 2f) * amplitude
-                            val pressureFactor = if (isPressureOn) {
-                                // Smooth expressive taper: fine nib ends, fuller center
-                                val bell = sin(t * Math.PI.toFloat()).coerceIn(0.05f, 1.0f)
-                                0.16f + 1.52f * bell
-                            } else {
-                                1.0f
-                            }
-                            val segWidth = (basePreviewWidth * pressureFactor).coerceIn(1.0f, size.height * 0.90f)
-                            drawLine(
-                                color = previewColor,
-                                start = Offset(prevX, prevY),
-                                end = Offset(x, y),
-                                strokeWidth = segWidth,
-                                cap = StrokeCap.Round
-                            )
-                            prevX = x
-                            prevY = y
-                        }
+    Canvas(
+        modifier = modifier
+            .size(wheelSize)
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    updateFromPointer(down.position, size.width.toFloat(), size.height.toFloat())
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                        if (change == null || !change.pressed) break
+                        change.consume()
+                        updateFromPointer(change.position, size.width.toFloat(), size.height.toFloat())
                     }
                 }
-
-                Switch(
-                    checked = controller.pressureSensitivityEnabled,
-                    onCheckedChange = { enabled ->
-                        controller.updatePressureSensitivity(enabled, context)
-                    },
-                    modifier = Modifier.height(26.dp),
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = primaryColor
-                    )
-                )
             }
+    ) {
+        val radius = size.minDimension * 0.5f - 6.dp.toPx()
+        val center = Offset(size.width * 0.5f, size.height * 0.5f)
+
+        // 1. Hue sweep gradient circle
+        drawCircle(
+            brush = Brush.sweepGradient(colors = wheelColors, center = center),
+            radius = radius,
+            center = center
+        )
+
+        // 2. White-to-transparent radial saturation gradient
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(Color.White, Color.Transparent),
+                center = center,
+                radius = radius
+            ),
+            radius = radius,
+            center = center
+        )
+
+        // 3. Brightness darkening overlay
+        val darkness = (1f - brightness.coerceIn(0f, 1f)).coerceIn(0f, 0.94f)
+        if (darkness > 0.005f) {
+            drawCircle(
+                color = Color.Black.copy(alpha = darkness),
+                radius = radius,
+                center = center
+            )
         }
+
+        // 4. Crisp outer ring
+        drawCircle(
+            color = borderColor.copy(alpha = 0.65f),
+            radius = radius,
+            center = center,
+            style = Stroke(width = 1.5.dp.toPx())
+        )
+
+        // 5. Reticle thumb at active (hue, saturation)
+        val angleRad = Math.toRadians(hue.coerceIn(0f, 360f).toDouble())
+        val dist = saturation.coerceIn(0f, 1f) * radius
+        val thumbCenter = Offset(
+            x = center.x + (cos(angleRad) * dist).toFloat(),
+            y = center.y + (sin(angleRad) * dist).toFloat()
+        )
+        drawCircle(
+            color = Color.Black.copy(alpha = 0.30f),
+            radius = 12.dp.toPx(),
+            center = thumbCenter
+        )
+        drawCircle(
+            color = Color.White,
+            radius = 10.5.dp.toPx(),
+            center = thumbCenter
+        )
+        drawCircle(
+            color = selectedColor,
+            radius = 7.5.dp.toPx(),
+            center = thumbCenter
+        )
     }
 }
 
@@ -804,7 +938,11 @@ fun PenStrokeSettingsPanel(
 fun PenCustomColorDialog(
     initialColor: Color,
     onDismiss: () -> Unit,
-    onColorSelected: (Color) -> Unit
+    onColorSelected: (Color) -> Unit,
+    title: String = "Özel Renk Oluştur",
+    confirmLabel: String = "Rengi Ekle",
+    isHighlightMode: Boolean = false,
+    highlightIntensity: Float = 0.60f
 ) {
     val initialHsv = remember(initialColor) {
         FloatArray(3).apply {
@@ -812,7 +950,9 @@ fun PenCustomColorDialog(
         }
     }
     var hue by remember(initialColor) { mutableFloatStateOf(initialHsv[0].coerceIn(0f, 360f)) }
-    var saturation by remember(initialColor) { mutableFloatStateOf(initialHsv[1].coerceIn(0f, 1f)) }
+    var saturation by remember(initialColor) {
+        mutableFloatStateOf(initialHsv[1].coerceIn(0f, 1f).let { if (it < 0.01f && initialHsv[2] < 0.01f) 0f else it })
+    }
     var brightness by remember(initialColor) { mutableFloatStateOf(initialHsv[2].coerceIn(0f, 1f)) }
 
     fun toHexString(color: Color): String {
@@ -820,125 +960,175 @@ fun PenCustomColorDialog(
         return String.format("#%06X", rgb)
     }
 
-    var previewColor by remember(initialColor) { mutableStateOf(initialColor.copy(alpha = 1f)) }
+    var solidColor by remember(initialColor) { mutableStateOf(initialColor.copy(alpha = 1f)) }
     var hexInput by remember(initialColor) { mutableStateOf(toHexString(initialColor)) }
 
     fun syncFromHsv(h: Float, s: Float, v: Float) {
-        val computed = Color(AndroidColor.HSVToColor(floatArrayOf(h.coerceIn(0f, 360f), s.coerceIn(0f, 1f), v.coerceIn(0f, 1f))))
-        previewColor = computed
+        val computed = Color(
+            AndroidColor.HSVToColor(
+                floatArrayOf(h.coerceIn(0f, 360f), s.coerceIn(0f, 1f), v.coerceIn(0f, 1f))
+            )
+        )
+        solidColor = computed
         hexInput = toHexString(computed)
     }
 
-    val presets = listOf(
-        Color(0xFF0F172A), Color(0xFF1E88E5), Color(0xFFE53935), Color(0xFF10B981),
-        Color(0xFFF59E0B), Color(0xFF8B5CF6), Color(0xFFEC4899), Color(0xFF06B6D4)
-    )
+    val previewDisplayColor = if (isHighlightMode) {
+        solidColor.copy(alpha = highlightIntensity.coerceIn(0.15f, 0.90f))
+    } else {
+        solidColor
+    }
+    val fullBrightnessColor = remember(hue, saturation) {
+        Color(AndroidColor.HSVToColor(floatArrayOf(hue.coerceIn(0f, 360f), saturation.coerceIn(0f, 1f), 1f)))
+    }
+
+    val presets = remember {
+        listOf(
+            Color(0xFF0F172A), Color(0xFF1E88E5), Color(0xFFE53935), Color(0xFF10B981),
+            Color(0xFFF59E0B), Color(0xFF8B5CF6), Color(0xFFEC4899), Color(0xFF06B6D4)
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(
-                text = "Özel Kalem Rengi Oluştur",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = title,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = previewDisplayColor,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f))
+                ) {
+                    Text(
+                        text = hexInput,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isHighlightMode || solidColor.luminance() > 0.52f) Color(0xFF0F172A) else Color.White,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
         },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = previewColor,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
+                // Modern Interactive Color Wheel
+                HsvColorWheel(
+                    hue = hue,
+                    saturation = saturation,
+                    brightness = brightness,
+                    onHueSaturationChanged = { newH, newS ->
+                        hue = newH
+                        saturation = newS
+                        syncFromHsv(hue, saturation, brightness)
+                    },
+                    wheelSize = 208.dp
+                )
+
+                // Modern Brightness Gradient Bar
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Text(
-                            text = hexInput,
-                            fontWeight = FontWeight.Bold,
-                            color = if (previewColor.luminance() > 0.5f) Color(0xFF0F172A) else Color.White,
-                            fontSize = 14.sp
+                            text = "Parlaklık",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "%${(brightness * 100).roundToInt()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(12.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.horizontalGradient(
+                                        colors = listOf(Color(0xFF09090B), fullBrightnessColor)
+                                    )
+                                )
+                                .border(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+                                    CircleShape
+                                )
+                        )
+                        Slider(
+                            value = brightness,
+                            onValueChange = {
+                                brightness = it
+                                syncFromHsv(hue, saturation, brightness)
+                            },
+                            valueRange = 0f..1f,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = SliderDefaults.colors(
+                                thumbColor = solidColor,
+                                activeTrackColor = Color.Transparent,
+                                inactiveTrackColor = Color.Transparent
+                            )
                         )
                     }
                 }
 
-                Column {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Renk Tonu", style = MaterialTheme.typography.labelSmall)
-                        Text("${hue.roundToInt()}°", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    }
-                    Slider(
-                        value = hue,
-                        onValueChange = {
-                            hue = it
-                            syncFromHsv(hue, saturation, brightness)
-                        },
-                        valueRange = 0f..360f
-                    )
-                }
-
-                Column {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Doygunluk", style = MaterialTheme.typography.labelSmall)
-                        Text("%${(saturation * 100).roundToInt()}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    }
-                    Slider(
-                        value = saturation,
-                        onValueChange = {
-                            saturation = it
-                            syncFromHsv(hue, saturation, brightness)
-                        },
-                        valueRange = 0f..1f
-                    )
-                }
-
-                Column {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Parlaklık", style = MaterialTheme.typography.labelSmall)
-                        Text("%${(brightness * 100).roundToInt()}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    }
-                    Slider(
-                        value = brightness,
-                        onValueChange = {
-                            brightness = it
-                            syncFromHsv(hue, saturation, brightness)
-                        },
-                        valueRange = 0f..1f
-                    )
-                }
-
+                // Quick Preset Dots
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     presets.forEach { preset ->
+                        val isMatch = preset.toArgb() == solidColor.toArgb()
                         Box(
                             modifier = Modifier
-                                .size(26.dp)
+                                .size(if (isMatch) 28.dp else 24.dp)
                                 .clip(CircleShape)
-                                .background(preset)
-                                .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f), CircleShape)
+                                .background(if (isHighlightMode) preset.copy(alpha = highlightIntensity) else preset)
+                                .border(
+                                    width = if (isMatch) 2.dp else 1.dp,
+                                    color = if (isMatch) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                                    shape = CircleShape
+                                )
                                 .clickable {
                                     val hsv = FloatArray(3)
                                     AndroidColor.colorToHSV(preset.toArgb(), hsv)
                                     hue = hsv[0]
                                     saturation = hsv[1]
                                     brightness = hsv[2]
-                                    previewColor = preset
+                                    solidColor = preset
                                     hexInput = toHexString(preset)
                                 }
                         )
                     }
                 }
 
+                // Compact HEX Code Input
                 OutlinedTextField(
                     value = hexInput,
                     onValueChange = { raw ->
@@ -952,7 +1142,7 @@ fun PenCustomColorDialog(
                                 hue = hsv[0]
                                 saturation = hsv[1]
                                 brightness = hsv[2]
-                                previewColor = parsed.copy(alpha = 1f)
+                                solidColor = parsed.copy(alpha = 1f)
                             }
                         }
                     },
@@ -964,8 +1154,8 @@ fun PenCustomColorDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onColorSelected(previewColor) }) {
-                Text("Rengi Ekle")
+            Button(onClick = { onColorSelected(previewDisplayColor) }) {
+                Text(confirmLabel)
             }
         },
         dismissButton = {
@@ -996,12 +1186,80 @@ fun PenToolGlyph(
             }
         }
         tool == DrawingTool.FOUNTAIN_PEN -> {
+            Canvas(modifier = modifier) {
+                val nib = Path().apply {
+                    moveTo(size.width * 0.16f, size.height * 0.84f)
+                    lineTo(size.width * 0.34f, size.height * 0.44f)
+                    lineTo(size.width * 0.64f, size.height * 0.16f)
+                    lineTo(size.width * 0.84f, size.height * 0.36f)
+                    lineTo(size.width * 0.56f, size.height * 0.66f)
+                    close()
+                }
+                drawPath(nib, color = tint, style = Stroke(width = 1.6.dp.toPx(), join = StrokeJoin.Round))
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.16f, size.height * 0.84f),
+                    end = Offset(size.width * 0.48f, size.height * 0.52f),
+                    strokeWidth = 1.3.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawCircle(
+                    color = tint,
+                    radius = 1.3.dp.toPx(),
+                    center = Offset(size.width * 0.50f, size.height * 0.50f)
+                )
+            }
+        }
+        tool == DrawingTool.BALLPOINT_PEN -> {
+            Canvas(modifier = modifier) {
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.22f, size.height * 0.78f),
+                    end = Offset(size.width * 0.74f, size.height * 0.26f),
+                    strokeWidth = 2.4.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.74f, size.height * 0.26f),
+                    end = Offset(size.width * 0.86f, size.height * 0.14f),
+                    strokeWidth = 1.5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawCircle(
+                    color = tint,
+                    radius = 1.4.dp.toPx(),
+                    center = Offset(size.width * 0.17f, size.height * 0.83f)
+                )
+            }
+        }
+        tool == DrawingTool.PENCIL -> {
             Icon(
                 imageVector = Icons.Default.Edit,
-                contentDescription = "Dolma Kalem",
+                contentDescription = "Kurşun Kalem",
                 tint = tint,
                 modifier = modifier
             )
+        }
+        tool == DrawingTool.BRUSH_PEN -> {
+            Canvas(modifier = modifier) {
+                // Handle shaft
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.48f, size.height * 0.52f),
+                    end = Offset(size.width * 0.84f, size.height * 0.16f),
+                    strokeWidth = 2.4.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                // Tapered brush bristle belly
+                val bristles = Path().apply {
+                    moveTo(size.width * 0.46f, size.height * 0.46f)
+                    quadraticTo(size.width * 0.22f, size.height * 0.48f, size.width * 0.14f, size.height * 0.86f)
+                    quadraticTo(size.width * 0.52f, size.height * 0.78f, size.width * 0.54f, size.height * 0.54f)
+                    close()
+                }
+                drawPath(bristles, color = tint)
+            }
         }
         tool == DrawingTool.HIGHLIGHTER -> {
             Canvas(modifier = modifier) {
@@ -1184,12 +1442,14 @@ fun PenRedoGlyph(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun StudioToolButton(
     label: String,
     isSelected: Boolean,
     accentColor: Color,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     iconContent: @Composable (tint: Color) -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -1205,10 +1465,15 @@ fun StudioToolButton(
     val contentTint = if (isSelected) effectiveAccent else onSurface.copy(alpha = 0.8f)
 
     Surface(
-        onClick = onClick,
         shape = RoundedCornerShape(10.dp),
         color = bgColor,
-        border = BorderStroke(1.dp, borderColor)
+        border = BorderStroke(1.dp, borderColor),
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
@@ -1222,6 +1487,14 @@ fun StudioToolButton(
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                 color = contentTint
             )
+            if (onLongClick != null) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Kalem Paketleri için uzun basın",
+                    tint = contentTint.copy(alpha = 0.72f),
+                    modifier = Modifier.size(13.dp)
+                )
+            }
         }
     }
 }

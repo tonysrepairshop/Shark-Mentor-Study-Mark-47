@@ -66,6 +66,7 @@ fun OnboardingScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text("SharkMentor'a Hoş Geldiniz") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background

@@ -22,13 +22,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PersonOff
 import androidx.compose.material.icons.filled.SelfImprovement
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,7 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.data.AppThemeMode
 import com.example.sharkmentor.core.data.ThemePalette
@@ -64,6 +64,7 @@ import kotlinx.coroutines.withContext
 fun SettingsScreen(
     onBackClick: () -> Unit,
     onOpenAiSettings: () -> Unit = {},
+    onOpenNoteSettings: () -> Unit = {},
     onOpenAppBlocker: () -> Unit,
     onOpenAnalysis: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -141,47 +142,6 @@ fun SettingsScreen(
     val themePrefs = remember { ThemePreferences.instance }
     val themeMode by themePrefs.themeMode.collectAsStateWithLifecycle()
     val currentPalette by themePrefs.palette.collectAsStateWithLifecycle()
-
-    val userAiPrefs = remember { UserAiPreferences.initialize(context) }
-    val savedGeminiKeys by userAiPrefs.userGeminiKeys.collectAsStateWithLifecycle()
-    val savedGeminiModel by userAiPrefs.selectedUserGeminiModel.collectAsStateWithLifecycle()
-    val savedDeepSeekKey by userAiPrefs.userDeepSeekKey.collectAsStateWithLifecycle()
-    val savedDeepSeekModel by userAiPrefs.selectedDeepSeekModel.collectAsStateWithLifecycle()
-    val savedKimiKey by userAiPrefs.userKimiKey.collectAsStateWithLifecycle()
-    val savedKimiModel by userAiPrefs.selectedKimiModel.collectAsStateWithLifecycle()
-    val savedClaudeKey by userAiPrefs.userClaudeKey.collectAsStateWithLifecycle()
-    val savedClaudeModel by userAiPrefs.selectedClaudeModel.collectAsStateWithLifecycle()
-    val savedOpenAiKey by userAiPrefs.userOpenAiKey.collectAsStateWithLifecycle()
-    val savedOpenAiModel by userAiPrefs.selectedOpenAiModel.collectAsStateWithLifecycle()
-    val savedProvider by userAiPrefs.selectedAiProvider.collectAsStateWithLifecycle()
-    val hasCustomAnyKey = remember(
-        savedGeminiKeys,
-        savedDeepSeekKey,
-        savedKimiKey,
-        savedClaudeKey,
-        savedOpenAiKey
-    ) {
-        UserAiPreferences.parseGeminiKeyList(savedGeminiKeys).isNotEmpty() ||
-            savedDeepSeekKey.isNotBlank() ||
-            savedKimiKey.isNotBlank() ||
-            savedClaudeKey.isNotBlank() ||
-            savedOpenAiKey.isNotBlank()
-    }
-    val activeSummaryDisplay = remember(
-        savedGeminiKeys,
-        savedGeminiModel,
-        savedDeepSeekKey,
-        savedDeepSeekModel,
-        savedKimiKey,
-        savedKimiModel,
-        savedClaudeKey,
-        savedClaudeModel,
-        savedOpenAiKey,
-        savedOpenAiModel,
-        savedProvider
-    ) {
-        userAiPrefs.getActiveDisplayText()
-    }
 
     if (showTimeDialog) {
         ReflectionTimeDialog(
@@ -300,6 +260,7 @@ fun SettingsScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
+                expandedHeight = 50.dp,
                 title = { Text("Ayarlar") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
@@ -328,56 +289,21 @@ fun SettingsScreen(
 
             Text("Yapay Zeka & API", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
 
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onOpenAiSettings)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = "API Anahtarları & Model Seçimi",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            val keySourceText = if (hasCustomAnyKey) "Özel Anahtar" else "Standart Anahtar"
-                            Text(
-                                text = "$keySourceText • $activeSummaryDisplay (${savedProvider.shortLabel})",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-            }
+            SettingRow(
+                icon = Icons.Default.Tune,
+                label = "Yapay Zeka & API Ayarları",
+                onClick = onOpenAiSettings
+            )
+
+            HorizontalDivider()
+
+            Text("Notlar & Çizim", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+
+            SettingRow(
+                icon = Icons.Default.EditNote,
+                label = "Not Özellikleri",
+                onClick = onOpenNoteSettings
+            )
 
             HorizontalDivider()
 
