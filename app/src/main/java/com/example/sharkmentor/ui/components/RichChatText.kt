@@ -908,14 +908,14 @@ private fun handleLatexCommand(
             val inner = processLatexExpression(arg.first).trim()
             val mapped = inner.map { c ->
                 when (c) {
-                    'R' -> 'ℝ'
-                    'N' -> 'ℕ'
-                    'Z' -> 'ℤ'
-                    'Q' -> 'ℚ'
-                    'C' -> 'ℂ'
-                    'P' -> 'ℙ'
-                    'E' -> '𝔼'
-                    else -> c
+                    'R' -> "ℝ"
+                    'N' -> "ℕ"
+                    'Z' -> "ℤ"
+                    'Q' -> "ℚ"
+                    'C' -> "ℂ"
+                    'P' -> "ℙ"
+                    'E' -> "𝔼"
+                    else -> c.toString()
                 }
             }.joinToString("")
             out.append(mapped)

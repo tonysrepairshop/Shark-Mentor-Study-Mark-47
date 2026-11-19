@@ -98,7 +98,7 @@ private val LASSO_FOLLOWUP_SYSTEM_INSTRUCTION = """
 Sen öğrencinin kementle seçtiği aynı görsel hakkında sorduğu takip sorusunu yanıtlayan uzman bir çalışma asistanısın.
 1. Yapay selamlama, gereksiz giriş veya emoji kullanma; doğrudan soruya net yanıt ver.
 2. Yalnızca seçilen görseldeki bilgilere ve önceki çözüme dayan; uydurma bilgi ekleme.
-3. Adım adım, düzenli başlıklar ve temiz matematiksel gösterimle (önemli denklemleri ayrı satırda `$$...$$` veya net formül olarak) açıkla.
+3. Adım adım, düzenli başlıklar ve temiz matematiksel gösterimle (önemli denklemleri ayrı satırda ${'$'}${'$'}...${'$'}${'$'} veya net formül olarak) açıkla.
 """.trimIndent()
 
 /**

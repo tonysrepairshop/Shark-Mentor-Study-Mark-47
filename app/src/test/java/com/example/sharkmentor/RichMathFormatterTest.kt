@@ -88,12 +88,13 @@ class RichMathFormatterTest {
 
     @Test
     fun parseSolutionBlocks_extractsStructuredStepsFormulasBulletsAndFinalAnswer() {
+        val d = "$"
         val raw = """
             ### İkinci Dereceden Denklem Çözümü
             **1. Adım:** Diskriminant formülünü yazalım:
-            $$\Delta = b^{2} - 4ac = (-5)^{2} - 4 \cdot 1 \cdot 6 = 1$$
-            - Kökler: $x_{1} = 2$ ve $x_{2} = 3$
-            - Kökler toplamı $5$ olur.
+            ${d}${d}\Delta = b^{2} - 4ac = (-5)^{2} - 4 \cdot 1 \cdot 6 = 1${d}${d}
+            - Kökler: ${d}x_{1} = 2${d} ve ${d}x_{2} = 3${d}
+            - Kökler toplamı ${d}5${d} olur.
 
             **Doğru Cevap:** C
         """.trimIndent()
@@ -115,7 +116,10 @@ class RichMathFormatterTest {
 
     @Test
     fun formatMathAsPlainText_stripsMarkdownMarkersWhileKeepingUnicodeMath() {
-        val plain = formatMathAsPlainText("""### Özet\n**1. Adım:** `$x^{2} + y^{2} = r^{2}$` ve \boxed{25}""".replace("\\n", "\n"))
+        val d = "$"
+        val plain = formatMathAsPlainText(
+            "### Özet\n**1. Adım:** `${d}x^{2} + y^{2} = r^{2}${d}` ve \\boxed{25}"
+        )
         assertFalse(plain.contains("**"))
         assertFalse(plain.contains("`"))
         assertFalse(plain.contains("###"))
