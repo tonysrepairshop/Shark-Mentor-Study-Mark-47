@@ -106,6 +106,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VerticalAlignTop
@@ -117,6 +118,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -175,6 +177,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.example.sharkmentor.core.ai.DocumentAiScope
 import com.example.sharkmentor.core.util.DocumentTextExtractor
 import com.example.sharkmentor.core.util.NoteStyleParser
 import com.example.sharkmentor.core.util.PaperPattern
@@ -186,6 +189,7 @@ import com.example.sharkmentor.ui.screens.notes.drawing.DrawingCanvasOverlay
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
+import com.example.sharkmentor.ui.screens.notes.drawing.LassoAiSolveSheet
 import com.example.sharkmentor.ui.screens.notes.drawing.PenCustomColorDialog
 import com.example.sharkmentor.ui.screens.notes.drawing.PenLassoActionsPanel
 import com.example.sharkmentor.ui.screens.notes.drawing.PenPackagePickerPanel
@@ -310,6 +314,7 @@ fun NoteDetailScreen(
     val isAiLoading by viewModel.isAiLoading.collectAsStateWithLifecycle()
     val aiError by viewModel.aiError.collectAsStateWithLifecycle()
     val aiSavedNewNoteId by viewModel.aiSavedNewNoteId.collectAsStateWithLifecycle()
+    val aiScopeNotice by viewModel.aiScopeNotice.collectAsStateWithLifecycle()
     val isVmNoteReady by viewModel.isNoteReady.collectAsStateWithLifecycle()
 
     val activeNoteId = noteId ?: initialNote?.id
@@ -766,7 +771,17 @@ fun NoteDetailScreen(
 
     var showAiSheet by remember { mutableStateOf(false) }
     var aiQueryText by remember { mutableStateOf("") }
+    var aiScope by remember { mutableStateOf(DocumentAiScope.CURRENT_PAGE) }
+    var lassoAiCropBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var lassoAiSourceLabel by remember { mutableStateOf("Not") }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            lassoAiCropBitmap?.let { if (!it.isRecycled) runCatching { it.recycle() } }
+            lassoAiCropBitmap = null
+        }
+    }
 
     LaunchedEffect(incomingFileUri) {
         if (incomingFileUri != null) {
@@ -2361,7 +2376,12 @@ fun NoteDetailScreen(
                                 DrawingCanvasOverlay(
                                     controller = pageCtrl,
                                     modifier = Modifier.matchParentSize(),
-                                    onTwoFingerScroll = { dy, _ -> noteListState.dispatchRawDelta(-dy) }
+                                    onTwoFingerScroll = { dy, _ -> noteListState.dispatchRawDelta(-dy) },
+                                    onLassoAskAi = { cropBmp ->
+                                        lassoAiCropBitmap?.let { if (!it.isRecycled) runCatching { it.recycle() } }
+                                        lassoAiSourceLabel = "Not • Sayfa ${pageIndex + 1}"
+                                        lassoAiCropBitmap = cropBmp
+                                    }
                                 )
 
                                 // Sayfa altında tam ortada sayfa numarası
@@ -2880,8 +2900,18 @@ fun NoteDetailScreen(
     }
 
     if (showAiSheet) {
+        val hasMultiplePages = pdfPagePaths.size > 1 || pageFieldValues.size > 1
+        val aiHeaderTitle = when {
+            pdfPagePaths.isNotEmpty() -> "Not Asistanı • PDF S.${activePdfPageIndex + 1}"
+            pageFieldValues.size > 1 -> "Not Asistanı • S.${activePageIndex + 1}"
+            else -> "Not Asistanı"
+        }
+
         ModalBottomSheet(
-            onDismissRequest = { showAiSheet = false },
+            onDismissRequest = {
+                viewModel.cancelAiAnalysis()
+                showAiSheet = false
+            },
             containerColor = surfaceColor,
             contentColor = onSurfaceColor
         ) {
@@ -2902,11 +2932,34 @@ fun NoteDetailScreen(
                         tint = primaryColor
                     )
                     Text(
-                        text = "Not Asistanı",
+                        text = aiHeaderTitle,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = onSurfaceColor
                     )
+                }
+
+                if (hasMultiplePages) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        DocumentAiScope.entries.forEach { scopeOption ->
+                            val chipLabel = if (scopeOption == DocumentAiScope.WHOLE_DOC_TEXT && pdfPagePaths.isEmpty()) {
+                                "Tüm Not"
+                            } else {
+                                scopeOption.label
+                            }
+                            FilterChip(
+                                selected = aiScope == scopeOption,
+                                onClick = { aiScope = scopeOption },
+                                label = { Text(text = chipLabel, fontSize = 12.sp) }
+                            )
+                        }
+                    }
                 }
 
                 Row(
@@ -2924,7 +2977,12 @@ fun NoteDetailScreen(
                         SuggestionChip(
                             onClick = {
                                 aiQueryText = quickPrompt
-                                viewModel.analyzeNoteWithAi(quickPrompt)
+                                viewModel.analyzeNoteWithAi(
+                                    query = quickPrompt,
+                                    scope = aiScope,
+                                    activePdfPageIndex = activePdfPageIndex,
+                                    activeNotePageIndex = activePageIndex
+                                )
                             },
                             label = {
                                 Text(
@@ -2961,23 +3019,57 @@ fun NoteDetailScreen(
                             cursorColor = primaryColor
                         )
                     )
-                    IconButton(
-                        onClick = { viewModel.analyzeNoteWithAi(aiQueryText) },
-                        enabled = !isAiLoading
-                    ) {
-                        if (isAiLoading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(22.dp),
-                                color = primaryColor,
-                                strokeWidth = 2.dp
+                    if (isAiLoading) {
+                        IconButton(onClick = { viewModel.cancelAiAnalysis() }) {
+                            Icon(
+                                imageVector = Icons.Default.Stop,
+                                contentDescription = "Durdur",
+                                tint = colorScheme.error
                             )
-                        } else {
+                        }
+                    } else {
+                        IconButton(
+                            onClick = {
+                                viewModel.analyzeNoteWithAi(
+                                    query = aiQueryText,
+                                    scope = aiScope,
+                                    activePdfPageIndex = activePdfPageIndex,
+                                    activeNotePageIndex = activePageIndex
+                                )
+                            }
+                        ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Send,
                                 contentDescription = "Analiz Et",
                                 tint = primaryColor
                             )
                         }
+                    }
+                }
+
+                if (!aiScopeNotice.isNullOrBlank()) {
+                    Text(
+                        text = aiScopeNotice ?: "",
+                        color = textMutedColor,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+
+                if (isAiLoading && aiResult.isNullOrBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = primaryColor,
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = "Analiz ediliyor...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = textMutedColor
+                        )
                     }
                 }
 
@@ -2990,28 +3082,30 @@ fun NoteDetailScreen(
                 }
 
                 if (!aiResult.isNullOrBlank()) {
-                    Surface(
-                        color = primaryColor.copy(alpha = 0.08f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    if (aiSavedNewNoteId != null) {
+                        Surface(
+                            color = primaryColor.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                tint = primaryColor,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Text(
-                                text = "Özet kaydedildi",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Medium,
-                                color = primaryColor
-                            )
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = "Yeni not olarak kaydedildi",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = primaryColor
+                                )
+                            }
                         }
                     }
 
@@ -3037,7 +3131,9 @@ fun NoteDetailScreen(
                                 )
                             }
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -3055,18 +3151,31 @@ fun NoteDetailScreen(
                                             Toast.makeText(context, "PDF oluşturulamadı: ${err.localizedMessage}", Toast.LENGTH_SHORT).show()
                                         }
                                     },
-                                    shape = RoundedCornerShape(8.dp)
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.PictureAsPdf,
                                         contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(15.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("PDF Aktar", fontSize = 12.sp)
+                                    Text("PDF", fontSize = 12.sp)
                                 }
 
-                                Spacer(modifier = Modifier.weight(1f))
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.saveAiSummaryAsNewNote(aiResult ?: "")
+                                    },
+                                    enabled = aiSavedNewNoteId == null,
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = if (aiSavedNewNoteId != null) "Kaydedildi" else "Yeni Not",
+                                        fontSize = 12.sp
+                                    )
+                                }
 
                                 Button(
                                     onClick = {
@@ -3079,10 +3188,11 @@ fun NoteDetailScreen(
                                         containerColor = primaryColor,
                                         contentColor = colorScheme.onPrimary
                                     ),
-                                    shape = RoundedCornerShape(8.dp)
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                 ) {
                                     Text(
-                                        text = "Nota da Ekle",
+                                        text = "Nota Ekle",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 12.sp
                                     )
@@ -3093,6 +3203,25 @@ fun NoteDetailScreen(
                 }
             }
         }
+    }
+
+    // Inline Lasso -> "AI'ya Sor" Solve Sheet (keeps Note open & zero Gallery clutter)
+    lassoAiCropBitmap?.let { cropBmp ->
+        LassoAiSolveSheet(
+            cropBitmap = cropBmp,
+            sourceLabel = lassoAiSourceLabel,
+            onAppendToNote = { solutionText ->
+                val appended = viewModel.appendAiResultToNote(solutionText)
+                val cleanAppended = stripPdfPageTags(appended)
+                populatePagesFromCleanText(cleanAppended)
+            },
+            onDismiss = {
+                lassoAiCropBitmap = null
+                if (!cropBmp.isRecycled) {
+                    runCatching { cropBmp.recycle() }
+                }
+            }
+        )
     }
 }
 

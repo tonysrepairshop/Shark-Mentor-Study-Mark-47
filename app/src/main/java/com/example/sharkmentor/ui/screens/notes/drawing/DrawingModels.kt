@@ -580,6 +580,9 @@ class DrawingController(
     var screenshotRequestCounter by mutableIntStateOf(0)
         private set
 
+    var askAiRequestCounter by mutableIntStateOf(0)
+        private set
+
     private var preMoveSnapshot: List<DrawingStroke>? = null
     private var hasMovedSelectionInGesture: Boolean = false
 
@@ -609,6 +612,12 @@ class DrawingController(
     fun requestLassoScreenshot() {
         if (selectionBounds() != null) {
             screenshotRequestCounter++
+        }
+    }
+
+    fun requestLassoAskAi() {
+        if (selectionBounds() != null) {
+            askAiRequestCounter++
         }
     }
 

@@ -541,6 +541,7 @@ fun PenShapePickerPanel(
 fun PenLassoActionsPanel(
     controller: DrawingController,
     modifier: Modifier = Modifier,
+    showAskAiAction: Boolean = true,
     onDismiss: (() -> Unit)? = null
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -566,7 +567,14 @@ fun PenLassoActionsPanel(
         )
 
         if (controller.hasActiveLasso) {
-            MiniActionPill("Ekran Görüntüsü") {
+            if (showAskAiAction) {
+                MiniActionPill(
+                    label = "AI'ya Sor",
+                    isPrimary = true,
+                    onClick = { controller.requestLassoAskAi() }
+                )
+            }
+            MiniActionPill("Kırp / SS") {
                 controller.requestLassoScreenshot()
             }
         }
@@ -1562,11 +1570,20 @@ private fun ShapeToolChip(
 private fun MiniActionPill(
     label: String,
     isDestructive: Boolean = false,
+    isPrimary: Boolean = false,
     onClick: () -> Unit
 ) {
     val colorScheme = MaterialTheme.colorScheme
-    val fg = if (isDestructive) colorScheme.error else colorScheme.onSecondaryContainer
-    val bg = if (isDestructive) colorScheme.errorContainer.copy(alpha = 0.5f) else colorScheme.secondaryContainer
+    val fg = when {
+        isDestructive -> colorScheme.error
+        isPrimary -> colorScheme.onPrimary
+        else -> colorScheme.onSecondaryContainer
+    }
+    val bg = when {
+        isDestructive -> colorScheme.errorContainer.copy(alpha = 0.5f)
+        isPrimary -> colorScheme.primary
+        else -> colorScheme.secondaryContainer
+    }
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(8.dp),
