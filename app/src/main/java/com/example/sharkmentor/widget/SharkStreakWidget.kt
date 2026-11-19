@@ -218,7 +218,7 @@ private fun CompactWaterStreakLayout(
 
         Image(
             provider = ImageProvider(decision.mood.widgetDrawableRes),
-            contentDescription = decision.mood.moodLabel,
+            contentDescription = decision.mood.badgeLabel,
             contentScale = ContentScale.Fit,
             modifier = GlanceModifier
                 .size(64.dp)
@@ -281,7 +281,7 @@ private fun FullWaterStreakLayout(
                     .padding(horizontal = 7.dp, vertical = 2.dp)
             ) {
                 Text(
-                    text = if (doneToday) "Damla Cepte 💧" else decision.mood.moodLabel,
+                    text = if (doneToday) "Damla Cepte 💧" else decision.mood.badgeLabel,
                     style = TextStyle(
                         color = statusPillTextColor,
                         fontSize = 9.sp,
@@ -317,7 +317,7 @@ private fun FullWaterStreakLayout(
         ) {
             Image(
                 provider = ImageProvider(decision.mood.widgetDrawableRes),
-                contentDescription = decision.mood.moodLabel,
+                contentDescription = decision.mood.badgeLabel,
                 contentScale = ContentScale.Fit,
                 modifier = GlanceModifier.size(if (isExpanded) 86.dp else 72.dp)
             )
