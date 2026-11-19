@@ -609,6 +609,12 @@ class DrawingController(
         stylusOnlyMode = enabled
     }
 
+    fun updateLastSelectedPenTool(tool: DrawingTool) {
+        if (tool.isPrimaryPenPackage) {
+            lastSelectedPenTool = tool
+        }
+    }
+
     fun requestLassoScreenshot() {
         if (selectionBounds() != null) {
             screenshotRequestCounter++

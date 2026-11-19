@@ -382,13 +382,13 @@ fun NoteDetailScreen(
             ).also { ctrl ->
                 ctrl.bindPreferencesContext(context)
                 if (template != null) {
-                    ctrl.lastSelectedPenTool = template.lastSelectedPenTool
+                    ctrl.updateLastSelectedPenTool(template.lastSelectedPenTool)
                     ctrl.selectTool(template.activeTool)
                     ctrl.penColor = template.penColor
                     ctrl.strokeWidth = template.strokeWidth
                     ctrl.alpha = template.alpha
                     ctrl.eraserRadius = template.eraserRadius
-                    ctrl.stylusOnlyMode = template.stylusOnlyMode
+                    ctrl.updateStylusOnlyMode(template.stylusOnlyMode)
                     ctrl.pressureSensitivityEnabled = template.pressureSensitivityEnabled
                 }
                 if (vmNoteId.isNotBlank()) {
@@ -419,13 +419,13 @@ fun NoteDetailScreen(
     ) {
         pageDrawingControllers.values.forEach { ctrl ->
             if (ctrl !== drawingController) {
-                ctrl.lastSelectedPenTool = drawingController.lastSelectedPenTool
+                ctrl.updateLastSelectedPenTool(drawingController.lastSelectedPenTool)
                 ctrl.selectTool(drawingController.activeTool)
                 ctrl.penColor = drawingController.penColor
                 ctrl.strokeWidth = drawingController.strokeWidth
                 ctrl.alpha = drawingController.alpha
                 ctrl.eraserRadius = drawingController.eraserRadius
-                ctrl.stylusOnlyMode = drawingController.stylusOnlyMode
+                ctrl.updateStylusOnlyMode(drawingController.stylusOnlyMode)
                 ctrl.pressureSensitivityEnabled = drawingController.pressureSensitivityEnabled
             }
         }
