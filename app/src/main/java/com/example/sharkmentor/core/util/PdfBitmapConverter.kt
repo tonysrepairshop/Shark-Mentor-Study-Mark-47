@@ -663,6 +663,80 @@ object PdfBitmapConverter {
         }
     }
 
+    /**
+     * Fast, OOM-safe PDFBox text-layer extraction for ONLY the requested 0-based page range.
+     * Strictly NEVER runs offline ML Kit OCR — if the PDF is scanned or has broken CMap fonts,
+     * returns empty string immediately so Vision can read the rendered page cleanly.
+     */
+    fun extractPdfPageRangeTextFast(
+        context: Context,
+        pdfFile: File,
+        startPageZeroBased: Int,
+        endPageZeroBased: Int,
+        maxChars: Int = 4_500
+    ): String {
+        if (!pdfFile.exists() || pdfFile.length() == 0L) return ""
+        ensurePdfBoxInitialized(context)
+        return runCatching {
+            val rawBuilder = StringBuilder()
+            PDDocument.load(pdfFile).use { document ->
+                val pageTotal = document.numberOfPages
+                if (pageTotal <= 0) return@use
+                val start1 = (startPageZeroBased + 1).coerceIn(1, pageTotal)
+                val end1 = (endPageZeroBased + 1).coerceIn(start1, pageTotal)
+                val stripper = PDFTextStripper().apply {
+                    sortByPosition = true
+                }
+                for (pageNum in start1..end1) {
+                    if (rawBuilder.length >= maxChars) break
+                    runCatching {
+                        stripper.startPage = pageNum
+                        stripper.endPage = pageNum
+                        val pageText = stripper.getText(document)
+                        if (!pageText.isNullOrBlank()) {
+                            if (rawBuilder.isNotEmpty()) rawBuilder.append("\n\n")
+                            rawBuilder.append("[Sayfa $pageNum]\n")
+                            rawBuilder.append(pageText.trim())
+                        }
+                    }.onFailure { e ->
+                        Log.w(TAG, "Fast PDFBox range failed on page $pageNum: ${e.message}")
+                    }
+                }
+            }
+            val rawText = rawBuilder.toString().take(maxChars)
+            val cleaned = DocumentTextExtractor.sanitizeExtractedText(rawText)
+            if (isExtractedTextReadable(rawText, cleaned)) {
+                cleaned.take(maxChars)
+            } else {
+                ""
+            }
+        }.getOrElse { t ->
+            if (t is OutOfMemoryError) System.gc()
+            Log.w(TAG, "extractPdfPageRangeTextFast failed for ${pdfFile.name}: ${t.message}")
+            ""
+        }
+    }
+
+    /**
+     * Fast PDFBox text-layer-only extraction across up to [maxPages] pages (capped at [maxChars]).
+     * Strictly NEVER triggers ML Kit OCR so scanned PDFs return immediately without hanging/OOM.
+     */
+    fun extractPdfTextOnlyFast(
+        context: Context,
+        pdfFile: File,
+        maxPages: Int = 25,
+        maxChars: Int = 10_000
+    ): String {
+        if (!pdfFile.exists() || pdfFile.length() == 0L) return ""
+        return extractPdfPageRangeTextFast(
+            context = context,
+            pdfFile = pdfFile,
+            startPageZeroBased = 0,
+            endPageZeroBased = (maxPages - 1).coerceAtLeast(0),
+            maxChars = maxChars
+        )
+    }
+
     fun extractPdfPlainTextFromBytes(pdfBytes: ByteArray, maxLines: Int = 500): String {
         if (pdfBytes.isEmpty()) return ""
         return runCatching {

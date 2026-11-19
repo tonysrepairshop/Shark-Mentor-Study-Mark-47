@@ -40,6 +40,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Crop
@@ -144,7 +145,8 @@ private val QUICK_LASSO_COLORS = listOf(
 fun DrawingCanvasOverlay(
     controller: DrawingController,
     modifier: Modifier = Modifier,
-    onTwoFingerScroll: ((deltaY: Float, deltaX: Float) -> Unit)? = null
+    onTwoFingerScroll: ((deltaY: Float, deltaX: Float) -> Unit)? = null,
+    onLassoAskAi: ((Bitmap) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -245,10 +247,56 @@ fun DrawingCanvasOverlay(
         }
     }
 
+    fun triggerLassoAskAi() {
+        val askCallback = onLassoAskAi ?: return
+        val win = window
+        val winBounds = canvasWindowBounds
+        val selBounds = controller.selectionBounds()
+        if (win == null || winBounds == null || selBounds == null || isCapturingScreenshot) {
+            if (win == null || winBounds == null) {
+                feedbackMessage = "Ekran bölgesi henüz hazır değil"
+            }
+            return
+        }
+        coroutineScope.launch {
+            isCapturingScreenshot = true
+            try {
+                // Hide dashed lasso border & floating bar cleanly for 2 frames before PixelCopy
+                withFrameNanos { }
+                withFrameNanos { }
+                delay(35L)
+
+                // Pass empty polygon so PixelCopy captures a clean rectangular crop (best for OCR/questions)
+                val result = DrawingScreenshotHelper.captureLassoRegion(
+                    window = win,
+                    canvasWindowBounds = winBounds,
+                    localBounds = selBounds,
+                    lassoPolygon = emptyList()
+                )
+                if (result != null) {
+                    result.polygonBitmap?.let { if (!it.isRecycled) it.recycle() }
+                    controller.clearSelection()
+                    askCallback(result.rectBitmap)
+                } else {
+                    feedbackMessage = "Seçili alan yakalanamadı"
+                }
+            } finally {
+                isCapturingScreenshot = false
+            }
+        }
+    }
+
     // Listen to toolbar screenshot triggers
     LaunchedEffect(controller.screenshotRequestCounter) {
         if (controller.screenshotRequestCounter > 0) {
             triggerLassoScreenshot()
+        }
+    }
+
+    // Listen to toolbar direct Ask AI triggers
+    LaunchedEffect(controller.askAiRequestCounter) {
+        if (controller.askAiRequestCounter > 0 && onLassoAskAi != null) {
+            triggerLassoAskAi()
         }
     }
 
@@ -839,10 +887,18 @@ fun DrawingCanvasOverlay(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        if (onLassoAskAi != null) {
+                            LassoActionChip(
+                                label = "AI'ya Sor",
+                                icon = Icons.Default.AutoAwesome,
+                                isHighlighted = true,
+                                onClick = { triggerLassoAskAi() }
+                            )
+                        }
                         LassoActionChip(
-                            label = "Ekran Görüntüsü",
+                            label = "Kırp / SS",
                             icon = Icons.Default.Crop,
-                            isHighlighted = true,
+                            isHighlighted = onLassoAskAi == null,
                             onClick = { triggerLassoScreenshot() }
                         )
                         if (controller.hasSelection) {
@@ -1067,6 +1123,35 @@ fun DrawingCanvasOverlay(
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        }
+
+                        if (onLassoAskAi != null) {
+                            Button(
+                                onClick = {
+                                    if (isSavingCrop) return@Button
+                                    val aiCopy = runCatching {
+                                        crop.rectBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                    }.getOrNull()
+                                    dismissPreview()
+                                    controller.clearSelection()
+                                    if (aiCopy != null) {
+                                        onLassoAskAi(aiCopy)
+                                    } else {
+                                        feedbackMessage = "Görsel AI için hazırlanamadı"
+                                    }
+                                },
+                                enabled = !isSavingCrop,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("AI'ya Sor (Galeriye Kaydetmeden)", fontWeight = FontWeight.SemiBold)
+                            }
                         }
 
                         Button(

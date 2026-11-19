@@ -67,12 +67,14 @@ import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -121,12 +123,15 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
+import com.example.sharkmentor.core.ai.DocumentAiScope
 import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.MultiProviderAiClient
+import com.example.sharkmentor.core.ai.NoteDocumentAiHelper
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.data.ThemePreferences
 import com.example.sharkmentor.core.theme.ThemeManager
 import com.example.sharkmentor.core.util.DocumentTextExtractor
+import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.core.util.ImportedPdfFile
 import com.example.sharkmentor.core.util.LazyPdfPageRenderer
 import com.example.sharkmentor.core.util.PdfBitmapConverter
@@ -140,10 +145,12 @@ import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStudioBar
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
+import com.example.sharkmentor.ui.screens.notes.drawing.LassoAiSolveSheet
 import com.example.sharkmentor.ui.theme.SharkMentorTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -824,10 +831,38 @@ fun PdfReaderScreen(
     // AI Assistant state
     var showAiSheet by remember { mutableStateOf(false) }
     var aiQueryText by remember { mutableStateOf("") }
+    var aiScope by remember { mutableStateOf(DocumentAiScope.CURRENT_PAGE) }
     var aiResult by remember { mutableStateOf<String?>(null) }
     var isAiLoading by remember { mutableStateOf(false) }
     var aiError by remember { mutableStateOf<String?>(null) }
+    var aiScopeNotice by remember { mutableStateOf<String?>(null) }
     var aiSavedAsNote by remember { mutableStateOf(false) }
+    var aiJob by remember { mutableStateOf<Job?>(null) }
+    var aiRequestGen by remember { mutableIntStateOf(0) }
+
+    // Per-document fast text caches (PDFBox text layer ONLY; never runs slow ML Kit OCR)
+    val pageTextCache = remember(pdfIdentifier) { mutableMapOf<Int, String>() }
+    var fullTextCache by remember(pdfIdentifier) { mutableStateOf<String?>(null) }
+
+    // Inline Lasso -> "AI'ya Sor" state (keeps PDF open & drawings intact)
+    var lassoAiCropBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var lassoAiSourceLabel by remember { mutableStateOf("PDF") }
+
+    DisposableEffect(pdfIdentifier) {
+        onDispose {
+            aiJob?.cancel()
+            aiJob = null
+            lassoAiCropBitmap?.let { if (!it.isRecycled) runCatching { it.recycle() } }
+            lassoAiCropBitmap = null
+        }
+    }
+
+    fun cancelPdfAiAnalysis() {
+        aiRequestGen++
+        aiJob?.cancel()
+        aiJob = null
+        isAiLoading = false
+    }
 
     // Note persistence state for this PDF
     var isSavedToNotes by remember(pdfIdentifier) { mutableStateOf(false) }
@@ -953,112 +988,205 @@ fun PdfReaderScreen(
         }
     }
 
-    fun runPdfAiAnalysis(promptQuery: String) {
+    fun runPdfAiAnalysis(
+        promptQuery: String,
+        scope: DocumentAiScope = aiScope
+    ) {
+        aiJob?.cancel()
+        val requestId = ++aiRequestGen
+        val anchorPage = currentPageIndex.coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+
         isAiLoading = true
         aiError = null
+        aiScopeNotice = null
         aiResult = ""
         aiSavedAsNote = false
 
         val mainHandler = Handler(Looper.getMainLooper())
-        coroutineScope.launch(Dispatchers.IO) {
+        aiJob = coroutineScope.launch(Dispatchers.IO) {
+            val ownedBitmaps = mutableListOf<Bitmap>()
             try {
                 UserAiPreferences.initialize(context.applicationContext)
                 val selectedProvider = UserAiPreferences.getOrNull(context)?.getSelectedProvider()
                     ?: AiProviderChoice.AUTO
 
-                val effectivePrompt = promptQuery.trim().ifBlank {
-                    "Bu PDF sayfasını ve belgeyi detaylıca incele, ana konuları özetle ve önemli çalışma noktalarını maddeler halinde çıkar."
-                }
-
-                // 1. Try Vision analysis on the current visible PDF page first
-                // NOTE: Do NOT recycle currentPageBitmap — LruCache inside LazyPdfPageRenderer owns it.
-                val currentPageBitmap = try {
-                    pdfRenderMutex.withLock {
-                        lazyRenderer.renderPage(
-                            pageIndex = currentPageIndex,
-                            maxWidthPx = 960,
-                            visiblePageHint = currentPageIndex
-                        )
-                    }
-                } catch (_: OutOfMemoryError) {
-                    System.gc()
-                    null
-                } catch (_: Throwable) {
-                    null
-                }
-
-                val extractedText = runCatching {
-                    DocumentTextExtractor.extractCleanText(
-                        context = context,
-                        uri = pdfFile.localUri,
-                        displayName = pdfFile.displayName,
-                        mimeType = "application/pdf"
-                    ).take(12_000)
-                }.getOrDefault("")
-
-                var visionFailureMessage: String? = null
-                if (currentPageBitmap != null && !currentPageBitmap.isRecycled) {
-                    val visionSystem = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim()
-                    val visionPrompt = buildString {
-                        if (extractedText.length >= 60) {
-                            append("[BELGE METNİ (Yardımcı Bağlam)]:\n")
-                            append(extractedText.take(6000))
-                            append("\n\n")
-                        }
-                        append("[AKTİF SAYFA: ${currentPageIndex + 1} / $totalPages]\n")
-                        append("[KULLANICI İSTEĞİ]: $effectivePrompt")
-                    }
-
-                    val visionResult = GeminiAiFactory.streamContentWithFailover(
-                        context = context,
-                        systemInstruction = visionSystem,
-                        userPrompt = visionPrompt,
-                        bitmaps = listOf(currentPageBitmap),
-                        responseJson = false,
-                        maxOutputTokens = 6144,
-                        timeoutMs = 75_000L,
-                        onPartialText = { partial ->
-                            if (partial.isNotEmpty()) {
-                                mainHandler.post {
-                                    aiResult = partial
-                                    isAiLoading = false
-                                }
-                            }
-                        }
-                    )
-
-                    if (visionResult.isSuccess) {
-                        val finalVisionText = visionResult.getOrThrow().text.trim()
-                        if (finalVisionText.isNotBlank()) {
-                            withContext(Dispatchers.Main) {
-                                aiResult = finalVisionText
-                                aiError = null
+                var lastUiPostMs = 0L
+                fun postThrottledPartial(partial: String) {
+                    if (partial.isEmpty()) return
+                    val now = System.currentTimeMillis()
+                    if (lastUiPostMs == 0L || now - lastUiPostMs >= 50L) {
+                        lastUiPostMs = now
+                        mainHandler.post {
+                            if (requestId == aiRequestGen) {
+                                aiResult = partial
                                 isAiLoading = false
                             }
-                            return@launch
                         }
-                    } else {
-                        val err = visionResult.exceptionOrNull()
-                        if (err is CancellationException) throw err
-                        visionFailureMessage = err?.localizedMessage
-                        Log.w("PdfReaderAI", "Vision analysis fallback: $visionFailureMessage")
                     }
                 }
 
-                // 2. Fallback to text analysis via DeepSeek/Kimi (if selected & configured) or Gemini 3.6 Flash
-                if (extractedText.isBlank()) {
+                val effectivePrompt = promptQuery.trim().ifBlank {
+                    when (scope) {
+                        DocumentAiScope.CURRENT_PAGE ->
+                            "Bu sayfadaki ana konuları, önemli kavramları ve varsa soruları özetle."
+                        DocumentAiScope.NEARBY_PAGES ->
+                            "Seçilen sayfalardaki ana konuları ve önemli çalışma noktalarını özetle."
+                        DocumentAiScope.WHOLE_DOC_TEXT ->
+                            "Bu belgenin genel özetini çıkar ve en kritik çalışma noktalarını maddeler halinde listele."
+                    }
+                }
+
+                // Fast text-only path when user explicitly picks WHOLE_DOC_TEXT (no ML Kit OCR!)
+                var effectiveVisionScope: DocumentAiScope? = scope
+                var wholeDocTextForAi = ""
+                if (scope == DocumentAiScope.WHOLE_DOC_TEXT) {
+                    val cachedFull = fullTextCache ?: PdfBitmapConverter.extractPdfTextOnlyFast(
+                        context = context.applicationContext,
+                        pdfFile = pdfFile.localFile,
+                        maxPages = 25,
+                        maxChars = 10_000
+                    ).also { fullTextCache = it }
+
+                    if (cachedFull.length >= 80) {
+                        wholeDocTextForAi = cachedFull
+                        effectiveVisionScope = null
+                    } else {
+                        effectiveVisionScope = DocumentAiScope.CURRENT_PAGE
+                        withContext(Dispatchers.Main) {
+                            if (requestId == aiRequestGen) {
+                                aiScopeNotice =
+                                    "Bu PDF taranmış görsel formatında; aktif sayfa (${anchorPage + 1}) görsel olarak analiz ediliyor."
+                            }
+                        }
+                    }
+                }
+
+                var visionFailureMessage: String? = null
+                if (effectiveVisionScope != null) {
+                    val targetIndices = NoteDocumentAiHelper.selectPageIndicesForScope(
+                        currentPage = anchorPage,
+                        totalPages = totalPages,
+                        scope = effectiveVisionScope
+                    )
+                    val targetMaxDim = if (targetIndices.size <= 1) 1024 else 800
+
+                    // Render ONLY the 1-3 scoped pages and take compact owned copies (never touch LruCache bitmaps)
+                    for (idx in targetIndices) {
+                        val rendered = try {
+                            pdfRenderMutex.withLock {
+                                lazyRenderer.renderPage(
+                                    pageIndex = idx,
+                                    maxWidthPx = targetMaxDim,
+                                    visiblePageHint = anchorPage
+                                )
+                            }
+                        } catch (_: OutOfMemoryError) {
+                            System.gc()
+                            null
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        if (rendered != null && !rendered.isRecycled) {
+                            val compactCopy = ImageStorageManager.prepareOptimizedBitmapFromBitmap(
+                                source = rendered,
+                                maxDimension = targetMaxDim,
+                                enhanceContrast = false
+                            )
+                            if (compactCopy != null && !compactCopy.isRecycled) {
+                                ownedBitmaps.add(compactCopy)
+                            }
+                        }
+                    }
+
+                    // Fast cached PDFBox text layer for ONLY those scoped pages (strictly NO OCR!)
+                    val scopedPageText = buildString {
+                        for (idx in targetIndices) {
+                            val cachedPageTxt = pageTextCache[idx] ?: PdfBitmapConverter.extractPdfPageRangeTextFast(
+                                context = context.applicationContext,
+                                pdfFile = pdfFile.localFile,
+                                startPageZeroBased = idx,
+                                endPageZeroBased = idx,
+                                maxChars = 2_400
+                            ).also { pageTextCache[idx] = it }
+                            if (cachedPageTxt.isNotBlank()) {
+                                if (isNotEmpty()) append("\n\n")
+                                append(cachedPageTxt)
+                            }
+                        }
+                    }.take(3_500)
+
+                    if (ownedBitmaps.isNotEmpty()) {
+                        val pageLabel = if (targetIndices.size == 1) {
+                            "Sayfa ${targetIndices.first() + 1} / $totalPages"
+                        } else {
+                            "Sayfalar ${targetIndices.first() + 1}-${targetIndices.last() + 1} / $totalPages"
+                        }
+                        val visionSystem = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim()
+                        val visionPrompt = buildString {
+                            append("[PDF BAŞLIĞI]: ${pdfFile.title}\n")
+                            append("[ODAK]: $pageLabel\n")
+                            if (scopedPageText.length >= 40) {
+                                append("[SAYFA METİN KATMANI (Yardımcı Bağlam)]:\n")
+                                append(scopedPageText)
+                                append("\n\n")
+                            }
+                            append("[KULLANICI İSTEĞİ]: $effectivePrompt")
+                        }
+
+                        val visionResult = GeminiAiFactory.streamContentWithFailover(
+                            context = context.applicationContext,
+                            systemInstruction = visionSystem,
+                            userPrompt = visionPrompt,
+                            bitmaps = ownedBitmaps,
+                            responseJson = false,
+                            maxOutputTokens = 6144,
+                            timeoutMs = 55_000L,
+                            onPartialText = { partial ->
+                                postThrottledPartial(partial.trimStart())
+                            }
+                        )
+
+                        if (visionResult.isSuccess) {
+                            val finalVisionText = visionResult.getOrThrow().text.trim()
+                            if (finalVisionText.isNotBlank()) {
+                                withContext(Dispatchers.Main) {
+                                    if (requestId == aiRequestGen) {
+                                        aiResult = finalVisionText
+                                        aiError = null
+                                        isAiLoading = false
+                                    }
+                                }
+                                return@launch
+                            }
+                        } else {
+                            val err = visionResult.exceptionOrNull()
+                            if (err is CancellationException) throw err
+                            visionFailureMessage = err?.localizedMessage
+                            Log.w("PdfReaderAI", "Scoped vision analysis fallback: $visionFailureMessage")
+                        }
+                    }
+
+                    // If vision failed but we have fast page text, fall through to text path
+                    if (wholeDocTextForAi.isBlank() && scopedPageText.isNotBlank()) {
+                        wholeDocTextForAi = scopedPageText
+                    }
+                }
+
+                if (wholeDocTextForAi.isBlank()) {
                     withContext(Dispatchers.Main) {
-                        aiError = visionFailureMessage
-                            ?: "PDF sayfası analiz edilemedi. Lütfen internet bağlantınızı ve API anahtarınızı kontrol edin."
-                        isAiLoading = false
+                        if (requestId == aiRequestGen) {
+                            aiError = visionFailureMessage
+                                ?: "PDF sayfası analiz edilemedi. Lütfen internet bağlantınızı ve API ayarlarınızı kontrol edin."
+                            isAiLoading = false
+                        }
                     }
                     return@launch
                 }
 
                 val contextualPrompt = """
-                    [PDF BAŞLIĞI]: ${pdfFile.title} (Sayfa ${currentPageIndex + 1} / $totalPages)
+                    [PDF BAŞLIĞI]: ${pdfFile.title} (Aktif Sayfa ${anchorPage + 1} / $totalPages)
                     [PDF METNİ]:
-                    $extractedText
+                    $wholeDocTextForAi
 
                     [KULLANICI SORUSU / İSTEĞİ]:
                     $effectivePrompt
@@ -1088,6 +1216,7 @@ fun PdfReaderScreen(
                 }
 
                 if (targetExternalProvider != null) {
+                    lastUiPostMs = 0L
                     try {
                         val streamed = MultiProviderAiClient.streamChatCompletion(
                             provider = targetExternalProvider,
@@ -1097,19 +1226,16 @@ fun PdfReaderScreen(
                             maxTokens = 4096,
                             context = context,
                             onAccumulatedChunk = { partial ->
-                                if (partial.isNotEmpty()) {
-                                    mainHandler.post {
-                                        aiResult = partial
-                                        isAiLoading = false
-                                    }
-                                }
+                                postThrottledPartial(partial)
                             }
                         )
                         if (streamed.isNotBlank()) {
                             withContext(Dispatchers.Main) {
-                                aiResult = streamed
-                                aiError = null
-                                isAiLoading = false
+                                if (requestId == aiRequestGen) {
+                                    aiResult = streamed.trim()
+                                    aiError = null
+                                    isAiLoading = false
+                                }
                             }
                             return@launch
                         }
@@ -1120,51 +1246,58 @@ fun PdfReaderScreen(
                     }
                 }
 
+                lastUiPostMs = 0L
                 val geminiTextResult = GeminiAiFactory.streamContentWithFailover(
-                    context = context,
+                    context = context.applicationContext,
                     systemInstruction = NoteDetailViewModel.ISOLATED_NOTE_SYSTEM_INSTRUCTION.trim(),
                     userPrompt = contextualPrompt,
                     responseJson = false,
                     maxOutputTokens = 6144,
-                    timeoutMs = 75_000L,
+                    timeoutMs = 55_000L,
                     onPartialText = { partial ->
-                        if (partial.isNotEmpty()) {
-                            mainHandler.post {
-                                aiResult = partial
-                                isAiLoading = false
-                            }
-                        }
+                        postThrottledPartial(partial.trimStart())
                     }
                 )
 
                 if (geminiTextResult.isSuccess) {
                     val finalText = geminiTextResult.getOrThrow().text.trim()
                     withContext(Dispatchers.Main) {
-                        if (finalText.isNotBlank()) {
-                            aiResult = finalText
-                            aiError = null
-                        } else {
-                            aiError = "AI boş yanıt döndürdü. Lütfen tekrar deneyin."
+                        if (requestId == aiRequestGen) {
+                            if (finalText.isNotBlank()) {
+                                aiResult = finalText
+                                aiError = null
+                            } else {
+                                aiError = "AI boş yanıt döndürdü. Lütfen tekrar deneyin."
+                            }
+                            isAiLoading = false
                         }
-                        isAiLoading = false
                     }
                 } else {
                     val err = geminiTextResult.exceptionOrNull()
                     if (err is CancellationException) throw err
                     withContext(Dispatchers.Main) {
-                        aiError = err?.localizedMessage ?: visionFailureMessage ?: "AI analizi sırasında hata oluştu."
-                        isAiLoading = false
+                        if (requestId == aiRequestGen) {
+                            aiError = err?.localizedMessage ?: visionFailureMessage ?: "AI analizi sırasında hata oluştu."
+                            isAiLoading = false
+                        }
                     }
                 }
             } catch (e: Throwable) {
                 if (e !is CancellationException) {
                     withContext(Dispatchers.Main) {
-                        aiError = e.localizedMessage ?: "AI analizi sırasında hata oluştu."
+                        if (requestId == aiRequestGen) {
+                            aiError = e.localizedMessage ?: "AI analizi sırasında hata oluştu."
+                        }
                     }
                 }
             } finally {
+                ownedBitmaps.forEach { bmp ->
+                    runCatching { if (!bmp.isRecycled) bmp.recycle() }
+                }
                 withContext(Dispatchers.Main) {
-                    isAiLoading = false
+                    if (requestId == aiRequestGen) {
+                        isAiLoading = false
+                    }
                 }
             }
         }
@@ -1471,6 +1604,11 @@ fun PdfReaderScreen(
                             { dy, _ -> listState.dispatchRawDelta(-dy) }
                         } else {
                             null
+                        },
+                        onLassoAskAi = { cropBmp ->
+                            lassoAiCropBitmap?.let { if (!it.isRecycled) runCatching { it.recycle() } }
+                            lassoAiSourceLabel = "PDF • Sayfa ${pageIdx + 1}"
+                            lassoAiCropBitmap = cropBmp
                         }
                     )
                 }
@@ -1771,7 +1909,10 @@ fun PdfReaderScreen(
     // AI Note Assistant ModalBottomSheet
     if (showAiSheet) {
         ModalBottomSheet(
-            onDismissRequest = { showAiSheet = false },
+            onDismissRequest = {
+                cancelPdfAiAnalysis()
+                showAiSheet = false
+            },
             containerColor = surfaceColor,
             contentColor = onSurfaceColor
         ) {
@@ -1792,11 +1933,29 @@ fun PdfReaderScreen(
                         tint = primaryColor
                     )
                     Text(
-                        text = "PDF Asistanı • S.${currentPageIndex + 1}",
+                        text = "PDF Asistanı • S.${currentPageIndex + 1}/$totalPages",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = onSurfaceColor
                     )
+                }
+
+                if (totalPages > 1) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        DocumentAiScope.entries.forEach { scopeOption ->
+                            FilterChip(
+                                selected = aiScope == scopeOption,
+                                onClick = { aiScope = scopeOption },
+                                label = { Text(text = scopeOption.label, fontSize = 12.sp) }
+                            )
+                        }
+                    }
                 }
 
                 Row(
@@ -1814,7 +1973,7 @@ fun PdfReaderScreen(
                         SuggestionChip(
                             onClick = {
                                 aiQueryText = quickPrompt
-                                runPdfAiAnalysis(quickPrompt)
+                                runPdfAiAnalysis(quickPrompt, aiScope)
                             },
                             label = {
                                 Text(
@@ -1848,23 +2007,48 @@ fun PdfReaderScreen(
                             cursorColor = primaryColor
                         )
                     )
-                    IconButton(
-                        onClick = { runPdfAiAnalysis(aiQueryText) },
-                        enabled = !isAiLoading
-                    ) {
-                        if (isAiLoading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(22.dp),
-                                color = primaryColor,
-                                strokeWidth = 2.dp
+                    if (isAiLoading) {
+                        IconButton(onClick = { cancelPdfAiAnalysis() }) {
+                            Icon(
+                                imageVector = Icons.Default.Stop,
+                                contentDescription = "Durdur",
+                                tint = colorScheme.error
                             )
-                        } else {
+                        }
+                    } else {
+                        IconButton(onClick = { runPdfAiAnalysis(aiQueryText, aiScope) }) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Send,
                                 contentDescription = "Analiz Et",
                                 tint = primaryColor
                             )
                         }
+                    }
+                }
+
+                if (!aiScopeNotice.isNullOrBlank()) {
+                    Text(
+                        text = aiScopeNotice ?: "",
+                        color = textMutedColor,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+
+                if (isAiLoading && aiResult.isNullOrBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = primaryColor,
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = "Sayfa inceleniyor...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = textMutedColor
+                        )
                     }
                 }
 
@@ -1951,6 +2135,23 @@ fun PdfReaderScreen(
             }
         }
     }
+
+    // Inline Lasso -> "AI'ya Sor" Solve Sheet (opens over PDF without closing or losing drawings)
+    lassoAiCropBitmap?.let { cropBmp ->
+        LassoAiSolveSheet(
+            cropBitmap = cropBmp,
+            sourceLabel = lassoAiSourceLabel,
+            onSaveToNotes = { solutionText ->
+                saveAiResultToNotes(solutionText)
+            },
+            onDismiss = {
+                lassoAiCropBitmap = null
+                if (!cropBmp.isRecycled) {
+                    runCatching { cropBmp.recycle() }
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1962,7 +2163,8 @@ private fun LazyPdfPageCard(
     renderer: LazyPdfPageRenderer,
     renderMutex: Mutex,
     drawingController: DrawingController,
-    onTwoFingerScroll: ((Float, Float) -> Unit)? = null
+    onTwoFingerScroll: ((Float, Float) -> Unit)? = null,
+    onLassoAskAi: ((Bitmap) -> Unit)? = null
 ) {
     var pageBitmap by remember(pageIndex) {
         mutableStateOf(renderer.getCachedPage(pageIndex))
@@ -2069,7 +2271,8 @@ private fun LazyPdfPageCard(
             DrawingCanvasOverlay(
                 controller = drawingController,
                 modifier = Modifier.fillMaxSize(),
-                onTwoFingerScroll = onTwoFingerScroll
+                onTwoFingerScroll = onTwoFingerScroll,
+                onLassoAskAi = onLassoAskAi
             )
 
             // Subtle page number corner badge

@@ -4,10 +4,12 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
@@ -203,6 +205,122 @@ object ImageStorageManager {
         optimized.recycle()
 
         return@withContext file.absolutePath
+    }
+
+    /**
+     * Prepares an owned, RAM-only ARGB_8888 [Bitmap] scaled to <= [maxDimension] px.
+     * Safely converts HARDWARE bitmaps, never writes to disk or Gallery, and never recycles [source].
+     */
+    suspend fun prepareOptimizedBitmapFromBitmap(
+        source: Bitmap,
+        maxDimension: Int = MAX_DIMENSION,
+        enhanceContrast: Boolean = false
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        if (source.isRecycled) return@withContext null
+        val targetMax = maxDimension.coerceIn(320, 1440)
+        var working: Bitmap? = null
+        var shouldRecycleWorking = false
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && source.config == Bitmap.Config.HARDWARE) {
+                working = source.copy(Bitmap.Config.ARGB_8888, false) ?: return@withContext null
+                shouldRecycleWorking = true
+            } else {
+                working = source
+            }
+
+            val srcW = working.width.coerceAtLeast(1)
+            val srcH = working.height.coerceAtLeast(1)
+            val maxSide = maxOf(srcW, srcH)
+            val scaled: Bitmap = if (maxSide > targetMax) {
+                val ratio = targetMax.toFloat() / maxSide.toFloat()
+                val targetW = (srcW * ratio).toInt().coerceAtLeast(1)
+                val targetH = (srcH * ratio).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(working, targetW, targetH, true)
+            } else {
+                working.copy(Bitmap.Config.ARGB_8888, false) ?: return@withContext null
+            }
+
+            if (enhanceContrast) {
+                val enhanced = applyScannerContrastFilter(scaled)
+                if (enhanced !== scaled && !scaled.isRecycled) {
+                    scaled.recycle()
+                }
+                enhanced
+            } else {
+                scaled
+            }
+        } catch (t: Throwable) {
+            if (t is OutOfMemoryError) System.gc()
+            Log.w("ImageStorageManager", "prepareOptimizedBitmapFromBitmap failed: ${t.message}")
+            null
+        } finally {
+            if (shouldRecycleWorking && working != null && !working.isRecycled) {
+                working.recycle()
+            }
+        }
+    }
+
+    /**
+     * Compresses an in-memory [Bitmap] into an ultra-compact app-private JPEG (<= [maxBytes], default 140 KB)
+     * inside `filesDir/error_bank_images/`. NEVER writes to Android Gallery / MediaStore.
+     * Returns `Pair(absolutePath, fileSizeBytes)`.
+     */
+    suspend fun saveCompressedBitmapForErrorBank(
+        context: Context,
+        source: Bitmap,
+        maxDimension: Int = 960,
+        maxBytes: Int = 140 * 1024
+    ): Pair<String, Long> = withContext(Dispatchers.IO) {
+        if (source.isRecycled) {
+            throw IllegalStateException("Görsel artık bellekte değil.")
+        }
+        val appContext = context.applicationContext
+        val prepared = prepareOptimizedBitmapFromBitmap(
+            source = source,
+            maxDimension = maxDimension,
+            enhanceContrast = false
+        ) ?: throw IllegalStateException("Soru görseli hazırlanamadı.")
+
+        var composited: Bitmap? = null
+        try {
+            // Composite onto solid white so transparent areas never turn black in JPEG
+            val whiteBg = Bitmap.createBitmap(
+                prepared.width.coerceAtLeast(1),
+                prepared.height.coerceAtLeast(1),
+                Bitmap.Config.ARGB_8888
+            )
+            composited = whiteBg
+            val canvas = Canvas(whiteBg)
+            canvas.drawColor(Color.WHITE)
+            canvas.drawBitmap(prepared, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+
+            val baos = ByteArrayOutputStream()
+            var quality = 78
+            whiteBg.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+            while (baos.size() > maxBytes && quality > 44) {
+                baos.reset()
+                quality -= 8
+                whiteBg.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+            }
+            val jpegBytes = baos.toByteArray()
+
+            val directory = File(appContext.filesDir, FOLDER_NAME).apply {
+                if (!exists()) mkdirs()
+            }
+            val file = File(directory, "lasso_q_${UUID.randomUUID()}.jpg")
+            FileOutputStream(file).use { out ->
+                out.write(jpegBytes)
+                out.flush()
+            }
+            file.absolutePath to file.length()
+        } finally {
+            if (composited != null && !composited.isRecycled) {
+                composited.recycle()
+            }
+            if (!prepared.isRecycled) {
+                prepared.recycle()
+            }
+        }
     }
 
     suspend fun deleteImageFile(uriString: String?) = withContext(Dispatchers.IO) {

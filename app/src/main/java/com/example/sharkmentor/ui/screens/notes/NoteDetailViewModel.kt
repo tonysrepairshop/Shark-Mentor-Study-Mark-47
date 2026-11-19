@@ -2,15 +2,16 @@ package com.example.sharkmentor.ui.screens.notes
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.sharkmentor.core.ai.AiProviderChoice
 import com.example.sharkmentor.core.ai.DeepSeekClient
+import com.example.sharkmentor.core.ai.DocumentAiScope
 import com.example.sharkmentor.core.ai.GeminiAiFactory
 import com.example.sharkmentor.core.ai.MultiProviderAiClient
+import com.example.sharkmentor.core.ai.NoteDocumentAiHelper
 import com.example.sharkmentor.core.ai.UserAiPreferences
 import com.example.sharkmentor.core.util.NoteStyleParser
 import com.example.sharkmentor.core.util.PaperPattern
@@ -143,6 +144,11 @@ KESİN DAVRANIŞ KURALLARI:
     private val _aiSavedNewNoteId = MutableStateFlow<String?>(null)
     val aiSavedNewNoteId: StateFlow<String?> = _aiSavedNewNoteId.asStateFlow()
 
+    private val _aiScopeNotice = MutableStateFlow<String?>(null)
+    val aiScopeNotice: StateFlow<String?> = _aiScopeNotice.asStateFlow()
+
+    private var aiAnalysisJob: Job? = null
+
     @Volatile
     private var loadGeneration: Long = 0L
     private var loadJob: Job? = null
@@ -151,6 +157,12 @@ KESİN DAVRANIŞ KURALLARI:
 
     fun resetAiSavedNewNoteStatus() {
         _aiSavedNewNoteId.value = null
+    }
+
+    fun cancelAiAnalysis() {
+        aiAnalysisJob?.cancel()
+        aiAnalysisJob = null
+        _isAiLoading.value = false
     }
 
     private val persistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -415,22 +427,29 @@ KESİN DAVRANIŞ KURALLARI:
         }
     }
 
-    fun analyzeNoteWithAi(query: String) {
+    fun analyzeNoteWithAi(
+        query: String,
+        scope: DocumentAiScope = DocumentAiScope.CURRENT_PAGE,
+        activePdfPageIndex: Int = 0,
+        activeNotePageIndex: Int = 0
+    ) {
         val rawContent = _noteContent.value
         val currentTitle = _noteTitle.value.trim()
         val cleanNoteText = sanitizeNoteTextForAi(rawContent)
         val pdfPagePaths = extractPdfPagePaths(rawContent)
 
+        aiAnalysisJob?.cancel()
         _isAiLoading.value = true
         _aiError.value = null
+        _aiScopeNotice.value = null
+        _aiSavedNewNoteId.value = null
         _aiResult.value = ""
 
-        viewModelScope.launch(Dispatchers.IO) {
+        aiAnalysisJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val selectedProvider = UserAiPreferences.getOrNull(appContext)?.getSelectedProvider()
                     ?: AiProviderChoice.AUTO
 
-                // Check if the note consists primarily of PDF pages without substantial typed/extracted body text
                 val textWithoutPdfHeader = cleanNoteText
                     .replace(PDF_HEADER_REGEX, "")
                     .replace("Tüm PDF sayfaları yüklendi. Notlarınızı aşağıya ekleyebilirsiniz:", "")
@@ -440,45 +459,70 @@ KESİN DAVRANIŞ KURALLARI:
                 var lastStreamUiEmitMs = 0L
                 fun emitThrottledStream(partial: String) {
                     val now = System.currentTimeMillis()
-                    if (lastStreamUiEmitMs == 0L || now - lastStreamUiEmitMs >= 45L) {
+                    if (lastStreamUiEmitMs == 0L || now - lastStreamUiEmitMs >= 50L) {
                         lastStreamUiEmitMs = now
                         _aiResult.value = partial
                         _isAiLoading.value = false
                     }
                 }
 
-                val hasSubstantialText = textWithoutPdfHeader.length >= 80
-                val shouldUseVisionForPdf = pdfPagePaths.isNotEmpty() && !hasSubstantialText
+                val hasSubstantialText = textWithoutPdfHeader.length >= 120
+                val usePdfVisionPath = pdfPagePaths.isNotEmpty() &&
+                    (scope != DocumentAiScope.WHOLE_DOC_TEXT || !hasSubstantialText)
 
-                if (shouldUseVisionForPdf) {
-                    val pageBitmaps = pdfPagePaths.take(5).mapNotNull { path ->
-                        runCatching {
-                            val original = BitmapFactory.decodeFile(path) ?: return@runCatching null
-                            if (original.width > 800) {
-                                val ratio = 800f / original.width.toFloat()
-                                val targetHeight = (original.height * ratio).toInt().coerceAtLeast(1)
-                                val scaled = Bitmap.createScaledBitmap(original, 800, targetHeight, true)
-                                if (scaled != original) original.recycle()
-                                scaled
-                            } else {
-                                original
-                            }
-                        }.getOrNull()
+                if (usePdfVisionPath) {
+                    val effectiveVisionScope = if (scope == DocumentAiScope.WHOLE_DOC_TEXT) {
+                        _aiScopeNotice.value =
+                            "Bu PDF notunda seçilebilir metin yok; aktif sayfa (${activePdfPageIndex.coerceIn(0, pdfPagePaths.lastIndex) + 1}) görsel olarak inceleniyor."
+                        DocumentAiScope.CURRENT_PAGE
+                    } else {
+                        scope
                     }
+
+                    val targetIndices = NoteDocumentAiHelper.selectPageIndicesForScope(
+                        currentPage = activePdfPageIndex,
+                        totalPages = pdfPagePaths.size,
+                        scope = effectiveVisionScope
+                    )
+                    val targetMaxDim = if (targetIndices.size <= 1) 1024 else 800
+                    val pageBitmaps = targetIndices.mapNotNull { idx ->
+                        val path = pdfPagePaths.getOrNull(idx) ?: return@mapNotNull null
+                        NoteDocumentAiHelper.decodeDownsampledBitmap(path, maxDimension = targetMaxDim)
+                    }
+
                     var visionErrorMessage: String? = null
                     if (pageBitmaps.isNotEmpty()) {
                         try {
+                            val pageLabel = if (targetIndices.size == 1) {
+                                "Sayfa ${targetIndices.first() + 1} / ${pdfPagePaths.size}"
+                            } else {
+                                "Sayfalar ${targetIndices.first() + 1}-${targetIndices.last() + 1} / ${pdfPagePaths.size}"
+                            }
                             val visionSystemInstruction = """
-                                Sen bu belgedeki görselleri ve sayfaları analiz eden uzman bir çalışma asistanısın. YALNIZCA verilen sayfa görsellerindeki bilgileri baz al. Asla belgede olmayan bilgi ekleme. Eğer sorulan bilgi sayfalarda yoksa açıkça 'Bu bilgi not içinde bulunamadı.' yaz.
+                                Sen öğrencinin açtığı ders belgesi sayfalarını inceleyen uzman bir çalışma asistanısın. YALNIZCA verilen sayfa görsellerindeki ve not metnindeki bilgileri baz al. Asla belgede olmayan uydurma bilgi ekleme. Eğer sorulan bilgi sayfalarda yoksa açıkça 'Bu bilgi seçilen sayfalarda bulunamadı.' yaz.
                                 KESİN DAVRANIŞ KURALLARI:
-                                1. DOĞRUDAN BAŞLANGIÇ: Yapay selamlamalar veya gereksiz girişler kullanma. Doğrudan analize gir.
-                                2. DETAYLI VE KAPSAMLI ANALİZ: Belgedeki ana başlıkları, önemli kavramları, açıklamaları ve çalışma noktalarını zengin, anlaşılır ve eksiksiz bir şekilde açıkla. Yüzeysel geçme; öğrencinin çalışabileceği derinlikte özetle.
-                                3. DÜZENLİ BİÇİMLENDİRME: Başlıklar, maddeler ve vurgulu terimler kullanarak okunabilirliği artır.
-                                4. ÇALIŞMA KANCASI: En sona tek cümlelik motive edici bir takip sorusu ekle.
+                                1. DOĞRUDAN BAŞLANGIÇ: Yapay selamlama, gereksiz giriş veya emoji kullanma. Doğrudan analize gir.
+                                2. ODAKLI VE ANLAŞILIR ANALİZ: Sorulan konuyu veya sayfadaki ana başlıkları, kavramları ve çözüm adımlarını net, anlaşılır ve düzenli şekilde açıkla.
+                                3. DÜZENLİ BİÇİMLENDİRME: Başlıklar, maddeler ve vurgulu terimler kullan.
                             """.trimIndent()
 
-                            val visionPrompt = query.trim().ifBlank {
-                                "Bu PDF belgesindeki sayfaları detaylıca incele, ana konuları özetle ve önemli noktaları maddeler halinde çıkar."
+                            val userRequest = query.trim().ifBlank {
+                                if (targetIndices.size == 1) {
+                                    "Bu sayfadaki ana konuları, önemli kavramları ve varsa soruları özetle."
+                                } else {
+                                    "Seçilen sayfalardaki ana konuları ve önemli çalışma noktalarını özetle."
+                                }
+                            }
+
+                            val visionPrompt = buildString {
+                                append("[NOT BAŞLIĞI]: ${currentTitle.ifBlank { "PDF Notu" }}\n")
+                                append("[ODAK]: $pageLabel\n")
+                                if (textWithoutPdfHeader.length >= 30) {
+                                    append("[KULLANICI NOTU]:\n")
+                                    append(textWithoutPdfHeader.take(2_500))
+                                    append("\n\n")
+                                }
+                                append("[KULLANICI İSTEĞİ]:\n$userRequest")
                             }
 
                             val visionResult = GeminiAiFactory.streamContentWithFailover(
@@ -487,8 +531,8 @@ KESİN DAVRANIŞ KURALLARI:
                                 userPrompt = visionPrompt,
                                 bitmaps = pageBitmaps,
                                 responseJson = false,
-                                maxOutputTokens = 8192,
-                                timeoutMs = 75_000L,
+                                maxOutputTokens = 6144,
+                                timeoutMs = 55_000L,
                                 onPartialText = { partial ->
                                     emitThrottledStream(partial)
                                 }
@@ -515,14 +559,45 @@ KESİN DAVRANIŞ KURALLARI:
 
                     if (!hasSubstantialText) {
                         _aiError.value = visionErrorMessage
-                            ?: "PDF sayfaları görsel olarak çözümlenemedi. Lütfen bağlantınızı ve API anahtarınızı kontrol edin."
+                            ?: "Seçilen sayfa görseli çözümlenemedi. İnternet bağlantınızı ve API ayarlarınızı kontrol edin."
                         _aiResult.value = null
                         _isAiLoading.value = false
                         return@launch
                     }
                 }
 
-                if (cleanNoteText.isBlank() && currentTitle.isBlank()) {
+                // Scoped text extraction for multi-page notes
+                val rawNotePages = splitContentIntoPages(rawContent)
+                val scopedNoteText: String
+                val scopeLabel: String
+                if (rawNotePages.size > 1 && scope != DocumentAiScope.WHOLE_DOC_TEXT) {
+                    val pageIndices = NoteDocumentAiHelper.selectPageIndicesForScope(
+                        currentPage = activeNotePageIndex,
+                        totalPages = rawNotePages.size,
+                        scope = scope
+                    )
+                    val joinedPages = pageIndices.mapNotNull { idx ->
+                        val pageClean = sanitizeNoteTextForAi(rawNotePages.getOrNull(idx).orEmpty())
+                        if (pageClean.isBlank()) null else "[Sayfa ${idx + 1}]\n$pageClean"
+                    }.joinToString("\n\n").take(10_000)
+
+                    if (joinedPages.isNotBlank()) {
+                        scopedNoteText = joinedPages
+                        scopeLabel = if (pageIndices.size == 1) {
+                            "Sayfa ${pageIndices.first() + 1} / ${rawNotePages.size}"
+                        } else {
+                            "Sayfalar ${pageIndices.first() + 1}-${pageIndices.last() + 1} / ${rawNotePages.size}"
+                        }
+                    } else {
+                        scopedNoteText = cleanNoteText
+                        scopeLabel = "Tüm Not"
+                    }
+                } else {
+                    scopedNoteText = cleanNoteText
+                    scopeLabel = if (rawNotePages.size > 1) "Tüm Not (${rawNotePages.size} sayfa)" else "Bu Sayfa"
+                }
+
+                if (scopedNoteText.isBlank() && currentTitle.isBlank()) {
                     _aiResult.value = "Bu bilgi not içinde bulunamadı."
                     _isAiLoading.value = false
                     return@launch
@@ -534,8 +609,9 @@ KESİN DAVRANIŞ KURALLARI:
 
                 val contextualPrompt = """
                     [NOT BAŞLIĞI]: ${currentTitle.ifBlank { "Başlıksız Not" }}
+                    [KAPSAM]: $scopeLabel
                     [NOT METNİ]:
-                    $cleanNoteText
+                    $scopedNoteText
 
                     [KULLANICI SORUSU / İSTEĞİ]:
                     $effectiveQuery
@@ -579,9 +655,8 @@ KESİN DAVRANIŞ KURALLARI:
                             }
                         )
                         if (streamedResult.isNotBlank()) {
-                            _aiResult.value = streamedResult
+                            _aiResult.value = streamedResult.trim()
                             _aiError.value = null
-                            saveAiSummaryAsNewNote(streamedResult.trim())
                             return@launch
                         }
                     } catch (ce: CancellationException) {
@@ -599,7 +674,7 @@ KESİN DAVRANIŞ KURALLARI:
                     userPrompt = contextualPrompt,
                     responseJson = false,
                     maxOutputTokens = 6144,
-                    timeoutMs = 60_000L,
+                    timeoutMs = 55_000L,
                     onPartialText = { partial ->
                         emitThrottledStream(partial.trimStart())
                     }
@@ -610,7 +685,6 @@ KESİN DAVRANIŞ KURALLARI:
                     if (responseText.isNotBlank()) {
                         _aiResult.value = responseText
                         _aiError.value = null
-                        saveAiSummaryAsNewNote(responseText)
                     } else {
                         _aiResult.value = null
                         _aiError.value = "Not analiz edilemedi."
@@ -649,8 +723,16 @@ KESİN DAVRANIŞ KURALLARI:
     }
 
     fun clearAiResult() {
+        cancelAiAnalysis()
         _aiResult.value = null
         _aiError.value = null
+        _aiScopeNotice.value = null
+        _aiSavedNewNoteId.value = null
+    }
+
+    override fun onCleared() {
+        aiAnalysisJob?.cancel()
+        super.onCleared()
     }
 
     fun deleteNote(onDeleted: () -> Unit = {}) {

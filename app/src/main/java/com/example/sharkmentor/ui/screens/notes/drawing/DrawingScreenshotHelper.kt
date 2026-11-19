@@ -182,8 +182,9 @@ object DrawingScreenshotHelper {
     }
 
     /**
-     * Saves the cropped bitmap to internal app storage and inserts a new [NoteEntity]
-     * via [NoteRepositoryImpl] using the standard `[PDF_PAGE:...]` image tag so Notes render it natively.
+     * Saves the cropped bitmap to internal app storage as a compact JPEG (<= 1440px, 82% quality)
+     * and inserts a new [NoteEntity] via [NoteRepositoryImpl] using `[PDF_PAGE:...]` so Notes render it natively.
+     * Avoids multi-megabyte uncompressed PNG bloat on limited-storage devices.
      */
     suspend fun saveCropToNotes(
         context: Context,
@@ -192,14 +193,36 @@ object DrawingScreenshotHelper {
     ): Result<NoteEntity> = withContext(Dispatchers.IO) {
         runCatching {
             val appContext = context.applicationContext
-            val (exportBitmap, shouldRecycleCopy) = prepareWritableBitmap(bitmap)
+            val (writableBitmap, shouldRecycleWritable) = prepareWritableBitmap(bitmap)
+            var finalBitmap: Bitmap? = null
             try {
+                val maxSide = maxOf(writableBitmap.width, writableBitmap.height)
+                val targetW: Int
+                val targetH: Int
+                if (maxSide > 1440) {
+                    val ratio = 1440f / maxSide.toFloat()
+                    targetW = (writableBitmap.width * ratio).toInt().coerceAtLeast(1)
+                    targetH = (writableBitmap.height * ratio).toInt().coerceAtLeast(1)
+                } else {
+                    targetW = writableBitmap.width.coerceAtLeast(1)
+                    targetH = writableBitmap.height.coerceAtLeast(1)
+                }
+
+                // Composite onto white so freeform polygon crops have a clean background in JPEG
+                val composited = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                finalBitmap = composited
+                val canvas = Canvas(composited)
+                canvas.drawColor(Color.WHITE)
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                val destRect = Rect(0, 0, targetW, targetH)
+                canvas.drawBitmap(writableBitmap, null, destRect, paint)
+
                 val dir = File(appContext.filesDir, NOTE_CROPS_DIR).apply {
                     if (!exists()) mkdirs()
                 }
-                val imageFile = File(dir, "crop_${UUID.randomUUID()}.png")
+                val imageFile = File(dir, "crop_${UUID.randomUUID()}.jpg")
                 FileOutputStream(imageFile).use { out ->
-                    if (!exportBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                    if (!composited.compress(Bitmap.CompressFormat.JPEG, 82, out)) {
                         error("Görsel dosyaya yazılamadı")
                     }
                     out.flush()
@@ -210,7 +233,7 @@ object DrawingScreenshotHelper {
                 val note = NoteEntity(
                     id = UUID.randomUUID().toString(),
                     title = "$noteTitlePrefix ($timestamp)",
-                    content = "[PDF_PAGE:${imageFile.absolutePath}]\n\nKement ile kırpılan ekran görüntüsü (${exportBitmap.width}×${exportBitmap.height} px)",
+                    content = "[PDF_PAGE:${imageFile.absolutePath}]\n\nKement ile kırpılan görsel (${composited.width}×${composited.height} px)",
                     colorHex = "#F8FAFC",
                     isPinned = false,
                     createdAt = now,
@@ -221,8 +244,11 @@ object DrawingScreenshotHelper {
                 repo.insertOrUpdateNote(note)
                 note
             } finally {
-                if (shouldRecycleCopy && !exportBitmap.isRecycled) {
-                    exportBitmap.recycle()
+                if (finalBitmap != null && !finalBitmap.isRecycled) {
+                    finalBitmap.recycle()
+                }
+                if (shouldRecycleWritable && !writableBitmap.isRecycled) {
+                    writableBitmap.recycle()
                 }
             }
         }
