@@ -479,15 +479,17 @@ class GeminiRestClientTest {
     }
 
     @Test
-    fun obfuscatedBuiltInKeys_decodeThreeDistinctVertexExpressKeys() {
+    fun obfuscatedBuiltInKeys_decodeThreeDistinctBuiltInKeys() {
         val keys = ApiKeyRotator.DEFAULT_BUILTIN_GEMINI_KEYS
         assertEquals(3, keys.size)
         assertEquals(3, keys.distinct().size)
-        keys.forEach { key ->
-            assertTrue("Expected Vertex Express AQ. prefix", key.startsWith("AQ."))
-            assertEquals(53, key.length)
-        }
-        assertEquals(listOf("tlKw", "8RZA", "6ozw"), keys.map { it.takeLast(4) })
+        assertTrue("Expected Vertex Express AQ. prefix on slot 1", keys[0].startsWith("AQ."))
+        assertEquals(53, keys[0].length)
+        assertTrue("Expected AI Studio AIza prefix on slot 2", keys[1].startsWith("AIza"))
+        assertEquals(39, keys[1].length)
+        assertTrue("Expected Vertex Express AQ. prefix on slot 3", keys[2].startsWith("AQ."))
+        assertEquals(53, keys[2].length)
+        assertEquals(listOf("jfhg", "7f10", "tlKw"), keys.map { it.takeLast(4) })
     }
 
     @Test

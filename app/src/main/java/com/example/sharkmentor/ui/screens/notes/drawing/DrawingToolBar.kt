@@ -209,19 +209,24 @@ fun DrawingStudioBar(
                     PenToolGlyph(tool = DrawingTool.NONE, tint = tint)
                 }
 
-                // Unified Pen Tool Button (Tap: select active/last pen, Long-press: Pen Packages)
+                // Unified Pen Tool Button (Tap: select pen or toggle packages if already active; Long-press: Pen Packages)
                 StudioToolButton(
                     label = currentPenTool.shortLabel,
                     isSelected = activeTool.isPenTool || showPenPackages,
                     accentColor = if (currentPenTool == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else controller.penColor,
                     onClick = {
                         showShapesRow = false
-                        showPenPackages = false
-                        controller.selectActiveOrLastPen()
+                        if (activeTool.isPenTool) {
+                            showPenPackages = !showPenPackages
+                        } else {
+                            showPenPackages = false
+                            controller.selectActiveOrLastPen()
+                        }
                     },
                     onLongClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         showShapesRow = false
+                        controller.selectActiveOrLastPen()
                         showPenPackages = !showPenPackages
                     }
                 ) { tint ->

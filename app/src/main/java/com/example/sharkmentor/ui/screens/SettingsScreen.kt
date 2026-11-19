@@ -2,8 +2,6 @@ package com.example.sharkmentor.ui.screens
 
 import android.app.AlertDialog
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -21,7 +19,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.DeleteForever
@@ -34,15 +31,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.badges.SharkBadgeCatalog
 import com.example.sharkmentor.core.data.AppThemeMode
@@ -519,55 +517,33 @@ fun executePermanentAccountDeletion(context: Context, onComplete: () -> Unit) {
 
 @Composable
 fun AppIconItem(
-    iconRes: Int,
+    previewRes: Int,
+    contentDescription: String,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
-    val context = LocalContext.current
-
-    // Safely extract drawable to Bitmap or load Vector
-    val drawable = remember(iconRes) {
-        try {
-            ContextCompat.getDrawable(context, iconRes)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     Card(
         onClick = onClick,
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant
         ),
-        shape = RoundedCornerShape(12.dp),
-        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
+        shape = RoundedCornerShape(16.dp),
+        border = if (isSelected) BorderStroke(2.2.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
     ) {
         Box(
             modifier = Modifier
-                .size(64.dp)
-                .padding(8.dp),
+                .size(66.dp)
+                .padding(4.dp),
             contentAlignment = Alignment.Center
         ) {
-            if (drawable != null) {
-                // Render via AndroidView or convert to BitmapPainter to avoid Compose PainterResources crash
-                Image(
-                    bitmap = remember(drawable) {
-                        val bitmap = Bitmap.createBitmap(
-                            drawable.intrinsicWidth.coerceAtLeast(1),
-                            drawable.intrinsicHeight.coerceAtLeast(1),
-                            Bitmap.Config.ARGB_8888
-                        )
-                        val canvas = Canvas(bitmap)
-                        drawable.setBounds(0, 0, canvas.width, canvas.height)
-                        drawable.draw(canvas)
-                        bitmap.asImageBitmap()
-                    },
-                    contentDescription = "App Icon",
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Icon(Icons.Default.Apps, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            }
+            Image(
+                painter = painterResource(id = previewRes),
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp))
+            )
         }
     }
 }
@@ -599,13 +575,17 @@ fun AppIconSelectorSection(snackbarHostState: SnackbarHostState) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 AppIconItem(
-                    iconRes = item.iconRes,
+                    previewRes = item.previewDrawableRes,
+                    contentDescription = item.title,
                     isSelected = isSelected,
                     onClick = {
-                        AppIconManager.setActiveIcon(context, item)
-                        selectedIcon = item
-                        scope.launch {
-                            snackbarHostState.showSnackbar("Simge güncellendi")
+                        if (selectedIcon != item) {
+                            AppIconManager.setActiveIcon(context, item)
+                            selectedIcon = item
+                            scope.launch {
+                                snackbarHostState.currentSnackbarData?.dismiss()
+                                snackbarHostState.showSnackbar("Simge seçildi. Uygulamadan çıktığınızda güncellenecek.")
+                            }
                         }
                     }
                 )
@@ -614,10 +594,11 @@ fun AppIconSelectorSection(snackbarHostState: SnackbarHostState) {
                     text = item.title,
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1
                 )
             }
         }
     }
 }
+

@@ -23,7 +23,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -383,11 +382,13 @@ fun NoteDetailScreen(
             ).also { ctrl ->
                 ctrl.bindPreferencesContext(context)
                 if (template != null) {
+                    ctrl.lastSelectedPenTool = template.lastSelectedPenTool
                     ctrl.selectTool(template.activeTool)
                     ctrl.penColor = template.penColor
                     ctrl.strokeWidth = template.strokeWidth
                     ctrl.alpha = template.alpha
                     ctrl.eraserRadius = template.eraserRadius
+                    ctrl.stylusOnlyMode = template.stylusOnlyMode
                     ctrl.pressureSensitivityEnabled = template.pressureSensitivityEnabled
                 }
                 if (vmNoteId.isNotBlank()) {
@@ -407,20 +408,24 @@ fun NoteDetailScreen(
     // Keep tool/color/stroke/pressure synchronized across all page controllers
     LaunchedEffect(
         drawingController.activeTool,
+        drawingController.lastSelectedPenTool,
         drawingController.penColor,
         drawingController.strokeWidth,
         drawingController.alpha,
         drawingController.eraserRadius,
+        drawingController.stylusOnlyMode,
         drawingController.pressureSensitivityEnabled,
         pageDrawingControllers.size
     ) {
         pageDrawingControllers.values.forEach { ctrl ->
             if (ctrl !== drawingController) {
+                ctrl.lastSelectedPenTool = drawingController.lastSelectedPenTool
                 ctrl.selectTool(drawingController.activeTool)
                 ctrl.penColor = drawingController.penColor
                 ctrl.strokeWidth = drawingController.strokeWidth
                 ctrl.alpha = drawingController.alpha
                 ctrl.eraserRadius = drawingController.eraserRadius
+                ctrl.stylusOnlyMode = drawingController.stylusOnlyMode
                 ctrl.pressureSensitivityEnabled = drawingController.pressureSensitivityEnabled
             }
         }
@@ -1404,21 +1409,6 @@ fun NoteDetailScreen(
 
             val toolbarDragModifier = Modifier.pointerInput(dockState, screenWidthPx, screenHeightPx, dockedY) {
                 detectDragGestures(
-                    onDragStart = { offset -> startExpandedToolbarDrag(offset) },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        continueExpandedToolbarDrag(dragAmount)
-                    },
-                    onDragEnd = { finishExpandedToolbarDrag() },
-                    onDragCancel = {
-                        isDragging = false
-                        candidateBorder = null
-                    }
-                )
-            }
-
-            val toolbarSurfaceLongPressModifier = Modifier.pointerInput(dockState, screenWidthPx, screenHeightPx, dockedY) {
-                detectDragGesturesAfterLongPress(
                     onDragStart = { offset -> startExpandedToolbarDrag(offset) },
                     onDrag = { change, dragAmount ->
                         change.consume()
@@ -2638,7 +2628,6 @@ fun NoteDetailScreen(
                             scaleY = 0.98f
                             shadowElevation = 14.dp.toPx()
                         }
-                        .then(toolbarSurfaceLongPressModifier)
                 } else {
                     when (dockState) {
                         ToolbarDockState.BOTTOM -> Modifier.align(Alignment.BottomCenter).widthIn(max = 760.dp).fillMaxWidth()
@@ -2652,7 +2641,7 @@ fun NoteDetailScreen(
                         ToolbarDockState.FLOATING -> Modifier
                             .offset { IntOffset(floatingOffset.x.roundToInt(), floatingOffset.y.roundToInt()) }
                             .widthIn(max = 360.dp)
-                    }.then(toolbarSurfaceLongPressModifier)
+                    }
                 }
 
                 RichTextFormattingToolbar(
@@ -2685,6 +2674,20 @@ fun NoteDetailScreen(
                             drawingController.selectActiveOrLastPen()
                         }
                         activeColorPanel = ActiveColorPanel.NONE
+                    },
+                    onOpenPenPackages = {
+                        keyboardController?.hide()
+                        activeColorPanel = ActiveColorPanel.NONE
+                        if (!drawingController.isDrawingActive || !drawingController.activeTool.isPenTool) {
+                            drawingController.selectActiveOrLastPen()
+                            activePenPanel = ActivePenPanel.PEN_PACKAGES
+                        } else {
+                            activePenPanel = if (activePenPanel == ActivePenPanel.PEN_PACKAGES) {
+                                ActivePenPanel.NONE
+                            } else {
+                                ActivePenPanel.PEN_PACKAGES
+                            }
+                        }
                     },
                     onToggleColorPanel = { panel ->
                         activeColorPanel = if (panel == ActiveColorPanel.NONE || activeColorPanel == panel) {
@@ -3317,7 +3320,7 @@ fun CollapsedToolbarBubble(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun RichTextFormattingToolbar(
     drawingController: DrawingController,
@@ -3339,6 +3342,7 @@ fun RichTextFormattingToolbar(
     onCollapse: () -> Unit = {},
     onSelectTextMode: () -> Unit = {},
     onSelectPenMode: () -> Unit = {},
+    onOpenPenPackages: () -> Unit = {},
     onToggleColorPanel: (ActiveColorPanel) -> Unit,
     onTogglePenPanel: (ActivePenPanel) -> Unit,
     onColorSelected: (Color) -> Unit,
@@ -3425,7 +3429,7 @@ fun RichTextFormattingToolbar(
                     }
                 }
 
-                // Vertical concise mode switcher ("Metin" <-> "Kalem")
+                // Vertical concise mode switcher ("Metin" <-> "Kalem", long-press opens Pen Packages)
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = if (isPenMode) primaryColor.copy(alpha = 0.18f) else onSurfaceColor.copy(alpha = 0.08f),
@@ -3435,9 +3439,16 @@ fun RichTextFormattingToolbar(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable {
-                            if (isPenMode) onSelectTextMode() else onSelectPenMode()
-                        }
+                        .clip(RoundedCornerShape(10.dp))
+                        .combinedClickable(
+                            onClick = {
+                                if (isPenMode) onSelectTextMode() else onSelectPenMode()
+                            },
+                            onLongClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onOpenPenPackages()
+                            }
+                        )
                 ) {
                     Column(
                         modifier = Modifier.padding(vertical = 4.dp, horizontal = 2.dp),
@@ -3548,17 +3559,21 @@ fun RichTextFormattingToolbar(
                         onSurfaceColor = onSurfaceColor,
                         primaryColor = primaryColor,
                         onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES ||
-                                activePenPanel == ActivePenPanel.LASSO ||
-                                activePenPanel == ActivePenPanel.PEN_PACKAGES
-                            ) {
-                                onTogglePenPanel(ActivePenPanel.NONE)
+                            if (activeDrawTool.isPenTool) {
+                                onTogglePenPanel(ActivePenPanel.PEN_PACKAGES)
+                            } else {
+                                if (activePenPanel == ActivePenPanel.SHAPES ||
+                                    activePenPanel == ActivePenPanel.LASSO ||
+                                    activePenPanel == ActivePenPanel.PEN_PACKAGES
+                                ) {
+                                    onTogglePenPanel(ActivePenPanel.NONE)
+                                }
+                                drawingController.selectActiveOrLastPen()
                             }
-                            drawingController.selectActiveOrLastPen()
                         },
                         onLongClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onTogglePenPanel(ActivePenPanel.PEN_PACKAGES)
+                            onOpenPenPackages()
                         }
                     ) { tint -> PenToolGlyph(tool = currentPenTool, tint = tint) }
 
@@ -3779,7 +3794,11 @@ fun RichTextFormattingToolbar(
                                     isSelected = isPenMode,
                                     primaryColor = primaryColor,
                                     onSurfaceColor = onSurfaceColor,
-                                    onClick = onSelectPenMode
+                                    onClick = onSelectPenMode,
+                                    onLongClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onOpenPenPackages()
+                                    }
                                 )
                             }
                         }
@@ -3879,17 +3898,21 @@ fun RichTextFormattingToolbar(
                                 isSelected = activeDrawTool.isPenTool || activePenPanel == ActivePenPanel.PEN_PACKAGES,
                                 accentColor = if (currentPenTool == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else drawingController.penColor,
                                 onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES ||
-                                        activePenPanel == ActivePenPanel.LASSO ||
-                                        activePenPanel == ActivePenPanel.PEN_PACKAGES
-                                    ) {
-                                        onTogglePenPanel(ActivePenPanel.NONE)
+                                    if (activeDrawTool.isPenTool) {
+                                        onTogglePenPanel(ActivePenPanel.PEN_PACKAGES)
+                                    } else {
+                                        if (activePenPanel == ActivePenPanel.SHAPES ||
+                                            activePenPanel == ActivePenPanel.LASSO ||
+                                            activePenPanel == ActivePenPanel.PEN_PACKAGES
+                                        ) {
+                                            onTogglePenPanel(ActivePenPanel.NONE)
+                                        }
+                                        drawingController.selectActiveOrLastPen()
                                     }
-                                    drawingController.selectActiveOrLastPen()
                                 },
                                 onLongClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onTogglePenPanel(ActivePenPanel.PEN_PACKAGES)
+                                    onOpenPenPackages()
                                 }
                             ) { tint -> PenToolGlyph(tool = currentPenTool, tint = tint) }
 
@@ -4161,18 +4184,25 @@ private fun HorizontalToolbarSubPanels(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ToolbarModeChip(
     label: String,
     isSelected: Boolean,
     primaryColor: Color,
     onSurfaceColor: Color,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = if (isSelected) primaryColor else Color.Transparent,
-        modifier = Modifier.clickable(onClick = onClick)
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Text(
             text = label,
