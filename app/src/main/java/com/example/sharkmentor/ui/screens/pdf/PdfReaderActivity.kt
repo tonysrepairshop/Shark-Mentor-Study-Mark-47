@@ -135,9 +135,12 @@ import com.example.sharkmentor.core.util.ImageStorageManager
 import com.example.sharkmentor.core.util.ImportedPdfFile
 import com.example.sharkmentor.core.util.LazyPdfPageRenderer
 import com.example.sharkmentor.core.util.PdfBitmapConverter
+import com.example.sharkmentor.core.util.PdfLibraryManager
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.NoteEntity
 import com.example.sharkmentor.data.repository.NoteRepositoryImpl
+import com.example.sharkmentor.ui.components.RichSolutionContent
+import com.example.sharkmentor.ui.components.formatMathAsPlainText
 import com.example.sharkmentor.ui.screens.notes.NoteDetailScreen
 import com.example.sharkmentor.ui.screens.notes.NoteDetailViewModel
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingCanvasOverlay
@@ -410,6 +413,13 @@ class PdfReaderActivity : ComponentActivity() {
                             title = title,
                             pageCount = count
                         )
+                        runCatching {
+                            PdfLibraryManager.registerOrUpdatePdf(
+                                context = this@PdfReaderActivity,
+                                imported = imported,
+                                titleOverride = explicitTitle?.takeIf { it.isNotBlank() }
+                            )
+                        }
                         val targetMode = if (skipChooser) {
                             runCatching { PdfOpenMode.valueOf(initialModeStr ?: "") }
                                 .getOrDefault(PdfOpenMode.PDF_READER)
@@ -470,6 +480,14 @@ class PdfReaderActivity : ComponentActivity() {
                 }
 
                 val copied = PdfBitmapConverter.copyUriToPrivatePdfsDir(this@PdfReaderActivity, incomingUri)
+                if (copied != null && copied.pageCount > 0) {
+                    runCatching {
+                        PdfLibraryManager.registerOrUpdatePdf(
+                            context = this@PdfReaderActivity,
+                            imported = copied
+                        )
+                    }
+                }
                 withContext(Dispatchers.Main) {
                     if (copied != null && copied.pageCount > 0) {
                         importedPdfState = copied
@@ -742,8 +760,16 @@ fun PdfReaderScreen(
     // Persist last read page and trim LruCache around visible ±1 page
     LaunchedEffect(currentPageIndex) {
         lazyRenderer.trimAroundVisiblePage(currentPageIndex, keepRadius = 1)
-        withContext(Dispatchers.IO) {
-            DrawingSerializer.savePdfLastReadPage(context, pdfIdentifier, currentPageIndex)
+        val appCtx = context.applicationContext
+        pdfNotesPersistenceScope.launch {
+            DrawingSerializer.savePdfLastReadPage(appCtx, pdfIdentifier, currentPageIndex)
+            val annotatedCount = DrawingSerializer.getPdfAnnotatedPageCount(appCtx, pdfIdentifier)
+            PdfLibraryManager.updateProgressAndAnnotations(
+                context = appCtx,
+                pdfFilePath = pdfIdentifier,
+                lastReadPage = currentPageIndex,
+                annotatedPageCount = annotatedCount
+            )
         }
     }
 
@@ -753,6 +779,12 @@ fun PdfReaderScreen(
     val pageControllers = remember(pdfIdentifier) {
         mutableStateMapOf<Int, DrawingController>()
     }
+
+    // Track library persistence state
+    var isFlushingDrawings by remember(pdfIdentifier) { mutableStateOf(false) }
+    var isSavingPageNote by remember(pdfIdentifier) { mutableStateOf(false) }
+    var isExportingPdf by remember(pdfIdentifier) { mutableStateOf(false) }
+    var lastSavedTimestamp by remember(pdfIdentifier) { mutableStateOf(System.currentTimeMillis()) }
 
     // Shared active tool state synchronized across pages so switching page keeps the selected pen/highlighter
     var showStudioToolbar by remember { mutableStateOf(true) }
@@ -769,12 +801,21 @@ fun PdfReaderScreen(
             DrawingController(
                 maxHistorySteps = 60,
                 onStrokesChanged = { updatedStrokes ->
-                    coroutineScope.launch(Dispatchers.IO) {
+                    val appCtx = context.applicationContext
+                    val snapshot = updatedStrokes.toList()
+                    pdfNotesPersistenceScope.launch {
                         DrawingSerializer.savePdfPageAnnotations(
-                            context = context,
+                            context = appCtx,
                             pdfIdentifier = pdfIdentifier,
                             pageIndex = pageIdx,
-                            strokes = updatedStrokes
+                            strokes = snapshot
+                        )
+                        val annotatedCount = DrawingSerializer.getPdfAnnotatedPageCount(appCtx, pdfIdentifier)
+                        PdfLibraryManager.updateProgressAndAnnotations(
+                            context = appCtx,
+                            pdfFilePath = pdfIdentifier,
+                            lastReadPage = currentPageIndex,
+                            annotatedPageCount = annotatedCount
                         )
                     }
                 }
@@ -848,8 +889,59 @@ fun PdfReaderScreen(
     var lassoAiCropBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var lassoAiSourceLabel by remember { mutableStateOf("PDF") }
 
+    fun flushAllPageAnnotationsToLibrary(showToast: Boolean = false) {
+        if (isFlushingDrawings && showToast) return
+        if (showToast) isFlushingDrawings = true
+        val appCtx = context.applicationContext
+        val snapshots = pageControllers.entries.associate { (idx, ctrl) -> idx to ctrl.strokes.toList() }
+        val pageSnap = currentPageIndex
+        pdfNotesPersistenceScope.launch {
+            runCatching {
+                snapshots.forEach { (idx, strokes) ->
+                    DrawingSerializer.savePdfPageAnnotations(
+                        context = appCtx,
+                        pdfIdentifier = pdfIdentifier,
+                        pageIndex = idx,
+                        strokes = strokes
+                    )
+                }
+                DrawingSerializer.savePdfLastReadPage(appCtx, pdfIdentifier, pageSnap)
+                PdfLibraryManager.registerOrUpdatePdf(appCtx, pdfFile)
+                val annotatedCount = DrawingSerializer.getPdfAnnotatedPageCount(appCtx, pdfIdentifier)
+                PdfLibraryManager.updateProgressAndAnnotations(
+                    context = appCtx,
+                    pdfFilePath = pdfIdentifier,
+                    lastReadPage = pageSnap,
+                    annotatedPageCount = annotatedCount
+                )
+            }.onFailure { e ->
+                Log.e("PdfReaderActivity", "Failed flushing PDF annotations", e)
+            }
+            if (showToast) {
+                withContext(Dispatchers.Main) {
+                    isFlushingDrawings = false
+                    lastSavedTimestamp = System.currentTimeMillis()
+                    Toast.makeText(
+                        context,
+                        "PDF ve tüm çizimler PDF'lerim'e kaydedildi",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    }
+
+    // Ensure document is registered in PDF'lerim library as soon as opened
+    LaunchedEffect(pdfIdentifier) {
+        val appCtx = context.applicationContext
+        pdfNotesPersistenceScope.launch {
+            runCatching { PdfLibraryManager.registerOrUpdatePdf(appCtx, pdfFile) }
+        }
+    }
+
     DisposableEffect(pdfIdentifier) {
         onDispose {
+            flushAllPageAnnotationsToLibrary(showToast = false)
             aiJob?.cancel()
             aiJob = null
             lassoAiCropBitmap?.let { if (!it.isRecycled) runCatching { it.recycle() } }
@@ -864,126 +956,138 @@ fun PdfReaderScreen(
         isAiLoading = false
     }
 
-    // Note persistence state for this PDF
-    var isSavedToNotes by remember(pdfIdentifier) { mutableStateOf(false) }
-    var isSavingToNotes by remember(pdfIdentifier) { mutableStateOf(false) }
-
-    LaunchedEffect(pdfIdentifier) {
-        val alreadySaved = withContext(Dispatchers.IO) {
-            runCatching {
-                val db = SharkMentorDatabase.getDatabase(context.applicationContext)
-                val repo = NoteRepositoryImpl(db.noteDao(), context.applicationContext)
-                val allNotes = withTimeoutOrNull(1500L) { repo.getAllNotesFlow().first() }.orEmpty()
-                val pdfTag = "[PDF_FILE:$pdfIdentifier]"
-                allNotes.any { it.content.contains(pdfTag) }
-            }.getOrDefault(false)
-        }
-        isSavedToNotes = alreadySaved
-    }
-
-    fun savePdfDocumentToNotes() {
-        if (isSavingToNotes) return
-        isSavingToNotes = true
-        val appContext = context.applicationContext
-        val pdfAbsPath = pdfFile.localFile.absolutePath
-        val noteTitle = pdfFile.title.ifBlank { pdfFile.displayName.substringBeforeLast('.', "PDF Belgesi") }
-        val pageCountSnapshot = totalPages
+    /**
+     * Saves the CURRENT page (including all user drawings baked into the image + any readable text)
+     * as a real note inside `Notlarım` instead of creating an empty "X sayfa" stub.
+     */
+    fun saveCurrentPageAsNote() {
+        if (isSavingPageNote) return
+        isSavingPageNote = true
+        val appCtx = context.applicationContext
+        val pageIdx = currentPageIndex.coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+        val pageStrokes = pageControllers[pageIdx]?.strokes?.toList()
+            ?: DrawingSerializer.loadPdfPageAnnotations(appCtx, pdfIdentifier, pageIdx)
+        val baseTitle = pdfFile.title.ifBlank { pdfFile.displayName.substringBeforeLast('.', "PDF Belgesi") }
 
         pdfNotesPersistenceScope.launch {
             val savedOk = runCatching {
-                val db = SharkMentorDatabase.getDatabase(appContext)
-                val repo = NoteRepositoryImpl(db.noteDao(), appContext)
-                val pdfTag = "[PDF_FILE:$pdfAbsPath]"
-
-                val existingNotes = withTimeoutOrNull(1500L) { repo.getAllNotesFlow().first() }.orEmpty()
-                val existingNote = existingNotes.firstOrNull { it.content.contains(pdfTag) }
-
-                // Do NOT recycle thumbBitmap because LruCache in LazyPdfPageRenderer owns it
-                var thumbPath: String? = null
-                val thumbBitmap = try {
-                    pdfRenderMutex.withLock {
-                        lazyRenderer.renderPage(
-                            pageIndex = 0,
-                            maxWidthPx = 720,
-                            visiblePageHint = currentPageIndex
-                        )
-                    }
-                } catch (_: OutOfMemoryError) {
-                    System.gc()
-                    null
-                } catch (_: Throwable) {
-                    null
-                }
-                if (thumbBitmap != null && !thumbBitmap.isRecycled) {
-                    runCatching {
-                        val thumbDir = File(appContext.filesDir, "rendered_pdf_pages").apply {
+                val renderedBmp = PdfLibraryManager.renderAnnotatedPageToBitmap(
+                    pdfFile = pdfFile.localFile,
+                    pageIndex = pageIdx,
+                    strokes = pageStrokes,
+                    maxWidthPx = 1440
+                )
+                var imagePath: String? = null
+                if (renderedBmp != null && !renderedBmp.isRecycled) {
+                    try {
+                        val cropsDir = File(appCtx.filesDir, "lasso_crops").apply {
                             if (!exists()) mkdirs()
                         }
-                        val docKey = DrawingSerializer.computePdfDocKey(pdfAbsPath)
-                        val thumbFile = File(thumbDir, "pdf_thumb_${docKey}_p1.jpg")
-                        FileOutputStream(thumbFile).use { out ->
-                            thumbBitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
-                            out.flush()
+                        val outFile = File(cropsDir, "pdf_page_${UUID.randomUUID()}.jpg")
+                        FileOutputStream(outFile).use { fos ->
+                            renderedBmp.compress(Bitmap.CompressFormat.JPEG, 86, fos)
+                            fos.flush()
                         }
-                        if (thumbFile.exists() && thumbFile.length() > 0L) {
-                            thumbPath = thumbFile.absolutePath
+                        if (outFile.exists() && outFile.length() > 0L) {
+                            imagePath = outFile.absolutePath
                         }
+                    } finally {
+                        renderedBmp.recycle()
                     }
                 }
 
+                val extractedPageText = pageTextCache[pageIdx]
+                    ?: PdfBitmapConverter.extractPdfPageRangeTextFast(
+                        context = appCtx,
+                        pdfFile = pdfFile.localFile,
+                        startPageZeroBased = pageIdx,
+                        endPageZeroBased = pageIdx,
+                        maxChars = 6_000
+                    ).also { if (it.isNotBlank()) pageTextCache[pageIdx] = it }
+
                 val noteContent = buildString {
-                    append(pdfTag)
-                    if (!thumbPath.isNullOrBlank()) {
-                        append("\n[PDF_PAGE:")
-                        append(thumbPath)
+                    if (!imagePath.isNullOrBlank()) {
+                        append("[PDF_PAGE:")
+                        append(imagePath)
                         append("]")
                     }
-                    append("\n\n")
-                    append("$pageCountSnapshot sayfa")
+                    if (extractedPageText.isNotBlank()) {
+                        if (isNotEmpty()) append("\n\n")
+                        append(extractedPageText)
+                    } else if (isEmpty()) {
+                        append("$baseTitle • Sayfa ${pageIdx + 1}/$totalPages")
+                    }
                 }
 
                 val now = System.currentTimeMillis()
-                val entity = if (existingNote != null) {
-                    val hasThumbTag = existingNote.content.contains("[PDF_PAGE:")
-                    val updatedBody = when {
-                        existingNote.content.isBlank() -> noteContent
-                        !hasThumbTag && !thumbPath.isNullOrBlank() -> existingNote.content.replaceFirst(
-                            pdfTag,
-                            "$pdfTag\n[PDF_PAGE:$thumbPath]"
-                        )
-                        else -> existingNote.content
-                    }
-                    existingNote.copy(
-                        title = existingNote.title.ifBlank { noteTitle },
-                        content = updatedBody,
-                        updatedAt = now
-                    )
-                } else {
-                    NoteEntity(
-                        id = UUID.randomUUID().toString(),
-                        title = noteTitle,
-                        content = noteContent,
-                        colorHex = "#F8FAFC",
-                        isPinned = false,
-                        createdAt = now,
-                        updatedAt = now
-                    )
-                }
-                repo.insertOrUpdateNote(entity)
+                val note = NoteEntity(
+                    id = UUID.randomUUID().toString(),
+                    title = "$baseTitle — Sayfa ${pageIdx + 1}",
+                    content = noteContent,
+                    colorHex = "#F8FAFC",
+                    isPinned = false,
+                    createdAt = now,
+                    updatedAt = now
+                )
+                val db = SharkMentorDatabase.getDatabase(appCtx)
+                val repo = NoteRepositoryImpl(db.noteDao(), appCtx)
+                repo.insertOrUpdateNote(note)
                 true
             }.getOrElse { e ->
-                Log.e("PdfReaderActivity", "Failed saving PDF note", e)
+                Log.e("PdfReaderActivity", "Failed saving annotated PDF page as note", e)
                 false
             }
 
             withContext(Dispatchers.Main) {
-                isSavingToNotes = false
-                if (savedOk) {
-                    isSavedToNotes = true
-                    Toast.makeText(context, "Notlara kaydedildi", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Not kaydedilemedi", Toast.LENGTH_SHORT).show()
+                isSavingPageNote = false
+                Toast.makeText(
+                    context,
+                    if (savedOk) "Sayfa ${pageIdx + 1} (çizimlerle) Notlarım'a kaydedildi" else "Sayfa not olarak kaydedilemedi",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    /**
+     * Exports a shareable PDF copy with all vector drawings baked in (original PDF untouched).
+     */
+    fun shareAnnotatedPdf() {
+        if (isExportingPdf) return
+        isExportingPdf = true
+        val appCtx = context.applicationContext
+        val snapshots = pageControllers.entries.associate { (idx, ctrl) -> idx to ctrl.strokes.toList() }
+        coroutineScope.launch {
+            val exportFile = withContext(Dispatchers.IO) {
+                // Flush latest drawings first
+                snapshots.forEach { (idx, strokes) ->
+                    DrawingSerializer.savePdfPageAnnotations(appCtx, pdfIdentifier, idx, strokes)
                 }
+                PdfLibraryManager.exportAnnotatedPdfToCache(
+                    context = appCtx,
+                    pdfFile = pdfFile.localFile,
+                    title = pdfFile.title
+                )
+            }
+            isExportingPdf = false
+            if (exportFile != null && exportFile.exists()) {
+                runCatching {
+                    val shareUri = FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        exportFile
+                    )
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/pdf"
+                        putExtra(Intent.EXTRA_STREAM, shareUri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "PDF Paylaş"))
+                }.onFailure {
+                    Toast.makeText(context, "PDF paylaşılamadı", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(context, "PDF hazırlanamadı", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -1335,6 +1439,7 @@ fun PdfReaderScreen(
             zoomScale = 1f
             panOffset = Offset.Zero
         } else {
+            flushAllPageAnnotationsToLibrary(showToast = false)
             onBackClick()
         }
     }
@@ -1368,7 +1473,12 @@ fun PdfReaderScreen(
                 }
             },
             navigationIcon = {
-                IconButton(onClick = onBackClick) {
+                IconButton(
+                    onClick = {
+                        flushAllPageAnnotationsToLibrary(showToast = false)
+                        onBackClick()
+                    }
+                ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "Geri",
@@ -1377,39 +1487,39 @@ fun PdfReaderScreen(
                 }
             },
             actions = {
-                // Prominent Save PDF to Notes pill button
+                // Library auto-save / manual flush pill button
                 Surface(
-                    onClick = { savePdfDocumentToNotes() },
-                    enabled = !isSavingToNotes,
+                    onClick = { flushAllPageAnnotationsToLibrary(showToast = true) },
+                    enabled = !isFlushingDrawings,
                     shape = RoundedCornerShape(16.dp),
-                    color = if (isSavedToNotes) primaryColor.copy(alpha = 0.16f) else primaryColor,
-                    border = if (isSavedToNotes) BorderStroke(1.dp, primaryColor.copy(alpha = 0.5f)) else null,
+                    color = primaryColor.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.45f)),
                     modifier = Modifier.padding(end = 2.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        if (isSavingToNotes) {
+                        if (isFlushingDrawings) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(13.dp),
                                 strokeWidth = 1.8.dp,
-                                color = if (isSavedToNotes) primaryColor else colorScheme.onPrimary
+                                color = primaryColor
                             )
                         } else {
                             Icon(
-                                imageVector = if (isSavedToNotes) Icons.Default.CheckCircle else Icons.Default.NoteAdd,
-                                contentDescription = "Notlara Kaydet",
-                                tint = if (isSavedToNotes) primaryColor else colorScheme.onPrimary,
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "PDF'lerim'e Kaydet",
+                                tint = primaryColor,
                                 modifier = Modifier.size(14.dp)
                             )
                         }
                         Text(
-                            text = if (isSavedToNotes) "Kaydedildi" else "Notlara Kaydet",
+                            text = if (isFlushingDrawings) "Kaydediliyor" else "Kaydedildi",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isSavedToNotes) primaryColor else colorScheme.onPrimary,
+                            color = primaryColor,
                             maxLines = 1
                         )
                     }
@@ -1446,10 +1556,10 @@ fun PdfReaderScreen(
                         onDismissRequest = { showMoreMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text(if (isSavedToNotes) "Notlara Kaydedildi" else "Notlara Kaydet") },
+                            text = { Text("Çizimleri Şimdi Kaydet") },
                             leadingIcon = {
                                 Icon(
-                                    imageVector = if (isSavedToNotes) Icons.Default.CheckCircle else Icons.Default.NoteAdd,
+                                    imageVector = Icons.Default.CheckCircle,
                                     contentDescription = null,
                                     tint = primaryColor,
                                     modifier = Modifier.size(20.dp)
@@ -1457,16 +1567,38 @@ fun PdfReaderScreen(
                             },
                             onClick = {
                                 showMoreMenu = false
-                                savePdfDocumentToNotes()
+                                flushAllPageAnnotationsToLibrary(showToast = true)
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Not Olarak Aç (Düzenlenebilir)") },
+                            text = {
+                                Text(
+                                    if (isSavingPageNote) "Sayfa Kaydediliyor..."
+                                    else "Bu Sayfayı Not Olarak Kaydet"
+                                )
+                            },
+                            enabled = !isSavingPageNote,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.NoteAdd,
+                                    contentDescription = null,
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                saveCurrentPageAsNote()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Tüm PDF'i Metin Notuna Dönüştür") },
                             leadingIcon = {
                                 Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(20.dp))
                             },
                             onClick = {
                                 showMoreMenu = false
+                                flushAllPageAnnotationsToLibrary(showToast = false)
                                 onSwitchToEditableNote()
                             }
                         )
@@ -1490,25 +1622,19 @@ fun PdfReaderScreen(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("PDF Dosyasını Paylaş") },
+                            text = {
+                                Text(
+                                    if (isExportingPdf) "PDF Hazırlanıyor..."
+                                    else "Çizimli PDF Paylaş"
+                                )
+                            },
+                            enabled = !isExportingPdf,
                             leadingIcon = {
                                 Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(20.dp))
                             },
                             onClick = {
                                 showMoreMenu = false
-                                runCatching {
-                                    val shareUri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.fileprovider",
-                                        pdfFile.localFile
-                                    )
-                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "application/pdf"
-                                        putExtra(Intent.EXTRA_STREAM, shareUri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(Intent.createChooser(shareIntent, "PDF Paylaş"))
-                                }
+                                shareAnnotatedPdf()
                             }
                         )
                     }
@@ -2102,10 +2228,9 @@ fun PdfReaderScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             SelectionContainer {
-                                Text(
+                                RichSolutionContent(
                                     text = aiResult ?: "",
-                                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                                    color = onSurfaceColor
+                                    textColor = onSurfaceColor
                                 )
                             }
 
@@ -2114,7 +2239,7 @@ fun PdfReaderScreen(
                                 horizontalArrangement = Arrangement.End
                             ) {
                                 Button(
-                                    onClick = { saveAiResultToNotes(aiResult ?: "") },
+                                    onClick = { saveAiResultToNotes(formatMathAsPlainText(aiResult ?: "")) },
                                     enabled = !aiSavedAsNote,
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = primaryColor,
@@ -2272,7 +2397,8 @@ private fun LazyPdfPageCard(
                 controller = drawingController,
                 modifier = Modifier.fillMaxSize(),
                 onTwoFingerScroll = onTwoFingerScroll,
-                onLassoAskAi = onLassoAskAi
+                onLassoAskAi = onLassoAskAi,
+                directContentBitmapProvider = { pageBitmap?.takeIf { !it.isRecycled } }
             )
 
             // Subtle page number corner badge

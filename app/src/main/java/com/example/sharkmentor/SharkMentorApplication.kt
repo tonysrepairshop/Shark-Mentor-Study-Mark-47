@@ -36,6 +36,7 @@ class SharkMentorApplication : Application() {
         UserAiPreferences.initialize(this)
         ThemeManager.init(this)
         SessionManager.init(this)
+        AppIconManager.init(this)
         AvatarHelper.init(this)
         UserPreferences.getInstance(this)
         BlockerPreferences.initialize(this)
@@ -61,6 +62,12 @@ class SharkMentorApplication : Application() {
 
         // ── Offload Heavy/Fragile Startup Tasks to Background Thread ────
         appScope.launch {
+            runCatching {
+                com.example.sharkmentor.core.util.PdfLibraryManager.init(applicationContext)
+            }.onFailure { e ->
+                Log.w("SharkMentorApp", "PdfLibraryManager init bypassed: ${e.message}")
+            }
+
             // 2. Initialize Firebase & Clear Firestore persistence asynchronously (never on Main Thread!)
             try {
                 FirebaseApp.initializeApp(applicationContext)

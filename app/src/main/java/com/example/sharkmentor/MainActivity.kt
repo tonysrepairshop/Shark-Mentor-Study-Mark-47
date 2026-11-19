@@ -265,6 +265,14 @@ class MainActivity : ComponentActivity() {
 
             if (isPdf) {
                 val copiedPdf = PdfBitmapConverter.copyUriToPrivatePdfsDir(this@MainActivity, uri)
+                if (copiedPdf != null) {
+                    runCatching {
+                        com.example.sharkmentor.core.util.PdfLibraryManager.registerOrUpdatePdf(
+                            context = this@MainActivity,
+                            imported = copiedPdf
+                        )
+                    }
+                }
                 withContext(Dispatchers.Main) {
                     if (copiedPdf != null) {
                         pendingPdfChoiceState = copiedPdf

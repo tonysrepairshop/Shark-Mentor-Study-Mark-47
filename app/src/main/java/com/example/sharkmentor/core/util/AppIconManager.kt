@@ -6,6 +6,9 @@ import android.content.pm.PackageManager
 import android.util.Log
 import androidx.annotation.DrawableRes
 import com.example.sharkmentor.R
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 enum class SharkAppIcon(
     val key: String,
@@ -17,18 +20,18 @@ enum class SharkAppIcon(
 ) {
     ORIGINAL(
         key = "original",
-        title = "SharkMentor",
+        title = "Camgöz",
         aliasClass = ".OriginalAlias",
         iconRes = R.mipmap.ic_launcher_original,
-        previewDrawableRes = R.drawable.ic_shark_mako,
+        previewDrawableRes = R.drawable.ic_shark_camgoz,
         notificationSmallIconRes = R.drawable.ic_notification_original
     ),
-    CAMGOZ(
-        key = "camgoz",
-        title = "Camgöz",
-        aliasClass = ".CamgozAlias",
-        iconRes = R.mipmap.ic_launcher_camgoz,
-        previewDrawableRes = R.drawable.ic_shark_camgoz,
+    MAKO(
+        key = "mako",
+        title = "Mako",
+        aliasClass = ".MakoAlias",
+        iconRes = R.mipmap.ic_launcher_mako,
+        previewDrawableRes = R.drawable.ic_shark_mako,
         notificationSmallIconRes = R.drawable.ic_notification_spiny
     ),
     HAMMERHEAD(
@@ -66,8 +69,12 @@ enum class SharkAppIcon(
 
     companion object {
         fun fromKey(key: String?): SharkAppIcon = when (key?.lowercase()?.trim()) {
-            "spiny", "camgoz" -> CAMGOZ
-            "greatwhite", "great_white" -> GREAT_WHITE
+            "original", "camgoz", "spiny" -> ORIGINAL
+            "mako" -> MAKO
+            "greatwhite", "great_white", "buyuk_beyaz" -> GREAT_WHITE
+            "cekicbas", "hammerhead" -> HAMMERHEAD
+            "kaplan", "tiger" -> KAPLAN
+            "megalodon" -> MEGALODON
             else -> entries.firstOrNull { it.key == key } ?: ORIGINAL
         }
     }
@@ -78,16 +85,39 @@ object AppIconManager {
     private const val PREFS_NAME = "app_icon_preferences"
     private const val KEY_ACTIVE_ICON = "active_shark_icon"
     private const val KEY_PENDING_ICON = "pending_shark_icon"
+    private val LEGACY_ALIAS_CLASSES = listOf(".CamgozAlias")
 
-    fun getActiveIcon(context: Context): SharkAppIcon {
+    @Volatile
+    private var isInitialized = false
+
+    private val _activeIconFlow = MutableStateFlow(SharkAppIcon.ORIGINAL)
+    val activeIconFlow: StateFlow<SharkAppIcon> = _activeIconFlow.asStateFlow()
+
+    fun init(context: Context) {
+        val active = readPersistedIcon(context)
+        _activeIconFlow.value = active
+        isInitialized = true
+    }
+
+    private fun readPersistedIcon(context: Context): SharkAppIcon {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return SharkAppIcon.fromKey(prefs.getString(KEY_ACTIVE_ICON, SharkAppIcon.ORIGINAL.key))
     }
 
+    fun getActiveIcon(context: Context): SharkAppIcon {
+        val icon = readPersistedIcon(context)
+        if (!isInitialized || _activeIconFlow.value != icon) {
+            _activeIconFlow.value = icon
+            isInitialized = true
+        }
+        return icon
+    }
+
     /**
-     * Persists the user's chosen icon immediately and queues the PackageManager alias switch
-     * to run when the app moves into the background. Applying alias toggles synchronously in the
-     * foreground causes Android 12–16 / One UI ActivityManager to terminate the foreground process.
+     * Persists the user's chosen icon immediately, updates [activeIconFlow] for live UI sync
+     * (Splash, Auth, About, Settings), and queues the PackageManager alias switch to run when
+     * the app moves into the background. Applying alias toggles synchronously in the foreground
+     * causes Android 12–16 / One UI ActivityManager to terminate the foreground process.
      */
     fun setActiveIcon(context: Context, targetIcon: SharkAppIcon) {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -95,6 +125,8 @@ object AppIconManager {
             .putString(KEY_ACTIVE_ICON, targetIcon.key)
             .putString(KEY_PENDING_ICON, targetIcon.key)
             .apply()
+        _activeIconFlow.value = targetIcon
+        isInitialized = true
     }
 
     /**
@@ -152,14 +184,18 @@ object AppIconManager {
                 )
             }
 
-            // 3. Disable only other aliases that are currently active
-            SharkAppIcon.entries.forEach { icon ->
-                if (icon == targetIcon) return@forEach
-                val other = ComponentName(packageName, "$packageName${icon.aliasClass}")
+            // 3. Disable all other active aliases (including legacy aliases)
+            val allOtherAliases = SharkAppIcon.entries
+                .filter { it != targetIcon }
+                .map { it.aliasClass to (it == SharkAppIcon.ORIGINAL) } +
+                LEGACY_ALIAS_CLASSES.map { it to false }
+
+            allOtherAliases.forEach { (aliasClass, isDefaultEnabled) ->
+                val other = ComponentName(packageName, "$packageName$aliasClass")
                 if (!componentExists(other)) return@forEach
                 val currentState = packageManager.getComponentEnabledSetting(other)
                 val otherIsActive = currentState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
-                    (currentState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && icon == SharkAppIcon.ORIGINAL)
+                    (currentState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && isDefaultEnabled)
                 if (otherIsActive) {
                     packageManager.setComponentEnabledSetting(
                         other,
@@ -177,4 +213,3 @@ object AppIconManager {
         }
     }
 }
-

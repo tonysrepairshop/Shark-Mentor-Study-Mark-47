@@ -951,6 +951,13 @@ class DrawingController(
     }
 
     /**
+     * Exact region to crop for Lasso Screenshot / Ask AI.
+     * Prioritizes the user's explicitly drawn [lassoRegionBounds] so underlining or annotating
+     * inside a question never shrinks the crop down to just the ink stroke bounds.
+     */
+    fun cropRegionBounds(): DrawingBounds? = lassoRegionBounds ?: selectionBounds()
+
+    /**
      * Selects all strokes inside [lassoPolygon] AND retains the drawn lasso polygon + bounding box
      * as an active lasso region even when zero strokes lie inside (for PDF/note screenshot cropping).
      */

@@ -7,13 +7,13 @@ import com.example.sharkmentor.ui.viewmodel.SharkTier
 object SharkVisualKit {
     @DrawableRes
     fun getBreedDrawable(key: String?): Int = when (key?.lowercase()?.trim()) {
-        "camgoz", "spiny" -> R.drawable.ic_shark_camgoz
-        "mako", "original" -> R.drawable.ic_shark_mako
+        "camgoz", "spiny", "original" -> R.drawable.ic_shark_camgoz
+        "mako" -> R.drawable.ic_shark_mako
         "cekicbas", "hammerhead" -> R.drawable.ic_shark_cekicbas
         "kaplan", "tiger" -> R.drawable.ic_shark_kaplan
         "buyuk_beyaz", "great_white", "greatwhite" -> R.drawable.ic_shark_buyuk_beyaz
         "megalodon" -> R.drawable.ic_shark_megalodon
-        else -> R.drawable.ic_shark_mako
+        else -> R.drawable.ic_shark_camgoz
     }
 
     @DrawableRes

@@ -92,6 +92,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharkmentor.ui.components.RichSolutionContent
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
 import com.example.sharkmentor.ui.viewmodel.QuestionSolveViewModel
 import com.example.sharkmentor.ui.viewmodel.SolveRewardTier
@@ -923,11 +924,15 @@ fun QuestionSolveScreen(
                                                         .verticalScroll(rememberScrollState()),
                                                     verticalArrangement = Arrangement.spacedBy(4.dp)
                                                 ) {
-                                                    Text(
+                                                    RichSolutionContent(
                                                         text = aiSolutionText,
-                                                        color = Color(0xFFE2E8F0),
-                                                        fontSize = 12.sp,
-                                                        lineHeight = 17.sp
+                                                        textColor = Color(0xFFE2E8F0),
+                                                        accentColor = Color(0xFF38BDF8),
+                                                        formulaContainerColor = Color.White.copy(alpha = 0.08f),
+                                                        answerContainerColor = Color(0xFF0EA5E9).copy(alpha = 0.22f),
+                                                        answerContentColor = Color(0xFFE0F2FE),
+                                                        fontSize = 12.5.sp,
+                                                        lineHeight = 18.sp
                                                     )
                                                 }
                                             }

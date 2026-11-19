@@ -243,55 +243,91 @@ object PdfBitmapConverter {
                 }
             }
 
-            // Compute a stable filename so reopening the same URI reuses the private copy
-            val uriHash = runCatching {
-                val md = MessageDigest.getInstance("SHA-256")
-                md.digest(uri.toString().toByteArray(Charsets.UTF_8))
-                    .take(6)
-                    .joinToString("") { "%02x".format(it) }
-            }.getOrDefault(uri.toString().hashCode().toUInt().toString(16))
+            // Stream into a temporary file while computing content SHA-256 so opening the same PDF
+            // via different document pickers / URIs ALWAYS maps to the exact same private file & annotations!
+            val tempFile = File(pdfsDir, ".importing_${UUID.randomUUID()}.tmp")
+            val digest = runCatching { MessageDigest.getInstance("SHA-256") }.getOrNull()
 
-            val safeFileName = displayName
-                .replace(Regex("[^a-zA-Z0-9._-]"), "_")
-                .take(64)
-                .let { if (it.endsWith(".pdf", ignoreCase = true)) it else "$it.pdf" }
-
-            val targetFile = File(pdfsDir, "pdf_${uriHash}_${safeFileName}")
-
-            resolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(targetFile).use { output ->
-                    val buffer = ByteArray(8 * 1024)
+            fun streamAndHash(input: java.io.InputStream) {
+                FileOutputStream(tempFile).use { output ->
+                    val buffer = ByteArray(16 * 1024)
                     while (true) {
                         val read = input.read(buffer)
                         if (read <= 0) break
+                        digest?.update(buffer, 0, read)
                         output.write(buffer, 0, read)
                     }
                     output.flush()
                 }
-            } ?: run {
-                // Fallback if openInputStream is null: try openFileDescriptor
-                resolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                    ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
-                        FileOutputStream(targetFile).use { output ->
-                            input.copyTo(output, bufferSize = 8 * 1024)
+            }
+
+            try {
+                resolver.openInputStream(uri)?.use { input ->
+                    streamAndHash(input)
+                } ?: run {
+                    // Fallback if openInputStream is null: try openFileDescriptor
+                    resolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                        ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+                            streamAndHash(input)
                         }
                     }
                 }
-            }
 
-            if (!targetFile.exists() || targetFile.length() == 0L) {
-                Log.e(TAG, "Copied PDF file is empty for $uri")
-                return null
-            }
+                if (!tempFile.exists() || tempFile.length() == 0L) {
+                    runCatching { tempFile.delete() }
+                    Log.e(TAG, "Copied PDF file is empty for $uri")
+                    return null
+                }
 
-            val pageCount = readPageCountSafely(targetFile)
-            ImportedPdfFile(
-                localFile = targetFile,
-                localUri = Uri.fromFile(targetFile),
-                displayName = displayName,
-                title = cleanTitle,
-                pageCount = pageCount
-            )
+                val contentHash = digest?.digest()
+                    ?.take(6)
+                    ?.joinToString("") { "%02x".format(it) }
+                    ?: uri.toString().hashCode().toUInt().toString(16)
+
+                val safeFileName = displayName
+                    .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                    .take(64)
+                    .let { if (it.endsWith(".pdf", ignoreCase = true)) it else "$it.pdf" }
+
+                val targetFile = File(pdfsDir, "pdf_${contentHash}_${safeFileName}")
+                val existingSameHash = pdfsDir.listFiles()?.firstOrNull { candidate ->
+                    candidate.isFile &&
+                        candidate.name.startsWith("pdf_${contentHash}_") &&
+                        candidate.name.endsWith(".pdf", ignoreCase = true) &&
+                        candidate.length() == tempFile.length()
+                }
+
+                val finalFile = when {
+                    existingSameHash != null -> {
+                        runCatching { tempFile.delete() }
+                        existingSameHash
+                    }
+                    targetFile.exists() && targetFile.length() == tempFile.length() -> {
+                        runCatching { tempFile.delete() }
+                        targetFile
+                    }
+                    else -> {
+                        if (targetFile.exists()) targetFile.delete()
+                        if (!tempFile.renameTo(targetFile)) {
+                            tempFile.copyTo(targetFile, overwrite = true)
+                            runCatching { tempFile.delete() }
+                        }
+                        targetFile
+                    }
+                }
+
+                val pageCount = readPageCountSafely(finalFile)
+                ImportedPdfFile(
+                    localFile = finalFile,
+                    localUri = Uri.fromFile(finalFile),
+                    displayName = displayName,
+                    title = cleanTitle,
+                    pageCount = pageCount
+                )
+            } catch (inner: Exception) {
+                runCatching { tempFile.delete() }
+                throw inner
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed copying PDF URI to private storage: $uri", e)
             null
