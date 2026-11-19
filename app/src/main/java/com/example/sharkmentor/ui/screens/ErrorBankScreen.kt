@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import android.widget.Toast
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -605,16 +606,54 @@ fun ErrorQuestionCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(question.questionImageUri)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = "Question Image",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center
+            ) {
+                val imageModel = remember(question.questionImageUri) {
+                    val raw = question.questionImageUri.trim()
+                    when {
+                        raw.isBlank() -> null
+                        raw.startsWith("http://", ignoreCase = true) ||
+                            raw.startsWith("https://", ignoreCase = true) ||
+                            raw.startsWith("content://", ignoreCase = true) -> raw
+                        raw.startsWith("file://") -> java.io.File(raw.removePrefix("file://")).takeIf { it.exists() && it.length() > 0L }
+                        else -> java.io.File(raw).takeIf { it.exists() && it.length() > 0L }
+                    }
+                }
+                if (imageModel != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(imageModel)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "Question Image",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BrokenImage,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.size(30.dp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Görsel bulunamadı",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
 
                 // Due badge
                 if (isDue) {

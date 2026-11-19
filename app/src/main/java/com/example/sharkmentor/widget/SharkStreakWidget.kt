@@ -26,6 +26,7 @@ import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
+import androidx.glance.layout.ContentScale
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxSize
@@ -39,18 +40,29 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import com.example.sharkmentor.MainActivity
 import com.example.sharkmentor.R
+import com.example.sharkmentor.core.streak.WaterStreakMood
+import com.example.sharkmentor.core.streak.WaterStreakMoodDecision
+import com.example.sharkmentor.core.streak.WaterStreakMoodEngine
 import com.example.sharkmentor.core.widget.DayFocusStatus
 import com.example.sharkmentor.core.widget.RefreshWidgetAction
 import com.example.sharkmentor.core.widget.WidgetSnapshot
 import com.example.sharkmentor.core.widget.WidgetThemeTokens
 import com.example.sharkmentor.core.widget.WidgetUpdateManager
+import java.time.LocalDateTime
 
+/**
+ * Duolingo-style "Su Serisi" (Water Streak) Home Screen Widget.
+ *
+ * Displays ONLY the 14 hand-drawn expressive mascot artworks (`mascot_shark_*.webp`) paired with
+ * real-time emotional Turkish copy, water-drop streak badge, 7-day aqua drop strip, and one-tap
+ * focus launcher. Never uses the default 3D app launcher icon (`ic_app_icon_default`).
+ */
 class SharkStreakWidget : GlanceAppWidget() {
 
     companion object {
-        private val SIZE_COMPACT = DpSize(140.dp, 110.dp)
-        private val SIZE_MEDIUM = DpSize(210.dp, 130.dp)
-        private val SIZE_EXPANDED = DpSize(260.dp, 170.dp)
+        private val SIZE_COMPACT = DpSize(140.dp, 120.dp)
+        private val SIZE_MEDIUM = DpSize(220.dp, 140.dp)
+        private val SIZE_EXPANDED = DpSize(280.dp, 190.dp)
     }
 
     override val sizeMode: SizeMode = SizeMode.Responsive(
@@ -59,20 +71,33 @@ class SharkStreakWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val snapshot = WidgetUpdateManager.loadSnapshot(context)
+        val now = LocalDateTime.now()
+        val decision = WaterStreakMoodEngine.resolve(
+            streakCount = snapshot.streakCount,
+            isDoneToday = snapshot.isStreakDoneToday,
+            todayMinutes = snapshot.todayFocusMinutes,
+            hourOfDay = now.hour,
+            dayOfYear = now.dayOfYear,
+            daysSinceLastStudy = snapshot.daysSinceLastStudy
+        )
 
         provideContent {
             GlanceTheme {
-                StreakWidgetContent(snapshot = snapshot)
+                WaterStreakWidgetContent(snapshot = snapshot, decision = decision)
             }
         }
     }
 }
 
 @Composable
-private fun StreakWidgetContent(snapshot: WidgetSnapshot) {
+private fun WaterStreakWidgetContent(
+    snapshot: WidgetSnapshot,
+    decision: WaterStreakMoodDecision
+) {
     val context = LocalContext.current
     val size = LocalSize.current
-    val isCompact = size.width < 185.dp
+    val isCompact = size.width < 195.dp
+    val isExpanded = size.width >= 265.dp && size.height >= 175.dp
 
     val startFocusIntent = Intent(context, MainActivity::class.java).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -81,182 +106,344 @@ private fun StreakWidgetContent(snapshot: WidgetSnapshot) {
     }
 
     val doneToday = snapshot.isStreakDoneToday
+    val cardBg = when (decision.mood) {
+        WaterStreakMood.FURIOUS, WaterStreakMood.PANIC, WaterStreakMood.TANTRUM ->
+            WidgetThemeTokens.WaterUrgentBg
+        WaterStreakMood.SHOCKED, WaterStreakMood.CRYING, WaterStreakMood.EXHAUSTED ->
+            WidgetThemeTokens.WaterWarningBg
+        WaterStreakMood.ECSTATIC, WaterStreakMood.LOVE, WaterStreakMood.PROUD, WaterStreakMood.HAPPY ->
+            WidgetThemeTokens.WaterCelebrationBg
+        else -> WidgetThemeTokens.DeepOceanBg
+    }
+
+    val dropTint = when (decision.mood) {
+        WaterStreakMood.FURIOUS, WaterStreakMood.PANIC, WaterStreakMood.TANTRUM ->
+            WidgetThemeTokens.PauseRed
+        WaterStreakMood.SHOCKED, WaterStreakMood.CRYING ->
+            WidgetThemeTokens.AlertAmber
+        else -> WidgetThemeTokens.WaterDropAqua
+    }
+
+    val statusPillBg = when {
+        doneToday -> WidgetThemeTokens.WaterDropBg
+        decision.mood in setOf(WaterStreakMood.FURIOUS, WaterStreakMood.PANIC, WaterStreakMood.TANTRUM) ->
+            WidgetThemeTokens.PauseRedBg
+        else -> WidgetThemeTokens.ActiveBlueBg
+    }
+    val statusPillTextColor = when {
+        doneToday -> WidgetThemeTokens.WaterDropAqua
+        decision.mood in setOf(WaterStreakMood.FURIOUS, WaterStreakMood.PANIC, WaterStreakMood.TANTRUM) ->
+            WidgetThemeTokens.PauseRed
+        else -> WidgetThemeTokens.IceBlue
+    }
 
     Box(
         modifier = GlanceModifier
             .fillMaxSize()
-            .background(WidgetThemeTokens.DeepOceanBg)
+            .background(cardBg)
             .cornerRadius(24.dp)
-            .padding(12.dp)
+            .padding(if (isCompact) 10.dp else 12.dp)
             .clickable(actionStartActivity(startFocusIntent))
     ) {
-        Column(modifier = GlanceModifier.fillMaxSize()) {
-            // Header: Flame Icon + Title + Status + Refresh
-            Row(
-                modifier = GlanceModifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Image(
-                    provider = ImageProvider(R.drawable.ic_widget_flame),
-                    contentDescription = "Seri",
-                    modifier = GlanceModifier.size(16.dp),
-                    colorFilter = ColorFilter.tint(WidgetThemeTokens.AlertAmber)
-                )
-                Spacer(modifier = GlanceModifier.width(5.dp))
-                Text(
-                    text = "Seri",
-                    style = TextStyle(
-                        color = WidgetThemeTokens.OffWhite,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    ),
-                    maxLines = 1
-                )
+        if (isCompact) {
+            CompactWaterStreakLayout(
+                snapshot = snapshot,
+                decision = decision,
+                dropTint = dropTint
+            )
+        } else {
+            FullWaterStreakLayout(
+                snapshot = snapshot,
+                decision = decision,
+                doneToday = doneToday,
+                dropTint = dropTint,
+                statusPillBg = statusPillBg,
+                statusPillTextColor = statusPillTextColor,
+                isExpanded = isExpanded,
+                startFocusIntent = startFocusIntent
+            )
+        }
+    }
+}
 
-                Spacer(modifier = GlanceModifier.defaultWeight())
-
-                if (!isCompact) {
-                    Box(
-                        modifier = GlanceModifier
-                            .background(
-                                if (doneToday) WidgetThemeTokens.SuccessGreenBg else WidgetThemeTokens.AlertAmberBg
-                            )
-                            .cornerRadius(8.dp)
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = if (doneToday) "Bugün Tamam" else "Odak Bekliyor",
-                            style = TextStyle(
-                                color = if (doneToday) WidgetThemeTokens.SuccessGreen else WidgetThemeTokens.AlertAmber,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold
-                            ),
-                            maxLines = 1
-                        )
-                    }
-                    Spacer(modifier = GlanceModifier.width(6.dp))
-                }
-
-                Box(
-                    modifier = GlanceModifier
-                        .size(24.dp)
-                        .background(WidgetThemeTokens.ElevatedCardBg)
-                        .cornerRadius(12.dp)
-                        .clickable(actionRunCallback<RefreshWidgetAction>()),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        provider = ImageProvider(R.drawable.ic_widget_refresh),
-                        contentDescription = "Yenile",
-                        modifier = GlanceModifier.size(12.dp),
-                        colorFilter = ColorFilter.tint(WidgetThemeTokens.IceBlue)
-                    )
-                }
-            }
-
-            Spacer(modifier = GlanceModifier.height(6.dp))
-
-            // Streak Count Row
-            Row(
-                modifier = GlanceModifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "${snapshot.streakCount} Gün",
-                    style = TextStyle(
-                        color = WidgetThemeTokens.OffWhite,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = if (isCompact) 20.sp else 24.sp
-                    ),
-                    maxLines = 1
-                )
-
-                if (!isCompact && snapshot.streakFreezeAvailable > 0) {
-                    Spacer(modifier = GlanceModifier.defaultWeight())
-                    Box(
-                        modifier = GlanceModifier
-                            .background(WidgetThemeTokens.ActiveBlueBg)
-                            .cornerRadius(8.dp)
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "${snapshot.streakFreezeAvailable} Dondurma",
-                            style = TextStyle(
-                                color = WidgetThemeTokens.IceBlue,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold
-                            ),
-                            maxLines = 1
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = GlanceModifier.height(6.dp))
-
-            // 7-Day Mini Status Indicator
-            val days = snapshot.last7Days
-            if (days.isNotEmpty()) {
-                Row(
-                    modifier = GlanceModifier
-                        .fillMaxWidth()
-                        .background(WidgetThemeTokens.ElevatedCardBg)
-                        .cornerRadius(12.dp)
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    days.forEachIndexed { index, day ->
-                        DayMiniIndicator(
-                            day = day,
-                            modifier = GlanceModifier.defaultWeight()
-                        )
-                        if (index < days.lastIndex) {
-                            Spacer(modifier = GlanceModifier.width(4.dp))
-                        }
-                    }
-                }
-            }
-
+@Composable
+private fun CompactWaterStreakLayout(
+    snapshot: WidgetSnapshot,
+    decision: WaterStreakMoodDecision,
+    dropTint: androidx.glance.unit.ColorProvider
+) {
+    Column(
+        modifier = GlanceModifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            modifier = GlanceModifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Image(
+                provider = ImageProvider(R.drawable.ic_widget_water_drop),
+                contentDescription = "Su Serisi",
+                modifier = GlanceModifier.size(16.dp),
+                colorFilter = ColorFilter.tint(dropTint)
+            )
+            Spacer(modifier = GlanceModifier.width(4.dp))
+            Text(
+                text = "${snapshot.streakCount} Gün",
+                style = TextStyle(
+                    color = WidgetThemeTokens.OffWhite,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                ),
+                maxLines = 1
+            )
             Spacer(modifier = GlanceModifier.defaultWeight())
-            Spacer(modifier = GlanceModifier.height(6.dp))
-
-            // CTA: Hemen Odaklan
             Box(
                 modifier = GlanceModifier
-                    .fillMaxWidth()
-                    .background(WidgetThemeTokens.SignaturePurple)
-                    .cornerRadius(14.dp)
-                    .padding(vertical = 8.dp)
-                    .clickable(actionStartActivity(startFocusIntent)),
+                    .size(22.dp)
+                    .background(WidgetThemeTokens.ElevatedCardBg)
+                    .cornerRadius(11.dp)
+                    .clickable(actionRunCallback<RefreshWidgetAction>()),
                 contentAlignment = Alignment.Center
             ) {
+                Image(
+                    provider = ImageProvider(R.drawable.ic_widget_refresh),
+                    contentDescription = "Yenile",
+                    modifier = GlanceModifier.size(11.dp),
+                    colorFilter = ColorFilter.tint(WidgetThemeTokens.WaterDropAqua)
+                )
+            }
+        }
+
+        Spacer(modifier = GlanceModifier.height(4.dp))
+
+        Image(
+            provider = ImageProvider(decision.mood.widgetDrawableRes),
+            contentDescription = decision.mood.moodLabel,
+            contentScale = ContentScale.Fit,
+            modifier = GlanceModifier
+                .size(64.dp)
+        )
+
+        Spacer(modifier = GlanceModifier.height(3.dp))
+
+        Text(
+            text = decision.widgetHeadline,
+            style = TextStyle(
+                color = WidgetThemeTokens.OffWhite,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp
+            ),
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun FullWaterStreakLayout(
+    snapshot: WidgetSnapshot,
+    decision: WaterStreakMoodDecision,
+    doneToday: Boolean,
+    dropTint: androidx.glance.unit.ColorProvider,
+    statusPillBg: androidx.glance.unit.ColorProvider,
+    statusPillTextColor: androidx.glance.unit.ColorProvider,
+    isExpanded: Boolean,
+    startFocusIntent: Intent
+) {
+    Column(modifier = GlanceModifier.fillMaxSize()) {
+        // Header row: Water Drop + "Su Serisi" + Status Pill + Refresh
+        Row(
+            modifier = GlanceModifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Image(
+                provider = ImageProvider(R.drawable.ic_widget_water_drop),
+                contentDescription = "Su Serisi",
+                modifier = GlanceModifier.size(16.dp),
+                colorFilter = ColorFilter.tint(dropTint)
+            )
+            Spacer(modifier = GlanceModifier.width(5.dp))
+            Text(
+                text = "Su Serisi",
+                style = TextStyle(
+                    color = WidgetThemeTokens.OffWhite,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                ),
+                maxLines = 1
+            )
+
+            Spacer(modifier = GlanceModifier.defaultWeight())
+
+            Box(
+                modifier = GlanceModifier
+                    .background(statusPillBg)
+                    .cornerRadius(8.dp)
+                    .padding(horizontal = 7.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = if (doneToday) "Damla Cepte 💧" else decision.mood.moodLabel,
+                    style = TextStyle(
+                        color = statusPillTextColor,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    maxLines = 1
+                )
+            }
+            Spacer(modifier = GlanceModifier.width(6.dp))
+            Box(
+                modifier = GlanceModifier
+                    .size(24.dp)
+                    .background(WidgetThemeTokens.ElevatedCardBg)
+                    .cornerRadius(12.dp)
+                    .clickable(actionRunCallback<RefreshWidgetAction>()),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    provider = ImageProvider(R.drawable.ic_widget_refresh),
+                    contentDescription = "Yenile",
+                    modifier = GlanceModifier.size(12.dp),
+                    colorFilter = ColorFilter.tint(WidgetThemeTokens.WaterDropAqua)
+                )
+            }
+        }
+
+        Spacer(modifier = GlanceModifier.height(6.dp))
+
+        // Hero Row: Mascot Artwork + Streak Count & Emotional Duolingo Copy
+        Row(
+            modifier = GlanceModifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Image(
+                provider = ImageProvider(decision.mood.widgetDrawableRes),
+                contentDescription = decision.mood.moodLabel,
+                contentScale = ContentScale.Fit,
+                modifier = GlanceModifier.size(if (isExpanded) 86.dp else 72.dp)
+            )
+
+            Spacer(modifier = GlanceModifier.width(10.dp))
+
+            Column(modifier = GlanceModifier.defaultWeight()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Image(
-                        provider = ImageProvider(R.drawable.ic_widget_bolt),
-                        contentDescription = null,
-                        modifier = GlanceModifier.size(14.dp),
-                        colorFilter = ColorFilter.tint(WidgetThemeTokens.OffWhite)
-                    )
-                    Spacer(modifier = GlanceModifier.width(5.dp))
                     Text(
-                        text = "Hemen Odaklan",
+                        text = "${snapshot.streakCount} Gün",
                         style = TextStyle(
                             color = WidgetThemeTokens.OffWhite,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            fontSize = if (isExpanded) 23.sp else 20.sp
                         ),
                         maxLines = 1
                     )
+                    if (snapshot.streakFreezeAvailable > 0) {
+                        Spacer(modifier = GlanceModifier.width(6.dp))
+                        Box(
+                            modifier = GlanceModifier
+                                .background(WidgetThemeTokens.ActiveBlueBg)
+                                .cornerRadius(6.dp)
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "❄️${snapshot.streakFreezeAvailable}",
+                                style = TextStyle(
+                                    color = WidgetThemeTokens.IceBlue,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                maxLines = 1
+                            )
+                        }
+                    }
                 }
+
+                Spacer(modifier = GlanceModifier.height(2.dp))
+
+                Text(
+                    text = decision.widgetHeadline,
+                    style = TextStyle(
+                        color = WidgetThemeTokens.OffWhite,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    ),
+                    maxLines = 1
+                )
+
+                Spacer(modifier = GlanceModifier.height(2.dp))
+
+                Text(
+                    text = decision.widgetSubtitle,
+                    style = TextStyle(
+                        color = WidgetThemeTokens.MutedBlue,
+                        fontSize = 10.sp
+                    ),
+                    maxLines = 2
+                )
+            }
+        }
+
+        if (isExpanded && snapshot.last7Days.isNotEmpty()) {
+            Spacer(modifier = GlanceModifier.height(8.dp))
+            Row(
+                modifier = GlanceModifier
+                    .fillMaxWidth()
+                    .background(WidgetThemeTokens.ElevatedCardBg)
+                    .cornerRadius(12.dp)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                snapshot.last7Days.forEachIndexed { index, day ->
+                    WaterDayMiniIndicator(
+                        day = day,
+                        modifier = GlanceModifier.defaultWeight()
+                    )
+                    if (index < snapshot.last7Days.lastIndex) {
+                        Spacer(modifier = GlanceModifier.width(4.dp))
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = GlanceModifier.defaultWeight())
+        Spacer(modifier = GlanceModifier.height(6.dp))
+
+        // Quick Focus CTA
+        Box(
+            modifier = GlanceModifier
+                .fillMaxWidth()
+                .background(
+                    if (doneToday) WidgetThemeTokens.OceanTeal else WidgetThemeTokens.IceBlue
+                )
+                .cornerRadius(13.dp)
+                .padding(vertical = 7.dp)
+                .clickable(actionStartActivity(startFocusIntent)),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    provider = ImageProvider(R.drawable.ic_widget_water_drop),
+                    contentDescription = null,
+                    modifier = GlanceModifier.size(13.dp),
+                    colorFilter = ColorFilter.tint(WidgetThemeTokens.DarkOnAccent)
+                )
+                Spacer(modifier = GlanceModifier.width(5.dp))
+                Text(
+                    text = if (doneToday) "Ekstra Odak Başlat" else "Hemen Odaklan",
+                    style = TextStyle(
+                        color = WidgetThemeTokens.DarkOnAccent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    maxLines = 1
+                )
             }
         }
     }
 }
 
 @Composable
-private fun DayMiniIndicator(day: DayFocusStatus, modifier: GlanceModifier = GlanceModifier) {
+private fun WaterDayMiniIndicator(day: DayFocusStatus, modifier: GlanceModifier = GlanceModifier) {
     val pillColor = when {
-        day.isCompleted -> WidgetThemeTokens.AlertAmber
+        day.isCompleted -> WidgetThemeTokens.WaterDropAqua
         day.minutes > 0L -> WidgetThemeTokens.IceBlue
         else -> WidgetThemeTokens.TrackBg
     }

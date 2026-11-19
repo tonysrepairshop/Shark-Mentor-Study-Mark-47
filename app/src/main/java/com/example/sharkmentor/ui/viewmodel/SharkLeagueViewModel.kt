@@ -592,6 +592,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         incomingInvitesListener = database.collection("nudges")
             .whereEqualTo("toUid", uid)
             .whereEqualTo("seen", false)
+            .limit(20)
             .addSnapshotListener { snap, error ->
                 if (error != null) {
                     Log.w("SharkLeagueVM", "Incoming invites listener warning: ${error.message}")
@@ -643,6 +644,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
 
         incomingDmListener = database.collection("dm_threads")
             .whereArrayContains("participantIds", uid)
+            .limit(40)
             .addSnapshotListener { snap, error ->
                 if (error != null) return@addSnapshotListener
                 var pendingCount = 0
@@ -1816,39 +1818,33 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             } else null
             val studentDocRef = database.collection("students").document(uid)
 
-            coroutineScope {
-                val sessionsDeferred = async {
-                    try {
-                        studentDocRef.collection("sessions")
-                            .whereGreaterThanOrEqualTo("timestamp", weekStart)
-                            .get()
-                            .await()
-                    } catch (_: Exception) {
-                        null
-                    }
-                }
-                val focusDeferred = async {
-                    try {
-                        studentDocRef.collection("focus_sessions")
-                            .whereGreaterThanOrEqualTo("timestamp", weekStart)
-                            .get()
-                            .await()
-                    } catch (_: Exception) {
-                        null
-                    }
-                }
+            val fromSessions = try {
+                studentDocRef.collection("sessions")
+                    .whereGreaterThanOrEqualTo("timestamp", weekStart)
+                    .limit(120)
+                    .get()
+                    .await()
+                    .documents
+                    .filter { activeSessionId.isNullOrBlank() || it.id != activeSessionId }
+                    .sumOf { doc -> doc.getLong("durationSeconds") ?: 0L }
+            } catch (_: Exception) {
+                0L
+            }
 
-                val fromSessions = sessionsDeferred.await()?.documents
-                    ?.filter { activeSessionId.isNullOrBlank() || it.id != activeSessionId }
-                    ?.sumOf { doc -> doc.getLong("durationSeconds") ?: 0L }
-                    ?: 0L
-                if (fromSessions > 0L) {
-                    fromSessions
-                } else {
-                    focusDeferred.await()?.documents
-                        ?.filter { activeSessionId.isNullOrBlank() || it.id != activeSessionId }
-                        ?.sumOf { doc -> doc.getLong("durationSeconds") ?: 0L }
-                        ?: 0L
+            if (fromSessions > 0L) {
+                fromSessions
+            } else {
+                try {
+                    studentDocRef.collection("focus_sessions")
+                        .whereGreaterThanOrEqualTo("timestamp", weekStart)
+                        .limit(120)
+                        .get()
+                        .await()
+                        .documents
+                        .filter { activeSessionId.isNullOrBlank() || it.id != activeSessionId }
+                        .sumOf { doc -> doc.getLong("durationSeconds") ?: 0L }
+                } catch (_: Exception) {
+                    0L
                 }
             }
         } catch (e: Exception) {

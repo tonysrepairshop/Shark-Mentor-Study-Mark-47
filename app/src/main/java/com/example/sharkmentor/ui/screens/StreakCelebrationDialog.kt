@@ -5,7 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,7 +24,7 @@ fun StreakCelebrationDialog(
     wasFrozenToday: Boolean,
     onDismiss: () -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "flame_bounce")
+    val infiniteTransition = rememberInfiniteTransition(label = "water_drop_bounce")
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f,
         targetValue = 1.2f,
@@ -54,19 +54,19 @@ fun StreakCelebrationDialog(
                     .fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Celebration Icon
+                // Celebration Icon (Water Drop)
                 Box(
                     modifier = Modifier
                         .size(100.dp)
                         .background(
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            color = MaterialTheme.colorScheme.primaryContainer,
                             shape = RoundedCornerShape(50.dp)
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.LocalFireDepartment,
-                        contentDescription = "Streak Flame",
+                        imageVector = Icons.Rounded.WaterDrop,
+                        contentDescription = "Su Serisi",
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
                             .size(64.dp)
@@ -77,7 +77,7 @@ fun StreakCelebrationDialog(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Text(
-                    text = if (wasFrozenToday) "Seri Korundu" else "Seri Devam Ediyor",
+                    text = if (wasFrozenToday) "Su Serisi Korundu 💧" else "Su Serisi Devam Ediyor 💧",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
@@ -87,7 +87,7 @@ fun StreakCelebrationDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "$streakCount günlük çalışma serisine ulaştınız.",
+                    text = "$streakCount günlük su serisine ulaştınız!",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center

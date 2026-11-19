@@ -19,7 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Science
@@ -99,10 +99,10 @@ object AvatarHelper {
         ),
         AvatarPreset(
             id = "preset_flame",
-            label = "Seri",
-            icon = Icons.Default.LocalFireDepartment,
-            startColor = Color(0xFFEA580C),
-            endColor = Color(0xFFFB923C)
+            label = "Su Serisi",
+            icon = Icons.Rounded.WaterDrop,
+            startColor = Color(0xFF0284C7),
+            endColor = Color(0xFF22D3EE)
         ),
         AvatarPreset(
             id = "preset_spark",

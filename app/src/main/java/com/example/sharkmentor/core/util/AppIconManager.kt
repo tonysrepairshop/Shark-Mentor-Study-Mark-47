@@ -20,61 +20,61 @@ enum class SharkAppIcon(
 ) {
     ORIGINAL(
         key = "original",
-        title = "Camgöz",
+        title = "Klasik Shark",
         aliasClass = ".OriginalAlias",
         iconRes = R.mipmap.ic_launcher_original,
-        previewDrawableRes = R.drawable.ic_shark_camgoz,
+        previewDrawableRes = R.drawable.ic_app_icon_default,
         notificationSmallIconRes = R.drawable.ic_notification_original
     ),
     MAKO(
         key = "mako",
-        title = "Mako",
+        title = "Neşeli Shark",
         aliasClass = ".MakoAlias",
         iconRes = R.mipmap.ic_launcher_mako,
-        previewDrawableRes = R.drawable.ic_shark_mako,
+        previewDrawableRes = R.drawable.ic_app_icon_happy,
         notificationSmallIconRes = R.drawable.ic_notification_spiny
     ),
     HAMMERHEAD(
         key = "hammerhead",
-        title = "Çekiçbaş",
+        title = "Efsane Shark",
         aliasClass = ".HammerheadAlias",
         iconRes = R.mipmap.ic_launcher_hammerhead,
-        previewDrawableRes = R.drawable.ic_shark_cekicbas,
+        previewDrawableRes = R.drawable.ic_app_icon_ecstatic,
         notificationSmallIconRes = R.drawable.ic_notification_hammerhead
     ),
     KAPLAN(
         key = "kaplan",
-        title = "Kaplan",
+        title = "Patron Shark",
         aliasClass = ".KaplanAlias",
         iconRes = R.mipmap.ic_launcher_kaplan,
-        previewDrawableRes = R.drawable.ic_shark_kaplan,
+        previewDrawableRes = R.drawable.ic_app_icon_proud,
         notificationSmallIconRes = R.drawable.ic_notification_great_white
     ),
     GREAT_WHITE(
         key = "great_white",
-        title = "Büyük Beyaz",
+        title = "Sevgi Shark",
         aliasClass = ".GreatWhiteAlias",
         iconRes = R.mipmap.ic_launcher_greatwhite,
-        previewDrawableRes = R.drawable.ic_shark_buyuk_beyaz,
+        previewDrawableRes = R.drawable.ic_app_icon_love,
         notificationSmallIconRes = R.drawable.ic_notification_great_white
     ),
     MEGALODON(
         key = "megalodon",
-        title = "Megalodon",
+        title = "Hırslı Shark",
         aliasClass = ".MegalodonAlias",
         iconRes = R.mipmap.ic_launcher_megalodon,
-        previewDrawableRes = R.drawable.ic_shark_megalodon,
+        previewDrawableRes = R.drawable.ic_app_icon_furious,
         notificationSmallIconRes = R.drawable.ic_notification_megalodon
     );
 
     companion object {
         fun fromKey(key: String?): SharkAppIcon = when (key?.lowercase()?.trim()) {
-            "original", "camgoz", "spiny" -> ORIGINAL
-            "mako" -> MAKO
-            "greatwhite", "great_white", "buyuk_beyaz" -> GREAT_WHITE
-            "cekicbas", "hammerhead" -> HAMMERHEAD
-            "kaplan", "tiger" -> KAPLAN
-            "megalodon" -> MEGALODON
+            "original", "camgoz", "spiny", "default", "klasik" -> ORIGINAL
+            "mako", "happy", "neseli" -> MAKO
+            "greatwhite", "great_white", "buyuk_beyaz", "love", "sevgi" -> GREAT_WHITE
+            "cekicbas", "hammerhead", "ecstatic", "efsane" -> HAMMERHEAD
+            "kaplan", "tiger", "proud", "patron" -> KAPLAN
+            "megalodon", "furious", "hirsli" -> MEGALODON
             else -> entries.firstOrNull { it.key == key } ?: ORIGINAL
         }
     }

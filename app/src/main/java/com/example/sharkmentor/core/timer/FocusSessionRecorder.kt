@@ -322,7 +322,7 @@ object FocusSessionRecorder {
                         TAG,
                         "20-min local checkpoint saved (single-row upsert): rowId=${savedEntity.id}, uuid=$uuid, durationSec=${savedEntity.durationSeconds}"
                     )
-                    WidgetUpdateManager.updateAllWidgets(appContext)
+                    evaluateWaterStreakAndRefreshWidgets(appContext)
 
                     // 3. Every 60 minutes: Attempt Firestore sync; if offline, keep isSynced=false for SyncWorker
                     if (shouldSyncCloud60Min) {
@@ -457,7 +457,7 @@ object FocusSessionRecorder {
                     TAG,
                     "Finalized session in Room (single-row upsert): rowId=${finalEntity.id}, uuid=$uuid, totalSec=${finalEntity.durationSeconds}"
                 )
-                WidgetUpdateManager.updateAllWidgets(appContext)
+                evaluateWaterStreakAndRefreshWidgets(appContext)
 
                 val syncedOk = syncSessionToFirestoreInternal(
                     context = appContext,
@@ -481,11 +481,8 @@ object FocusSessionRecorder {
 
     /**
      * Public helper for external study tools (e.g. PACE, KEEP, PDF Reader, Flashcards) to record
-     * focus duration into Room (`focus_sessions`) and Firestore (`students/{uid}/sessions` & `users/{uid}/sessions`)
+     * focus duration into Room (`focus_sessions`) and canonical Firestore (`students/{uid}/sessions`)
      * without double-counting.
-     *
-     * Passing the same [sessionUuid] across periodic updates from an external tool will upsert the same
-     * Room row and Firestore document.
      */
     suspend fun recordExternalToolSession(
         context: Context,
@@ -512,6 +509,7 @@ object FocusSessionRecorder {
                 screenOnMillis = ((existing?.screenOnMinutes ?: 0) * 60_000L),
                 markSynced = false
             )
+            evaluateWaterStreakAndRefreshWidgets(appContext)
             val syncedOk = syncSessionToFirestoreInternal(
                 context = appContext,
                 sessionEntity = savedEntity,
@@ -553,6 +551,24 @@ object FocusSessionRecorder {
                 isFinal = true
             )
         }
+    }
+
+    private suspend fun evaluateWaterStreakAndRefreshWidgets(appContext: Context) {
+        runCatching {
+            val streakRepo = com.example.sharkmentor.data.repository.StreakRepository(appContext)
+            val newlyEarnedToday = streakRepo.evaluateFromRoomAfterFocus()
+            if (newlyEarnedToday) {
+                val state = streakRepo.streakState.value
+                com.example.sharkmentor.worker.StreakReminderWorker.showWaterDropSecuredNotification(
+                    context = appContext,
+                    streakCount = state.streakCount,
+                    todayMinutes = com.example.sharkmentor.data.repository.StreakRepository.MIN_DAILY_STREAK_MINUTES
+                )
+            }
+        }.onFailure {
+            Log.w(TAG, "Water streak evaluation warning: ${it.message}")
+        }
+        WidgetUpdateManager.updateAllWidgets(appContext)
     }
 
     // ── Internal Single-Row Room Upsert & Firestore Sync ─────────────────────
@@ -602,10 +618,9 @@ object FocusSessionRecorder {
     }
 
     /**
-     * Syncs a session document to Firestore using [sessionUuid] as the deterministic document ID
-     * across `students/{uid}/sessions/{uuid}`, `users/{uid}/sessions/{uuid}`, and
-     * `students/{uid}/focus_sessions/{uuid}` so 60-minute checkpoints and finalization update the
-     * exact same cloud document without duplication.
+     * Syncs a session document to canonical Firestore path `students/{uid}/sessions/{sessionUuid}`
+     * and updates the student summary delta (2 writes total instead of 4 redundant writes) so
+     * 60-minute checkpoints and finalization stay quota-safe and never double-count.
      */
     private suspend fun syncSessionToFirestoreInternal(
         context: Context,
@@ -657,33 +672,13 @@ object FocusSessionRecorder {
                 "syncedAt" to System.currentTimeMillis()
             )
 
-            // 1. Write to students/{uid}/sessions/{sessionUuid}
+            // 1. Canonical session document: students/{uid}/sessions/{sessionUuid}
             db.collection("students").document(currentUserId)
                 .collection("sessions").document(sessionUuid)
                 .set(sessionData, SetOptions.merge())
                 .await()
 
-            // 2. Write to users/{uid}/sessions/{sessionUuid}
-            try {
-                db.collection("users").document(currentUserId)
-                    .collection("sessions").document(sessionUuid)
-                    .set(sessionData, SetOptions.merge())
-                    .await()
-            } catch (e: Exception) {
-                Log.w(TAG, "users/$currentUserId/sessions write warning: ${e.message}")
-            }
-
-            // 3. Write to students/{uid}/focus_sessions/{sessionUuid} for backward compatibility with web coach panel
-            try {
-                db.collection("students").document(currentUserId)
-                    .collection("focus_sessions").document(sessionUuid)
-                    .set(sessionData, SetOptions.merge())
-                    .await()
-            } catch (e: Exception) {
-                Log.w(TAG, "students/$currentUserId/focus_sessions write warning: ${e.message}")
-            }
-
-            // 4. Increment totalFocusSeconds only by the unsynced delta to prevent double-counting
+            // 2. Increment totalFocusSeconds only by the unsynced delta to prevent double-counting
             val deltaSeconds = (durationSec - previouslySyncedSeconds).coerceAtLeast(0L)
             val studentUpdate = hashMapOf<String, Any>(
                 "id" to currentUserId,

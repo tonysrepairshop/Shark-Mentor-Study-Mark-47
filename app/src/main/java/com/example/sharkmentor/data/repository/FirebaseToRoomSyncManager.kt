@@ -36,9 +36,9 @@ class FirebaseToRoomSyncManager(
         val uid = auth.currentUser?.uid ?: return@withContext false
 
         try {
-            // Fetch the single student root document from the server
+            // Fetch the single student root document (cache-first unless forced)
             val snapshot = firestore.collection("students").document(uid)
-                .get(Source.SERVER)
+                .get(if (force) Source.SERVER else Source.DEFAULT)
                 .await()
 
             if (!snapshot.exists()) {

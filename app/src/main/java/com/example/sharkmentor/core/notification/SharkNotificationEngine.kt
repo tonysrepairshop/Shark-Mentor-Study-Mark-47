@@ -12,6 +12,7 @@ object SharkNotificationEngine {
     const val CHANNEL_CHAT_MESSAGES = "shark_chat_messages"
     const val CHANNEL_LEAGUE_QUESTIONS = "shark_league_questions"
     const val CHANNEL_STUDY_NUDGE = "shark_study_invites"
+    const val CHANNEL_WATER_STREAK = "shark_water_streak"
 
     fun init(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -76,6 +77,16 @@ object SharkNotificationEngine {
             enableVibration(true)
         }
 
+        val waterStreakChannel = NotificationChannel(
+            CHANNEL_WATER_STREAK,
+            "Su Serisi Hatırlatıcıları 💧",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Günlük su serini canlı tutan köpekbalığı hatırlatmaları ve kutlamaları"
+            enableVibration(true)
+            setShowBadge(true)
+        }
+
         manager.createNotificationChannels(
             listOf(
                 deskChannel,
@@ -83,7 +94,8 @@ object SharkNotificationEngine {
                 alertsChannel,
                 chatMessagesChannel,
                 leagueQuestionsChannel,
-                studyNudgeChannel
+                studyNudgeChannel,
+                waterStreakChannel
             )
         )
     }

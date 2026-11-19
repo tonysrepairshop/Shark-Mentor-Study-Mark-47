@@ -76,6 +76,7 @@ class PlanSyncListener(
             .collection("users")
             .document(uid)
             .collection("plan_folders")
+            .limit(40)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
@@ -123,6 +124,7 @@ class PlanSyncListener(
             .collection("users")
             .document(uid)
             .collection("plans")
+            .limit(150)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {

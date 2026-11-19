@@ -45,9 +45,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -73,38 +75,38 @@ enum class ChatWallpaperStyle(
 ) {
     SADE_TEMA(
         id = "sade_tema",
-        title = "Sade Tema",
-        subtitle = "Temiz ve odak dostu zemin",
+        title = "Aurora Işıltısı",
+        subtitle = "Katmanlı parlak odak zemini",
         emoji = ""
     ),
     KARELI_MATEMATIK(
         id = "kareli_matematik",
         title = "Kareli Matematik Defteri",
-        subtitle = "Klasik kareli defter çizgileri",
+        subtitle = "Canlı kareli defter & koordinat",
         emoji = ""
     ),
     NOKTALI_PLANLAYICI(
         id = "noktali_planlayici",
         title = "Noktalı Planlayıcı",
-        subtitle = "Minimal nokta matrisi",
+        subtitle = "Takımyıldız & nokta matrisi",
         emoji = ""
     ),
     GEOMETRIK_CIZIMLER(
         id = "geometrik_cizimler",
-        title = "Geometrik Çizimler",
-        subtitle = "Üçgen, altıgen ve açı desenleri",
+        title = "Geometrik Mimari",
+        subtitle = "Dolgulu altıgen, üçgen & çizim",
         emoji = ""
     ),
     OKYANUS_DALGALARI(
         id = "okyanus_dalgalari",
         title = "Okyanus Dalgaları",
-        subtitle = "Shark derin deniz dalgaları",
+        subtitle = "Derin deniz dalgaları & damlalar",
         emoji = ""
     ),
     FORMUL_SEMBOLLER(
         id = "formul_semboller",
-        title = "Formül & Semboller",
-        subtitle = "∑ ∫ π Δ √ ∞ bilimsel semboller",
+        title = "Formül & Bilim Tahtası",
+        subtitle = "∑ ∫ π E=mc² canlı bilim tahtası",
         emoji = ""
     );
 
@@ -144,9 +146,9 @@ object ChatWallpaperPrefs {
 }
 
 /**
- * Zero-network vector chat wallpaper offering 6 study patterns whose colors are
- * derived at low opacity from the active [Theme.kt] [MaterialTheme.colorScheme]
- * (Dark/Light, 8 ThemePalettes, and Zen Mode).
+ * Rich, zero-network vector chat wallpaper engine offering 6 vivid multi-layered study
+ * atmospheres dynamically harmonized with the active [MaterialTheme.colorScheme]
+ * (Dark/Light, all 8 ThemePalettes, and Zen Mode) while preserving sharp message readability.
  */
 @Composable
 fun ChatWallpaperCanvas(
@@ -178,44 +180,57 @@ fun ChatWallpaperCanvas(
     val baseBg = colorScheme.background
     val surfaceBg = colorScheme.surface
     val primaryColor = colorScheme.primary
+    val secondaryColor = if (isZenMode) colorScheme.onSurfaceVariant else colorScheme.secondary
+    val tertiaryColor = if (isZenMode) colorScheme.onSurfaceVariant else colorScheme.tertiary
     val subtleColor = colorScheme.onSurfaceVariant
 
-    val gradientColors = if (isZenMode) {
-        listOf(baseBg, surfaceBg, baseBg)
-    } else if (isDark) {
-        listOf(
+    // Rich multi-stop atmospheric base gradient (distinctly richer than flat background)
+    val gradientColors = when {
+        isZenMode -> listOf(
             baseBg,
-            primaryColor.copy(alpha = 0.08f),
-            surfaceBg.copy(alpha = 0.94f),
+            lerp(baseBg, surfaceBg, 0.55f),
+            lerp(baseBg, subtleColor, 0.08f),
             baseBg
         )
-    } else {
-        listOf(
-            baseBg,
-            primaryColor.copy(alpha = 0.06f),
-            colorScheme.surfaceContainer.copy(alpha = 0.72f),
-            baseBg
+        isDark -> listOf(
+            lerp(baseBg, primaryColor, 0.14f),
+            lerp(surfaceBg, secondaryColor, 0.10f),
+            lerp(baseBg, tertiaryColor, 0.12f),
+            lerp(baseBg, primaryColor, 0.08f)
+        )
+        else -> listOf(
+            lerp(baseBg, primaryColor, 0.11f),
+            lerp(colorScheme.surfaceContainer, secondaryColor, 0.09f),
+            lerp(baseBg, tertiaryColor, 0.10f),
+            lerp(baseBg, primaryColor, 0.07f)
         )
     }
 
+    // Dramatically crisper visual contrast (~2.5x stronger than previous faint values)
     val primaryAlpha = when {
-        isMiniaturePreview && isZenMode -> 0.14f
-        isMiniaturePreview -> 0.22f
-        isZenMode -> 0.055f
-        isDark -> 0.11f
-        else -> 0.095f
+        isMiniaturePreview && isZenMode -> 0.28f
+        isMiniaturePreview -> 0.42f
+        isZenMode -> 0.14f
+        isDark -> 0.28f
+        else -> 0.24f
     }
     val secondaryAlpha = when {
-        isMiniaturePreview -> primaryAlpha * 0.75f
-        isZenMode -> 0.04f
-        isDark -> 0.08f
-        else -> 0.07f
+        isMiniaturePreview && isZenMode -> 0.18f
+        isMiniaturePreview -> 0.30f
+        isZenMode -> 0.10f
+        isDark -> 0.20f
+        else -> 0.17f
+    }
+    val glowAlpha = when {
+        isZenMode -> 0.09f
+        isDark -> 0.24f
+        else -> 0.18f
     }
 
     val symbolPaint = remember(primaryColor, primaryAlpha, isMiniaturePreview) {
         Paint().apply {
             isAntiAlias = true
-            typeface = Typeface.create(Typeface.SERIF, Typeface.ITALIC)
+            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD_ITALIC)
             textAlign = Paint.Align.CENTER
         }
     }
@@ -223,7 +238,7 @@ fun ChatWallpaperCanvas(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(gradientColors))
+            .background(Brush.linearGradient(gradientColors))
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
@@ -231,49 +246,94 @@ fun ChatWallpaperCanvas(
             if (w <= 0f || h <= 0f) return@Canvas
 
             val motifPrimary = primaryColor.copy(alpha = primaryAlpha)
-            val motifSecondary = subtleColor.copy(alpha = secondaryAlpha)
+            val motifSecondary = secondaryColor.copy(alpha = secondaryAlpha)
+            val motifTertiary = tertiaryColor.copy(alpha = secondaryAlpha * 1.15f)
+            val dashedEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f)
+
+            // Universal soft ambient spotlights so every style has rich depth
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(primaryColor.copy(alpha = glowAlpha), Color.Transparent),
+                    center = Offset(w * 0.85f, h * 0.14f),
+                    radius = maxOf(w, h) * 0.56f
+                ),
+                radius = maxOf(w, h) * 0.56f,
+                center = Offset(w * 0.85f, h * 0.14f)
+            )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(tertiaryColor.copy(alpha = glowAlpha * 0.82f), Color.Transparent),
+                    center = Offset(w * 0.14f, h * 0.84f),
+                    radius = maxOf(w, h) * 0.52f
+                ),
+                radius = maxOf(w, h) * 0.52f,
+                center = Offset(w * 0.14f, h * 0.84f)
+            )
 
             when (activeStyle) {
                 ChatWallpaperStyle.SADE_TEMA -> {
-                    // Clean soft radial glow with ultra-minimal subtle accent rings
+                    // Rich aurora silk ribbons + glowing orbital halo rings
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                primaryColor.copy(alpha = primaryAlpha * 0.95f),
+                                secondaryColor.copy(alpha = glowAlpha * 0.95f),
                                 Color.Transparent
                             ),
-                            center = Offset(w * 0.82f, h * 0.18f),
-                            radius = w * 0.65f
+                            center = Offset(w * 0.5f, h * 0.48f),
+                            radius = w * 0.72f
                         ),
-                        radius = w * 0.65f,
-                        center = Offset(w * 0.82f, h * 0.18f)
+                        radius = w * 0.72f,
+                        center = Offset(w * 0.5f, h * 0.48f)
                     )
-                    drawCircle(
-                        brush = Brush.radialGradient(
+                    // Translucent diagonal silk ribbon
+                    val ribbon = Path().apply {
+                        moveTo(-w * 0.1f, h * 0.28f)
+                        cubicTo(w * 0.35f, h * 0.12f, w * 0.65f, h * 0.54f, w * 1.1f, h * 0.36f)
+                        lineTo(w * 1.1f, h * 0.62f)
+                        cubicTo(w * 0.65f, h * 0.78f, w * 0.35f, h * 0.36f, -w * 0.1f, h * 0.54f)
+                        close()
+                    }
+                    drawPath(
+                        path = ribbon,
+                        brush = Brush.horizontalGradient(
                             colors = listOf(
-                                subtleColor.copy(alpha = secondaryAlpha * 0.75f),
-                                Color.Transparent
-                            ),
-                            center = Offset(w * 0.18f, h * 0.78f),
-                            radius = w * 0.55f
-                        ),
-                        radius = w * 0.55f,
-                        center = Offset(w * 0.18f, h * 0.78f)
+                                primaryColor.copy(alpha = primaryAlpha * 0.34f),
+                                tertiaryColor.copy(alpha = secondaryAlpha * 0.45f),
+                                primaryColor.copy(alpha = primaryAlpha * 0.25f)
+                            )
+                        )
+                    )
+                    // Crisp sweeping aurora arcs
+                    for (idx in 0..2) {
+                        val r = w * (0.34f + idx * 0.18f)
+                        drawCircle(
+                            color = if (idx % 2 == 0) motifPrimary else motifTertiary,
+                            radius = r,
+                            center = Offset(w * 0.86f, h * 0.16f),
+                            style = Stroke(width = if (isMiniaturePreview) 1.5f else 2.2f)
+                        )
+                    }
+                    drawCircle(
+                        color = motifSecondary,
+                        radius = w * 0.32f,
+                        center = Offset(w * 0.12f, h * 0.86f),
+                        style = Stroke(width = if (isMiniaturePreview) 1.5f else 2.0f, pathEffect = dashedEffect)
                     )
                 }
 
                 ChatWallpaperStyle.KARELI_MATEMATIK -> {
-                    // Math graph notebook: fine squares + emphasized 5th grid lines + left margin line
-                    val minorStep = if (isMiniaturePreview) 16.dp.toPx() else 24.dp.toPx()
+                    // Vivid engineering / study math notebook with bold 5x5 grid, crimson/tertiary double margin & sine blueprint
+                    val minorStep = if (isMiniaturePreview) 12.dp.toPx() else 22.dp.toPx()
                     var col = 0
                     var gx = 0f
                     while (gx <= w) {
                         val isMajor = (col % 5 == 0)
                         drawLine(
-                            color = if (isMajor) motifPrimary.copy(alpha = primaryAlpha * 1.1f) else motifSecondary.copy(alpha = secondaryAlpha * 0.7f),
+                            color = if (isMajor) primaryColor.copy(alpha = primaryAlpha * 1.15f)
+                            else subtleColor.copy(alpha = secondaryAlpha * 0.72f),
                             start = Offset(gx, 0f),
                             end = Offset(gx, h),
-                            strokeWidth = if (isMajor) 1.5f else 0.9f
+                            strokeWidth = if (isMajor) 2.2f else 1.1f
                         )
                         gx += minorStep
                         col++
@@ -283,28 +343,53 @@ fun ChatWallpaperCanvas(
                     while (gy <= h) {
                         val isMajor = (row % 5 == 0)
                         drawLine(
-                            color = if (isMajor) motifPrimary.copy(alpha = primaryAlpha * 1.1f) else motifSecondary.copy(alpha = secondaryAlpha * 0.7f),
+                            color = if (isMajor) primaryColor.copy(alpha = primaryAlpha * 1.15f)
+                            else subtleColor.copy(alpha = secondaryAlpha * 0.72f),
                             start = Offset(0f, gy),
                             end = Offset(w, gy),
-                            strokeWidth = if (isMajor) 1.5f else 0.9f
+                            strokeWidth = if (isMajor) 2.2f else 1.1f
                         )
                         gy += minorStep
                         row++
                     }
-                    // Subtle vertical margin rule like a study notebook
-                    val marginX = w * 0.085f
+
+                    // Double vertical notebook margin rule
+                    val marginX = w * 0.10f
+                    val marginColor = if (isZenMode) motifPrimary else tertiaryColor.copy(alpha = primaryAlpha * 1.3f)
+                    drawLine(marginColor, Offset(marginX, 0f), Offset(marginX, h), strokeWidth = 2.8f)
                     drawLine(
-                        color = primaryColor.copy(alpha = primaryAlpha * 1.35f),
-                        start = Offset(marginX, 0f),
-                        end = Offset(marginX, h),
-                        strokeWidth = 2.2f
+                        marginColor.copy(alpha = primaryAlpha * 0.65f),
+                        Offset(marginX + 6f, 0f),
+                        Offset(marginX + 6f, h),
+                        strokeWidth = 1.3f
+                    )
+
+                    // Subtle coordinate wave overlay across middle
+                    val waveY = h * 0.52f
+                    val waveAmp = if (isMiniaturePreview) 12f else 38f
+                    val sinPath = Path().apply {
+                        moveTo(0f, waveY)
+                        var x = 0f
+                        val s = if (isMiniaturePreview) 6f else 14f
+                        while (x <= w + s) {
+                            val y = waveY - (sin((x / w) * 2.0 * PI * 2.0) * waveAmp).toFloat()
+                            lineTo(x, y)
+                            x += s
+                        }
+                    }
+                    drawPath(
+                        path = sinPath,
+                        color = primaryColor.copy(alpha = primaryAlpha * 1.1f),
+                        style = Stroke(width = if (isMiniaturePreview) 1.8f else 2.8f, cap = StrokeCap.Round)
                     )
                 }
 
                 ChatWallpaperStyle.NOKTALI_PLANLAYICI -> {
-                    // Bullet-journal dot planner grid with subtle anchor nodes every 4th intersection
-                    val step = if (isMiniaturePreview) 14.dp.toPx() else 22.dp.toPx()
-                    val baseR = if (isMiniaturePreview) 1.5f else 2.2f
+                    // Rich bullet-journal constellation planner with glowing diamond anchor nodes & diagonal guides
+                    val step = if (isMiniaturePreview) 13.dp.toPx() else 22.dp.toPx()
+                    val baseR = if (isMiniaturePreview) 1.9f else 2.8f
+                    val anchors = mutableListOf<Offset>()
+
                     var r = 0
                     var y = step * 0.5f
                     while (y < h) {
@@ -312,38 +397,80 @@ fun ChatWallpaperCanvas(
                         var x = step * 0.5f
                         while (x < w) {
                             val isAnchor = (r % 4 == 0 && c % 4 == 0)
-                            drawCircle(
-                                color = if (isAnchor) motifPrimary else motifSecondary,
-                                radius = if (isAnchor) baseR * 1.55f else baseR,
-                                center = Offset(x, y)
-                            )
+                            if (isAnchor) {
+                                anchors.add(Offset(x, y))
+                                // Soft halo around anchor node
+                                drawCircle(
+                                    color = primaryColor.copy(alpha = primaryAlpha * 0.45f),
+                                    radius = baseR * 3.4f,
+                                    center = Offset(x, y)
+                                )
+                                // Crisp crosshair / diamond anchor
+                                val arm = baseR * 2.2f
+                                drawLine(motifPrimary, Offset(x - arm, y), Offset(x + arm, y), strokeWidth = 1.8f)
+                                drawLine(motifPrimary, Offset(x, y - arm), Offset(x, y + arm), strokeWidth = 1.8f)
+                                drawCircle(
+                                    color = primaryColor.copy(alpha = (primaryAlpha * 1.45f).coerceAtMost(0.65f)),
+                                    radius = baseR * 1.35f,
+                                    center = Offset(x, y)
+                                )
+                            } else {
+                                drawCircle(
+                                    color = if ((r + c) % 2 == 0) motifSecondary else motifTertiary.copy(alpha = secondaryAlpha * 0.8f),
+                                    radius = baseR,
+                                    center = Offset(x, y)
+                                )
+                            }
                             x += step
                             c++
                         }
                         y += step
                         r++
                     }
+
+                    // Delicate constellation lines connecting alternating anchor nodes
+                    for (i in 0 until anchors.size - 1) {
+                        if (i % 3 == 0) {
+                            val a = anchors[i]
+                            val b = anchors[(i + 1).coerceAtMost(anchors.lastIndex)]
+                            if (kotlin.math.abs(a.y - b.y) < step * 5f && kotlin.math.abs(a.x - b.x) < step * 5f) {
+                                drawLine(
+                                    color = motifPrimary.copy(alpha = primaryAlpha * 0.55f),
+                                    start = a,
+                                    end = b,
+                                    strokeWidth = 1.4f,
+                                    pathEffect = dashedEffect
+                                )
+                            }
+                        }
+                    }
                 }
 
                 ChatWallpaperStyle.GEOMETRIK_CIZIMLER -> {
-                    // Geometric triangles, hexagons, circles, and right-angle markers
-                    val cell = if (isMiniaturePreview) 54.dp.toPx() else 110.dp.toPx()
+                    // Bold architectural blueprint: tinted translucent polygon fills + crisp nested geometry + glowing vertices
+                    val cell = if (isMiniaturePreview) 46.dp.toPx() else 104.dp.toPx()
+                    val strokeW = if (isMiniaturePreview) 1.8f else 2.5f
                     var row = 0
                     var cy = cell * 0.5f
                     while (cy < h + cell) {
                         var col = 0
-                        var cx = cell * 0.5f + if (row % 2 == 1) cell * 0.35f else 0f
+                        var cx = cell * 0.45f + if (row % 2 == 1) cell * 0.45f else 0f
                         while (cx < w + cell) {
-                            val shapeType = (row + col) % 3
+                            val shapeType = (row * 2 + col) % 3
                             when (shapeType) {
                                 0 -> {
-                                    // Inscribed triangle + circle
-                                    val r = cell * 0.3f
+                                    // Inscribed glowing triangle inside compass circle
+                                    val r = cell * 0.34f
+                                    drawCircle(
+                                        color = primaryColor.copy(alpha = primaryAlpha * 0.18f),
+                                        radius = r,
+                                        center = Offset(cx, cy)
+                                    )
                                     drawCircle(
                                         color = motifSecondary,
                                         radius = r,
                                         center = Offset(cx, cy),
-                                        style = Stroke(width = 1.6f)
+                                        style = Stroke(width = strokeW * 0.85f, pathEffect = dashedEffect)
                                     )
                                     val tri = Path().apply {
                                         for (i in 0 until 3) {
@@ -354,120 +481,239 @@ fun ChatWallpaperCanvas(
                                         }
                                         close()
                                     }
-                                    drawPath(tri, color = motifPrimary, style = Stroke(width = 1.8f))
+                                    drawPath(tri, color = primaryColor.copy(alpha = primaryAlpha * 0.24f))
+                                    drawPath(tri, color = motifPrimary, style = Stroke(width = strokeW))
+                                    for (i in 0 until 3) {
+                                        val ang = (-PI / 2.0) + i * (2.0 * PI / 3.0)
+                                        drawCircle(
+                                            color = primaryColor.copy(alpha = (primaryAlpha * 1.4f).coerceAtMost(0.6f)),
+                                            radius = if (isMiniaturePreview) 2.2f else 3.5f,
+                                            center = Offset(
+                                                cx + (cos(ang) * r).toFloat(),
+                                                cy + (sin(ang) * r).toFloat()
+                                            )
+                                        )
+                                    }
                                 }
                                 1 -> {
-                                    // Regular hexagon
-                                    val r = cell * 0.28f
-                                    val hex = Path().apply {
+                                    // Nested isometric double hexagon
+                                    val rOuter = cell * 0.33f
+                                    val rInner = cell * 0.19f
+                                    val hexOuter = Path().apply {
                                         for (i in 0 until 6) {
                                             val ang = i * (PI / 3.0)
-                                            val px = cx + (cos(ang) * r).toFloat()
-                                            val py = cy + (sin(ang) * r).toFloat()
+                                            val px = cx + (cos(ang) * rOuter).toFloat()
+                                            val py = cy + (sin(ang) * rOuter).toFloat()
                                             if (i == 0) moveTo(px, py) else lineTo(px, py)
                                         }
                                         close()
                                     }
-                                    drawPath(hex, color = motifPrimary, style = Stroke(width = 1.7f))
+                                    val hexInner = Path().apply {
+                                        for (i in 0 until 6) {
+                                            val ang = i * (PI / 3.0) + PI / 6.0
+                                            val px = cx + (cos(ang) * rInner).toFloat()
+                                            val py = cy + (sin(ang) * rInner).toFloat()
+                                            if (i == 0) moveTo(px, py) else lineTo(px, py)
+                                        }
+                                        close()
+                                    }
+                                    drawPath(hexOuter, color = tertiaryColor.copy(alpha = secondaryAlpha * 0.24f))
+                                    drawPath(hexOuter, color = motifPrimary, style = Stroke(width = strokeW))
+                                    drawPath(hexInner, color = motifTertiary, style = Stroke(width = strokeW * 0.8f))
                                 }
                                 else -> {
-                                    // Right triangle with angle arc
-                                    val s = cell * 0.26f
+                                    // Architectural right triangle with altitude & right-angle arc
+                                    val s = cell * 0.29f
                                     val rightTri = Path().apply {
                                         moveTo(cx - s, cy + s)
                                         lineTo(cx - s, cy - s)
                                         lineTo(cx + s, cy + s)
                                         close()
                                     }
-                                    drawPath(rightTri, color = motifSecondary, style = Stroke(width = 1.7f))
+                                    drawPath(rightTri, color = secondaryColor.copy(alpha = secondaryAlpha * 0.24f))
+                                    drawPath(rightTri, color = motifSecondary, style = Stroke(width = strokeW))
                                     drawArc(
                                         color = motifPrimary,
                                         startAngle = 270f,
                                         sweepAngle = 90f,
                                         useCenter = false,
-                                        topLeft = Offset(cx - s - 10f, cy + s - 10f),
-                                        size = Size(20f, 20f),
-                                        style = Stroke(width = 1.4f)
+                                        topLeft = Offset(cx - s - 13f, cy + s - 13f),
+                                        size = Size(26f, 26f),
+                                        style = Stroke(width = strokeW * 0.85f)
                                     )
                                 }
                             }
-                            cx += cell * 1.15f
+                            cx += cell * 1.12f
                             col++
                         }
-                        cy += cell
+                        cy += cell * 0.96f
                         row++
                     }
                 }
 
                 ChatWallpaperStyle.OKYANUS_DALGALARI -> {
-                    // Flowing ocean wave ribbons + sonar arcs
+                    // Rich multi-layered filled translucent ocean wave ribbons + crisp luminous crests + rising water droplets
                     val waveCount = if (isMiniaturePreview) 4 else 6
                     for (waveIdx in 0 until waveCount) {
-                        val baseY = h * (0.14f + waveIdx * (0.76f / waveCount))
-                        val amplitude = (if (isMiniaturePreview) 7f else 18f) + waveIdx * 3f
-                        val path = Path().apply {
-                            moveTo(0f, baseY)
-                            var x = 0f
-                            val step = if (isMiniaturePreview) 8f else 18f
-                            while (x <= w + step) {
-                                val angle = (x / w) * 2.0 * PI * 1.85 + waveIdx * 0.85
-                                val y = baseY + (sin(angle) * amplitude).toFloat()
-                                lineTo(x, y)
-                                x += step
+                        val ratio = waveIdx.toFloat() / waveCount.toFloat()
+                        val baseY = h * (0.16f + ratio * 0.72f)
+                        val amplitude = (if (isMiniaturePreview) 8f else 22f) + waveIdx * (if (isMiniaturePreview) 1.5f else 4f)
+                        val crestPath = Path()
+                        val fillPath = Path()
+                        val step = if (isMiniaturePreview) 6f else 14f
+                        var x = 0f
+                        var first = true
+                        while (x <= w + step) {
+                            val angle = (x / w) * 2.0 * PI * (1.45 + (waveIdx % 3) * 0.35) + waveIdx * 0.95
+                            val y = baseY + (sin(angle) * amplitude).toFloat()
+                            if (first) {
+                                crestPath.moveTo(x, y)
+                                fillPath.moveTo(x, y)
+                                first = false
+                            } else {
+                                crestPath.lineTo(x, y)
+                                fillPath.lineTo(x, y)
                             }
+                            x += step
                         }
+                        fillPath.lineTo(w + step, h)
+                        fillPath.lineTo(0f, h)
+                        fillPath.close()
+
+                        val layerTint = when (waveIdx % 3) {
+                            0 -> primaryColor
+                            1 -> secondaryColor
+                            else -> tertiaryColor
+                        }
+                        // Translucent ocean body fill under each wave crest
                         drawPath(
-                            path = path,
-                            color = if (waveIdx % 2 == 0) motifPrimary else motifSecondary,
-                            style = Stroke(width = if (isMiniaturePreview) 1.6f else 2.4f, cap = StrokeCap.Round)
+                            path = fillPath,
+                            brush = Brush.verticalGradient(
+                                colors = listOf(
+                                    layerTint.copy(alpha = primaryAlpha * (0.28f + ratio * 0.24f)),
+                                    Color.Transparent
+                                ),
+                                startY = baseY - amplitude,
+                                endY = baseY + (if (isMiniaturePreview) 36f else 160f)
+                            )
+                        )
+                        // Bright luminous wave crest stroke
+                        drawPath(
+                            path = crestPath,
+                            color = layerTint.copy(alpha = (primaryAlpha * (1.05f + ratio * 0.35f)).coerceAtMost(0.55f)),
+                            style = Stroke(
+                                width = if (isMiniaturePreview) 2.0f else 3.2f,
+                                cap = StrokeCap.Round
+                            )
                         )
                     }
-                    drawCircle(
-                        color = motifSecondary,
-                        radius = w * 0.28f,
-                        center = Offset(w * 0.86f, h * 0.14f),
-                        style = Stroke(width = 1.8f)
+
+                    // Ascending ocean water bubbles / droplets
+                    val bubbleSeeds = listOf(
+                        Triple(0.14f, 0.22f, 1.0f),
+                        Triple(0.26f, 0.44f, 0.65f),
+                        Triple(0.76f, 0.28f, 1.15f),
+                        Triple(0.84f, 0.60f, 0.8f),
+                        Triple(0.42f, 0.74f, 0.9f),
+                        Triple(0.64f, 0.86f, 0.7f),
+                        Triple(0.18f, 0.82f, 1.1f)
                     )
+                    val baseBubbleR = if (isMiniaturePreview) 4.dp.toPx() else 10.dp.toPx()
+                    bubbleSeeds.forEachIndexed { i, (bx, by, scale) ->
+                        val r = baseBubbleR * scale
+                        val c = Offset(w * bx, h * by)
+                        drawCircle(
+                            color = primaryColor.copy(alpha = primaryAlpha * 0.22f),
+                            radius = r,
+                            center = c
+                        )
+                        drawCircle(
+                            color = if (i % 2 == 0) motifPrimary else motifTertiary,
+                            radius = r,
+                            center = c,
+                            style = Stroke(width = if (isMiniaturePreview) 1.3f else 2.0f)
+                        )
+                        // Specular bubble highlight dot
+                        drawCircle(
+                            color = Color.White.copy(alpha = primaryAlpha * 0.85f),
+                            radius = r * 0.22f,
+                            center = Offset(c.x - r * 0.32f, c.y - r * 0.32f)
+                        )
+                    }
+
+                    // Sonar rings
                     drawCircle(
                         color = motifPrimary,
-                        radius = w * 0.16f,
-                        center = Offset(w * 0.12f, h * 0.84f),
-                        style = Stroke(width = 1.6f)
+                        radius = w * 0.26f,
+                        center = Offset(w * 0.88f, h * 0.14f),
+                        style = Stroke(width = if (isMiniaturePreview) 1.5f else 2.2f)
+                    )
+                    drawCircle(
+                        color = motifSecondary,
+                        radius = w * 0.38f,
+                        center = Offset(w * 0.88f, h * 0.14f),
+                        style = Stroke(width = 1.4f, pathEffect = dashedEffect)
                     )
                 }
 
                 ChatWallpaperStyle.FORMUL_SEMBOLLER -> {
-                    // Mathematical & science symbols + delicate parabola arc at low opacity
-                    val symbols = listOf("∑", "∫", "π", "Δ", "√", "∞", "f'(x)", "θ", "λ", "α", "lim", "H₂O")
-                    val stepX = if (isMiniaturePreview) 36.dp.toPx() else 88.dp.toPx()
-                    val stepY = if (isMiniaturePreview) 30.dp.toPx() else 84.dp.toPx()
-                    val textSizePx = if (isMiniaturePreview) 11.sp.toPx() else 20.sp.toPx()
+                    // Vivid science & mathematics study board with bold formulas, coordinate parabola & orbital rings
+                    val symbols = listOf(
+                        "∑", "∫f(x)", "π", "Δ", "√x", "∞",
+                        "E=mc²", "θ", "λ", "α", "lim", "H₂O",
+                        "F=ma", "log", "Ω", "sin θ"
+                    )
+                    val stepX = if (isMiniaturePreview) 36.dp.toPx() else 84.dp.toPx()
+                    val stepY = if (isMiniaturePreview) 26.dp.toPx() else 78.dp.toPx()
+                    val textSizePx = if (isMiniaturePreview) 11.sp.toPx() else 21.sp.toPx()
                     symbolPaint.textSize = textSizePx
 
-                    // Subtle coordinate parabola behind symbols
+                    // Coordinate axes & bold sweeping parabola curve behind formulas
+                    val axisColor = motifSecondary.copy(alpha = secondaryAlpha * 0.8f)
+                    drawLine(axisColor, Offset(w * 0.08f, h * 0.56f), Offset(w * 0.92f, h * 0.56f), strokeWidth = 1.6f, pathEffect = dashedEffect)
+                    drawLine(axisColor, Offset(w * 0.5f, h * 0.12f), Offset(w * 0.5f, h * 0.92f), strokeWidth = 1.6f, pathEffect = dashedEffect)
+
                     val para = Path().apply {
-                        moveTo(w * 0.1f, h * 0.25f)
-                        quadraticTo(w * 0.5f, h * 0.92f, w * 0.9f, h * 0.25f)
+                        moveTo(w * 0.08f, h * 0.22f)
+                        quadraticTo(w * 0.5f, h * 0.96f, w * 0.92f, h * 0.22f)
                     }
                     drawPath(
                         path = para,
-                        color = motifSecondary.copy(alpha = secondaryAlpha * 0.6f),
-                        style = Stroke(width = 1.6f, cap = StrokeCap.Round)
+                        color = primaryColor.copy(alpha = primaryAlpha * 0.9f),
+                        style = Stroke(width = if (isMiniaturePreview) 1.8f else 2.8f, cap = StrokeCap.Round)
+                    )
+
+                    // Subtle orbital electron ellipses in top-right & bottom-left
+                    drawOval(
+                        color = motifTertiary,
+                        topLeft = Offset(w * 0.64f, h * 0.08f),
+                        size = Size(w * 0.30f, w * 0.12f),
+                        style = Stroke(width = if (isMiniaturePreview) 1.3f else 2.0f)
+                    )
+                    drawOval(
+                        color = motifPrimary,
+                        topLeft = Offset(w * 0.06f, h * 0.76f),
+                        size = Size(w * 0.28f, w * 0.11f),
+                        style = Stroke(width = if (isMiniaturePreview) 1.3f else 2.0f)
                     )
 
                     drawIntoCanvas { canvas ->
                         val nc = canvas.nativeCanvas
                         var r = 0
-                        var y = stepY * 0.65f
+                        var y = stepY * 0.62f
                         while (y < h) {
                             var c = 0
-                            var x = stepX * 0.5f + if (r % 2 == 1) stepX * 0.42f else 0f
+                            var x = stepX * 0.48f + if (r % 2 == 1) stepX * 0.44f else 0f
                             while (x < w) {
                                 val symIdx = (r * 5 + c * 3) % symbols.size
                                 val sym = symbols[symIdx]
-                                val isPrim = (r + c) % 2 == 0
-                                symbolPaint.color = (if (isPrim) motifPrimary else motifSecondary).toArgb()
-                                val angleDeg = (((r + c) % 5) - 2) * 7f
+                                val colorChoice = when ((r + c) % 3) {
+                                    0 -> primaryColor.copy(alpha = (primaryAlpha * 1.18f).coerceAtMost(0.55f))
+                                    1 -> tertiaryColor.copy(alpha = (secondaryAlpha * 1.25f).coerceAtMost(0.45f))
+                                    else -> secondaryColor.copy(alpha = (secondaryAlpha * 1.1f).coerceAtMost(0.42f))
+                                }
+                                symbolPaint.color = colorChoice.toArgb()
+                                val angleDeg = (((r + c) % 5) - 2) * 8f
                                 nc.save()
                                 nc.rotate(angleDeg, x, y)
                                 nc.drawText(sym, x, y, symbolPaint)
@@ -520,7 +766,7 @@ fun ChatWallpaperPickerSheet(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Temana uyumlu 6 desenden birini seç",
+                        text = "Temana uyumlu 6 canlı desenden birini seç",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -570,7 +816,7 @@ fun ChatWallpaperPickerSheet(
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(68.dp)
+                                        .height(74.dp)
                                         .clip(RoundedCornerShape(12.dp))
                                 ) {
                                     ChatWallpaperCanvas(

@@ -399,7 +399,7 @@
             android:name=".widget.SharkStreakWidgetReceiver"
             android:enabled="true"
             android:exported="true"
-            android:label="SharkMentor Seri">
+            android:label="SharkMentor Su Serisi">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
