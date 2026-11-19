@@ -68,8 +68,8 @@ class WaterStreakMoodEngineTest {
     fun resolveCoversAllFourteenMoodsAcrossTimeAndStreakStates() {
         val reached = mutableSetOf<WaterStreakMood>()
 
-        // Done today across different streaks, minutes, hours, and days
-        for (streak in listOf(1, 3, 7, 14, 30)) {
+        // Done today across different streaks (milestone + non-milestone), minutes, hours, and days
+        for (streak in listOf(1, 2, 4, 7, 8, 14, 30)) {
             for (mins in listOf(20L, 50L, 100L)) {
                 for (hour in listOf(2, 10, 16, 23)) {
                     for (day in 1..12) {
