@@ -95,7 +95,7 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -138,7 +138,7 @@ private val QUICK_LASSO_COLORS = listOf(
  *
  * Supports:
  * - Freehand pens with automatic Scribble-to-Erase (zigzag >= 3 sharp reversals)
- * - Free-region Lasso selection & PixelCopy screenshot cropping (Notes / Gallery / Share)
+ * - Free-region Lasso selection & pixel-accurate screenshot cropping (Direct bitmap or LayoutCoordinates PixelCopy)
  * - Pass-through when [controller.activeTool] == [DrawingTool.NONE]
  */
 @Composable
@@ -146,7 +146,8 @@ fun DrawingCanvasOverlay(
     controller: DrawingController,
     modifier: Modifier = Modifier,
     onTwoFingerScroll: ((deltaY: Float, deltaX: Float) -> Unit)? = null,
-    onLassoAskAi: ((Bitmap) -> Unit)? = null
+    onLassoAskAi: ((Bitmap) -> Unit)? = null,
+    directContentBitmapProvider: (() -> Bitmap?)? = null
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -155,7 +156,8 @@ fun DrawingCanvasOverlay(
     val window = remember(context) { context.findActivity()?.window }
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
-    var canvasWindowBounds by remember { mutableStateOf<Rect?>(null) }
+    var canvasCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val latestDirectBitmapProvider by rememberUpdatedState(directContentBitmapProvider)
 
     val inProgressPoints = remember { mutableStateListOf<DrawingPoint>() }
     var eraserCursorPos by remember { mutableStateOf<Offset?>(null) }
@@ -210,30 +212,53 @@ fun DrawingCanvasOverlay(
     }
 
     fun triggerLassoScreenshot() {
+        val selBounds = controller.cropRegionBounds()
+        if (selBounds == null || isCapturingScreenshot) return
+
+        val polygonSnapshot = controller.lassoPolygon.toList()
+        val strokesSnapshot = controller.strokes.toList()
+        val directBitmap = latestDirectBitmapProvider?.invoke()?.takeIf { !it.isRecycled }
+        val currentSize = canvasSize
         val win = window
-        val winBounds = canvasWindowBounds
-        val selBounds = controller.selectionBounds()
-        if (win == null || winBounds == null || selBounds == null || isCapturingScreenshot) {
-            if (win == null || winBounds == null) {
-                feedbackMessage = "Ekran bölgesi henüz hazır değil"
-            }
+        val coords = canvasCoordinates
+
+        if (directBitmap == null && (win == null || coords == null || !coords.isAttached)) {
+            feedbackMessage = "Ekran bölgesi henüz hazır değil"
             return
         }
-        val polygonSnapshot = controller.lassoPolygon.toList()
+
         coroutineScope.launch {
             isCapturingScreenshot = true
             try {
-                // Wait 2 UI frames so dashed lasso border & action bar disappear before PixelCopy
-                withFrameNanos { }
-                withFrameNanos { }
-                delay(40L)
+                val result = if (directBitmap != null && currentSize.width > 1 && currentSize.height > 1) {
+                    DrawingScreenshotHelper.captureDirectBitmapRegion(
+                        sourceBitmap = directBitmap,
+                        strokes = strokesSnapshot,
+                        canvasWidth = currentSize.width.toFloat(),
+                        canvasHeight = currentSize.height.toFloat(),
+                        localBounds = selBounds,
+                        lassoPolygon = polygonSnapshot,
+                        pressureSensitivityEnabled = controller.pressureSensitivityEnabled
+                    )
+                } else {
+                    // Wait 2 UI frames so dashed lasso border & action bar disappear before PixelCopy
+                    withFrameNanos { }
+                    withFrameNanos { }
+                    delay(40L)
 
-                val result = DrawingScreenshotHelper.captureLassoRegion(
-                    window = win,
-                    canvasWindowBounds = winBounds,
-                    localBounds = selBounds,
-                    lassoPolygon = polygonSnapshot
-                )
+                    val liveCoords = canvasCoordinates
+                    if (win != null && liveCoords != null && liveCoords.isAttached) {
+                        DrawingScreenshotHelper.captureLassoRegion(
+                            window = win,
+                            canvasCoordinates = liveCoords,
+                            localBounds = selBounds,
+                            lassoPolygon = polygonSnapshot
+                        )
+                    } else {
+                        null
+                    }
+                }
+
                 if (result != null) {
                     dialogStatusMessage = null
                     usePolygonCrop = result.polygonBitmap != null
@@ -249,30 +274,53 @@ fun DrawingCanvasOverlay(
 
     fun triggerLassoAskAi() {
         val askCallback = onLassoAskAi ?: return
+        val selBounds = controller.cropRegionBounds()
+        if (selBounds == null || isCapturingScreenshot) return
+
+        val strokesSnapshot = controller.strokes.toList()
+        val directBitmap = latestDirectBitmapProvider?.invoke()?.takeIf { !it.isRecycled }
+        val currentSize = canvasSize
         val win = window
-        val winBounds = canvasWindowBounds
-        val selBounds = controller.selectionBounds()
-        if (win == null || winBounds == null || selBounds == null || isCapturingScreenshot) {
-            if (win == null || winBounds == null) {
-                feedbackMessage = "Ekran bölgesi henüz hazır değil"
-            }
+        val coords = canvasCoordinates
+
+        if (directBitmap == null && (win == null || coords == null || !coords.isAttached)) {
+            feedbackMessage = "Ekran bölgesi henüz hazır değil"
             return
         }
+
         coroutineScope.launch {
             isCapturingScreenshot = true
             try {
-                // Hide dashed lasso border & floating bar cleanly for 2 frames before PixelCopy
-                withFrameNanos { }
-                withFrameNanos { }
-                delay(35L)
+                // Pass empty polygon so capture produces a clean rectangular crop (best for OCR/math)
+                val result = if (directBitmap != null && currentSize.width > 1 && currentSize.height > 1) {
+                    DrawingScreenshotHelper.captureDirectBitmapRegion(
+                        sourceBitmap = directBitmap,
+                        strokes = strokesSnapshot,
+                        canvasWidth = currentSize.width.toFloat(),
+                        canvasHeight = currentSize.height.toFloat(),
+                        localBounds = selBounds,
+                        lassoPolygon = emptyList(),
+                        pressureSensitivityEnabled = controller.pressureSensitivityEnabled
+                    )
+                } else {
+                    // Hide dashed lasso border & floating bar cleanly for 2 frames before PixelCopy
+                    withFrameNanos { }
+                    withFrameNanos { }
+                    delay(35L)
 
-                // Pass empty polygon so PixelCopy captures a clean rectangular crop (best for OCR/questions)
-                val result = DrawingScreenshotHelper.captureLassoRegion(
-                    window = win,
-                    canvasWindowBounds = winBounds,
-                    localBounds = selBounds,
-                    lassoPolygon = emptyList()
-                )
+                    val liveCoords = canvasCoordinates
+                    if (win != null && liveCoords != null && liveCoords.isAttached) {
+                        DrawingScreenshotHelper.captureLassoRegion(
+                            window = win,
+                            canvasCoordinates = liveCoords,
+                            localBounds = selBounds,
+                            lassoPolygon = emptyList()
+                        )
+                    } else {
+                        null
+                    }
+                }
+
                 if (result != null) {
                     result.polygonBitmap?.let { if (!it.isRecycled) it.recycle() }
                     controller.clearSelection()
@@ -470,7 +518,7 @@ fun DrawingCanvasOverlay(
                         }
                     }
                     effectiveTool == DrawingTool.LASSO -> {
-                        val selBounds = controller.selectionBounds()?.inflate(18f)
+                        val selBounds = controller.cropRegionBounds()?.inflate(18f)
                         if (selBounds != null && selBounds.contains(startX, startY)) {
                             isMovingLassoSelection = true
                             controller.beginMoveSelection()
@@ -734,7 +782,7 @@ fun DrawingCanvasOverlay(
         modifier = modifier
             .then(stylusTrackerModifier)
             .onSizeChanged { canvasSize = it }
-            .onGloballyPositioned { coords -> canvasWindowBounds = coords.boundsInWindow() }
+            .onGloballyPositioned { coords -> canvasCoordinates = coords }
     ) {
         Canvas(
             modifier = Modifier
@@ -787,11 +835,11 @@ fun DrawingCanvasOverlay(
 
             // 3. Draw Lasso selection bounding box (and free-region polygon contour) when not capturing
             if (!isCapturingScreenshot) {
-                if (controller.lassoPolygon.size >= 3 && !controller.hasSelection) {
+                if (controller.lassoPolygon.size >= 3) {
                     drawLassoLoop(controller.lassoPolygon)
                 }
 
-                val selBounds = controller.selectionBounds()
+                val selBounds = controller.cropRegionBounds()
                 if (selBounds != null) {
                     val dashEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
                     val topLeft = Offset(selBounds.left, selBounds.top)
@@ -843,7 +891,7 @@ fun DrawingCanvasOverlay(
         }
 
         // Floating Contextual Action Bar above/below Lasso Selection (strokes OR free region)
-        val selBounds = controller.selectionBounds()
+        val selBounds = controller.cropRegionBounds()
         if (selBounds != null && canvasSize.width > 0 && !isCapturingScreenshot) {
             val maxBarWidthDp = with(density) { (canvasSize.width.toFloat() - 16f).coerceAtLeast(160f).toDp() }
             val estBarWidthPx = with(density) {

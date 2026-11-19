@@ -184,6 +184,8 @@ import com.example.sharkmentor.core.util.PaperTint
 import com.example.sharkmentor.core.util.PdfBitmapConverter
 import com.example.sharkmentor.core.util.PdfExporter
 import com.example.sharkmentor.data.local.entity.NoteEntity
+import com.example.sharkmentor.ui.components.RichSolutionContent
+import com.example.sharkmentor.ui.components.formatMathAsPlainText
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingCanvasOverlay
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
@@ -3127,10 +3129,9 @@ fun NoteDetailScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             SelectionContainer {
-                                Text(
+                                RichSolutionContent(
                                     text = aiResult ?: "",
-                                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                                    color = onSurfaceColor
+                                    textColor = onSurfaceColor
                                 )
                             }
                             Row(
@@ -3145,7 +3146,7 @@ fun NoteDetailScreen(
                                         val exportRes = PdfExporter.exportNoteToPdf(
                                             context = context,
                                             title = "[Özet] $vmTitle",
-                                            rawContent = aiResult ?: ""
+                                            rawContent = formatMathAsPlainText(aiResult ?: "")
                                         )
                                         exportRes.onSuccess { res ->
                                             Toast.makeText(context, "PDF kaydedildi: ${res.fileName}", Toast.LENGTH_SHORT).show()
@@ -3168,7 +3169,7 @@ fun NoteDetailScreen(
 
                                 OutlinedButton(
                                     onClick = {
-                                        viewModel.saveAiSummaryAsNewNote(aiResult ?: "")
+                                        viewModel.saveAiSummaryAsNewNote(formatMathAsPlainText(aiResult ?: ""))
                                     },
                                     enabled = aiSavedNewNoteId == null,
                                     shape = RoundedCornerShape(8.dp),

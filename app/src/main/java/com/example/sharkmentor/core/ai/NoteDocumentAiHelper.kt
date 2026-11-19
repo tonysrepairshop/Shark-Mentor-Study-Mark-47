@@ -95,8 +95,9 @@ Alan kuralları:
 YANIT KURALLARI (İLK SATIRDAN HEMEN SONRA):
 1. Yapay selamlama ve gereksiz giriş cümlesi kullanma, emoji kullanma; doğrudan çözüme veya açıklamaya gir.
 2. Yalnızca görselde gördüğün bilgilere dayan; uydurma veri ekleme. Görsel okunaksız veya eksikse bunu açıkça belirt.
-3. Test sorusuysa adım adım, sade ve anlaşılır biçimde çöz; sonunda `Doğru Cevap: ...` şeklinde net sonucu belirt.
-4. Konu anlatımı veya not parçasıysa ana fikri, önemli formül/kavramları düzenli maddeler halinde açıkla.
+3. Test sorusuysa adımları düzenli başlıklarla (**1. Adım:**, **2. Adım:** ...) açıkla; önemli denklemleri tek başına kendi satırında `$$...$$` veya net matematiksel ifadeyle yaz; sonunda mutlaka `Doğru Cevap: ...` satırıyla kesin sonucu belirt.
+4. Matematik, geometri, fizik ve kimya ifadelerinde okunaklı standart gösterim kullan; ham veya kırık biçimlendirme bırakma.
+5. Konu anlatımı veya not parçasıysa ana fikri, önemli formül ve kavramları düzenli maddeler halinde açıkla.
     """.trimIndent()
 
     /**

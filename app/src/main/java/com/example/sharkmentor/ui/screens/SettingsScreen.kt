@@ -569,9 +569,8 @@ fun AppIconItem(
 fun AppIconSelectorSection(snackbarHostState: SnackbarHostState) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var selectedIcon by remember {
-        mutableStateOf(AppIconManager.getActiveIcon(context))
-    }
+    val selectedIcon by AppIconManager.activeIconFlow.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { AppIconManager.getActiveIcon(context) }
 
     Text(
         "Uygulama Simgesi",
@@ -598,10 +597,9 @@ fun AppIconSelectorSection(snackbarHostState: SnackbarHostState) {
                     onClick = {
                         if (selectedIcon != item) {
                             AppIconManager.setActiveIcon(context, item)
-                            selectedIcon = item
                             scope.launch {
                                 snackbarHostState.currentSnackbarData?.dismiss()
-                                snackbarHostState.showSnackbar("Simge seçildi. Uygulamadan çıktığınızda güncellenecek.")
+                                snackbarHostState.showSnackbar("Simge ve açılış ekranı güncellendi. Ana ekran simgesi çıkışta uygulanacak.")
                             }
                         }
                     }

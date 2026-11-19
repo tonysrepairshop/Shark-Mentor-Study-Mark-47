@@ -271,9 +271,23 @@ object DrawingSerializer {
         return File(dir, "pdf_${docKey}.json")
     }
 
+    private fun writeTextAtomically(target: File, content: String) {
+        val parent = target.parentFile
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs()
+        }
+        val tempFile = File(parent ?: target.absoluteFile.parentFile, "${target.name}.tmp")
+        tempFile.writeText(content, Charsets.UTF_8)
+        if (!tempFile.renameTo(target)) {
+            // Fallback on filesystems where rename over existing fails
+            tempFile.copyTo(target, overwrite = true)
+            runCatching { tempFile.delete() }
+        }
+    }
+
     /**
      * Saves annotations for a single page [pageIndex] of a PDF identified by [pdfIdentifier].
-     * Stored in a single structured per-document JSON file containing all annotated pages and metadata.
+     * Stored atomically in a single structured per-document JSON file containing all annotated pages and metadata.
      */
     @Synchronized
     fun savePdfPageAnnotations(
@@ -303,7 +317,7 @@ object DrawingSerializer {
                 pagesObj.put(pageIndex.toString(), pageJson.optJSONArray("strokes") ?: JSONArray())
             }
             root.put("pages", pagesObj)
-            file.writeText(root.toString(), Charsets.UTF_8)
+            writeTextAtomically(file, root.toString())
         }.onFailure { e ->
             Log.e(TAG, "Failed saving PDF annotations for page $pageIndex", e)
         }
@@ -364,6 +378,38 @@ object DrawingSerializer {
     }
 
     @Synchronized
+    fun getPdfAnnotatedPageCount(context: Context, pdfIdentifier: String): Int {
+        if (pdfIdentifier.isBlank()) return 0
+        return runCatching {
+            val file = getPdfDocFile(context, pdfIdentifier)
+            if (!file.exists()) return 0
+            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val pagesObj = root.optJSONObject("pages") ?: return 0
+            var count = 0
+            val keys = pagesObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val arr = pagesObj.optJSONArray(key)
+                if (arr != null && arr.length() > 0) {
+                    count++
+                }
+            }
+            count
+        }.getOrDefault(0)
+    }
+
+    @Synchronized
+    fun deletePdfData(context: Context, pdfIdentifier: String) {
+        if (pdfIdentifier.isBlank()) return
+        runCatching {
+            val file = getPdfDocFile(context, pdfIdentifier)
+            if (file.exists()) file.delete()
+            val tmp = File(file.parentFile, "${file.name}.tmp")
+            if (tmp.exists()) tmp.delete()
+        }
+    }
+
+    @Synchronized
     fun savePdfLastReadPage(context: Context, pdfIdentifier: String, pageIndex: Int) {
         if (pdfIdentifier.isBlank() || pageIndex < 0) return
         runCatching {
@@ -375,7 +421,7 @@ object DrawingSerializer {
             }
             root.put("lastReadPage", pageIndex)
             root.put("updatedAt", System.currentTimeMillis())
-            file.writeText(root.toString(), Charsets.UTF_8)
+            writeTextAtomically(file, root.toString())
         }
     }
 

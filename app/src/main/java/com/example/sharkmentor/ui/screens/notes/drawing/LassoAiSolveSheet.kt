@@ -78,6 +78,8 @@ import com.example.sharkmentor.core.ai.LassoAiMeta
 import com.example.sharkmentor.core.ai.NoteDocumentAiHelper
 import com.example.sharkmentor.core.ai.SavedErrorBankRecord
 import com.example.sharkmentor.core.util.ImageStorageManager
+import com.example.sharkmentor.ui.components.RichSolutionContent
+import com.example.sharkmentor.ui.components.formatMathAsPlainText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -96,7 +98,7 @@ private val LASSO_FOLLOWUP_SYSTEM_INSTRUCTION = """
 Sen öğrencinin kementle seçtiği aynı görsel hakkında sorduğu takip sorusunu yanıtlayan uzman bir çalışma asistanısın.
 1. Yapay selamlama, gereksiz giriş veya emoji kullanma; doğrudan soruya net yanıt ver.
 2. Yalnızca seçilen görseldeki bilgilere ve önceki çözüme dayan; uydurma bilgi ekleme.
-3. Açık, sade ve adım adım açıkla.
+3. Adım adım, düzenli başlıklar ve temiz matematiksel gösterimle (önemli denklemleri ayrı satırda `$$...$$` veya net formül olarak) açıkla.
 """.trimIndent()
 
 /**
@@ -395,11 +397,11 @@ fun LassoAiSolveSheet(
             }
             append("\n\n")
         }
-        append(mainSolutionText.trim())
+        append(formatMathAsPlainText(mainSolutionText))
         if (followUps.isNotEmpty()) {
             followUps.forEach { entry ->
                 append("\n\nSoru: ${entry.question}\n")
-                append(entry.answer.trim())
+                append(formatMathAsPlainText(entry.answer))
             }
         }
     }.trim()
@@ -743,10 +745,9 @@ fun LassoAiSolveSheet(
                         }
                     } else if (mainSolutionText.isNotBlank()) {
                         SelectionContainer {
-                            Text(
+                            RichSolutionContent(
                                 text = mainSolutionText,
-                                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                                color = colorScheme.onSurface
+                                textColor = colorScheme.onSurface
                             )
                         }
                     }
@@ -760,10 +761,11 @@ fun LassoAiSolveSheet(
                             color = colorScheme.primary
                         )
                         SelectionContainer {
-                            Text(
+                            RichSolutionContent(
                                 text = entry.answer,
-                                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
-                                color = colorScheme.onSurface
+                                textColor = colorScheme.onSurface,
+                                fontSize = 14.sp,
+                                lineHeight = 21.sp
                             )
                         }
                     }
@@ -794,10 +796,11 @@ fun LassoAiSolveSheet(
                             }
                         } else {
                             SelectionContainer {
-                                Text(
+                                RichSolutionContent(
                                     text = activeFollowUpAnswer,
-                                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
-                                    color = colorScheme.onSurface
+                                    textColor = colorScheme.onSurface,
+                                    fontSize = 14.sp,
+                                    lineHeight = 21.sp
                                 )
                             }
                         }
