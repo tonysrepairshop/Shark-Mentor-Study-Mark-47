@@ -298,8 +298,8 @@ object GeminiRestClient {
         val primaryLabel = primary.endpoint?.displayName ?: "Primary"
         val fallbackLabel = fallback.endpoint?.displayName ?: "Fallback"
         val combinedMessage =
-            "$primaryLabel (${primary.httpCode}): ${primary.message.take(120)} | " +
-                "$fallbackLabel (${fallback.httpCode}): ${fallback.message.take(120)}"
+            "$primaryLabel (${primary.httpCode}): ${primary.message.orEmpty().take(120)} | " +
+                "$fallbackLabel (${fallback.httpCode}): ${fallback.message.orEmpty().take(120)}"
 
         // Preserve 404 NOT_FOUND whenever EITHER endpoint recognized the key and reported
         // the model unavailable, so GeminiAiFactory can trigger controlled model fallback.

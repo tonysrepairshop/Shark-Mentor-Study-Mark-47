@@ -66,12 +66,13 @@ class GeminiRestClientTest {
         )
 
         val merged = GeminiRestClient.mergeEndpointErrors(vertex403, studio404, "gemini-3.6-flash")
+        val mergedMsg = merged.message.orEmpty()
         assertEquals(404, merged.httpCode)
         assertTrue(merged.isModelNotFound)
-        assertTrue(merged.message.contains("Vertex AI Express"))
-        assertTrue(merged.message.contains("Google AI Studio"))
-        assertTrue(merged.message.contains("137114597839"))
-        assertTrue(merged.message.contains("not found"))
+        assertTrue(mergedMsg.contains("Vertex AI Express"))
+        assertTrue(mergedMsg.contains("Google AI Studio"))
+        assertTrue(mergedMsg.contains("137114597839"))
+        assertTrue(mergedMsg.contains("not found"))
     }
 
     @Test
