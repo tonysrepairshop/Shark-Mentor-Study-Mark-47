@@ -179,9 +179,20 @@ fun QuickQuestionPreviewDialog(
                         .verticalScroll(rememberScrollState())
                 ) {
                     // Question Image
-                    if (question.questionImageUri.isNotEmpty()) {
+                    val previewImageModel = remember(question.questionImageUri) {
+                        val raw = question.questionImageUri.trim()
+                        when {
+                            raw.isBlank() -> null
+                            raw.startsWith("http://", ignoreCase = true) ||
+                                raw.startsWith("https://", ignoreCase = true) ||
+                                raw.startsWith("content://", ignoreCase = true) -> raw
+                            raw.startsWith("file://") -> java.io.File(raw.removePrefix("file://")).takeIf { it.exists() && it.length() > 0L }
+                            else -> java.io.File(raw).takeIf { it.exists() && it.length() > 0L }
+                        }
+                    }
+                    if (previewImageModel != null) {
                         AsyncImage(
-                            model = question.questionImageUri,
+                            model = previewImageModel,
                             contentDescription = "Question Image",
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
@@ -190,6 +201,23 @@ fun QuickQuestionPreviewDialog(
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.surface)
                         )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(120.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Soru görseli cihazda bulunamadı. Bulut yedeğinden geri yükleyebilirsiniz.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                         Spacer(modifier = Modifier.height(12.dp))
                     }
 
@@ -257,9 +285,20 @@ fun QuickQuestionPreviewDialog(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
-                                if (!question.solutionImageUri.isNullOrEmpty()) {
+                                val solutionImageModel = remember(question.solutionImageUri) {
+                                    val raw = question.solutionImageUri?.trim().orEmpty()
+                                    when {
+                                        raw.isBlank() -> null
+                                        raw.startsWith("http://", ignoreCase = true) ||
+                                            raw.startsWith("https://", ignoreCase = true) ||
+                                            raw.startsWith("content://", ignoreCase = true) -> raw
+                                        raw.startsWith("file://") -> java.io.File(raw.removePrefix("file://")).takeIf { it.exists() && it.length() > 0L }
+                                        else -> java.io.File(raw).takeIf { it.exists() && it.length() > 0L }
+                                    }
+                                }
+                                if (solutionImageModel != null) {
                                     AsyncImage(
-                                        model = question.solutionImageUri,
+                                        model = solutionImageModel,
                                         contentDescription = "Solution Image",
                                         contentScale = ContentScale.Fit,
                                         modifier = Modifier
@@ -269,7 +308,10 @@ fun QuickQuestionPreviewDialog(
                                     )
                                 } else {
                                     Text(
-                                        text = "Bu soru için eklenmiş çözüm notu/görseli bulunmuyor.",
+                                        text = if (!question.solutionImageUri.isNullOrBlank())
+                                            "Çözüm görseli cihazda bulunamadı. Bulut yedeğinden geri yükleyebilirsiniz."
+                                        else
+                                            "Bu soru için eklenmiş çözüm notu/görseli bulunmuyor.",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

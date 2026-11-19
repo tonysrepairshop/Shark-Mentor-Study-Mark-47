@@ -22,6 +22,8 @@ import java.util.concurrent.ConcurrentHashMap
 object SocialNotificationMonitor {
 
     private const val TAG = "SocialNotifMonitor"
+    private const val PREFS_GROUP_CACHE = "social_notif_group_cache"
+    private const val GROUP_NAME_TTL_MS = 24L * 60L * 60L * 1000L
 
     @Volatile
     private var activeUid: String? = null
@@ -35,6 +37,27 @@ object SocialNotificationMonitor {
     private val groupMessageListeners = ConcurrentHashMap<String, ListenerRegistration>()
     private val groupNamesCache = ConcurrentHashMap<String, String>()
     private val seenDmMessageIds = ConcurrentHashMap<String, String>()
+
+    private fun readCachedGroupName(context: Context, groupCode: String): String? {
+        groupNamesCache[groupCode]?.takeIf { it.isNotBlank() }?.let { return it }
+        val prefs = context.getSharedPreferences(PREFS_GROUP_CACHE, Context.MODE_PRIVATE)
+        val cachedName = prefs.getString("name_$groupCode", null)?.takeIf { it.isNotBlank() } ?: return null
+        val cachedAt = prefs.getLong("ts_$groupCode", 0L)
+        if (System.currentTimeMillis() - cachedAt <= GROUP_NAME_TTL_MS) {
+            groupNamesCache[groupCode] = cachedName
+            return cachedName
+        }
+        return null
+    }
+
+    private fun saveCachedGroupName(context: Context, groupCode: String, name: String) {
+        groupNamesCache[groupCode] = name
+        context.getSharedPreferences(PREFS_GROUP_CACHE, Context.MODE_PRIVATE)
+            .edit()
+            .putString("name_$groupCode", name)
+            .putLong("ts_$groupCode", System.currentTimeMillis())
+            .apply()
+    }
 
     @Synchronized
     fun start(context: Context) {
@@ -80,6 +103,7 @@ object SocialNotificationMonitor {
         dmThreadsListener = runCatching {
             db.collection("dm_threads")
                 .whereArrayContains("participantIds", uid)
+                .limit(30)
                 .addSnapshotListener { snap, error ->
                     if (error != null || snap == null) return@addSnapshotListener
                     val blockedIds = SharkBadgeCatalog.getBlockedUserIds(appCtx)
@@ -149,6 +173,7 @@ object SocialNotificationMonitor {
             db.collection("nudges")
                 .whereEqualTo("toUid", uid)
                 .whereEqualTo("seen", false)
+                .limit(20)
                 .addSnapshotListener { snap, error ->
                     if (error != null || snap == null) return@addSnapshotListener
                     val blockedIds = SharkBadgeCatalog.getBlockedUserIds(appCtx)
@@ -203,13 +228,13 @@ object SocialNotificationMonitor {
             val groupCode = rawCode.trim().uppercase()
             if (groupCode.isBlank() || groupMessageListeners.containsKey(groupCode)) return@forEach
 
-            if (!groupNamesCache.containsKey(groupCode)) {
+            if (readCachedGroupName(appCtx, groupCode) == null) {
                 runCatching {
                     db.collection("study_groups").document(groupCode).get()
                         .addOnSuccessListener { doc ->
                             val name = SyncWorker.sanitizeTurkishText(doc.getString("name").orEmpty()).trim()
                             if (name.isNotBlank()) {
-                                groupNamesCache[groupCode] = name
+                                saveCachedGroupName(appCtx, groupCode, name)
                             }
                         }
                 }
@@ -218,6 +243,7 @@ object SocialNotificationMonitor {
             val registration = runCatching {
                 db.collection("study_groups").document(groupCode).collection("messages")
                     .whereGreaterThanOrEqualTo("createdAtMillis", monitorStartMillis - 60_000L)
+                    .limit(30)
                     .addSnapshotListener { snap, error ->
                         if (error != null || snap == null) return@addSnapshotListener
                         val blockedIds = SharkBadgeCatalog.getBlockedUserIds(appCtx)

@@ -243,30 +243,51 @@ object ChatImageCache {
                     decoded
                 }
 
+                // Composite onto opaque white so transparent Lasso PNG crops NEVER turn black in JPEG
+                val flattened = Bitmap.createBitmap(scaled.width, scaled.height, Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(flattened)
+                canvas.drawColor(android.graphics.Color.WHITE)
+                canvas.drawBitmap(scaled, 0f, 0f, null)
+                scaled.recycle()
+
                 val maxBytes = 115 * 1024 // Keep chat doc compact & fast
                 val baos = ByteArrayOutputStream()
-                var quality = 74
-                scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+                var quality = 76
+                flattened.compress(Bitmap.CompressFormat.JPEG, quality, baos)
                 while (baos.size() > maxBytes && quality > 38) {
                     baos.reset()
                     quality -= 10
-                    scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+                    flattened.compress(Bitmap.CompressFormat.JPEG, quality, baos)
                 }
                 val finalBytes = baos.toByteArray()
-                scaled.recycle()
+                flattened.recycle()
                 Base64.encodeToString(finalBytes, Base64.NO_WRAP)
             }.getOrDefault("")
         }
 
     fun readBytes(context: Context, pathOrUri: String): ByteArray? {
+        if (pathOrUri.isBlank()) return null
+        if (pathOrUri.startsWith("https://", ignoreCase = true) ||
+            pathOrUri.startsWith("http://", ignoreCase = true)
+        ) {
+            return runCatching {
+                val conn = (java.net.URL(pathOrUri).openConnection() as java.net.HttpURLConnection).apply {
+                    connectTimeout = 8_000
+                    readTimeout = 12_000
+                    doInput = true
+                }
+                conn.inputStream.use { it.readBytes() }
+            }.getOrNull()
+        }
         val f = File(pathOrUri)
-        if (f.exists()) {
+        if (f.exists() && f.isFile && f.length() > 0L) {
             return f.inputStream().use { it.readBytes() }
         }
         val uri = Uri.parse(pathOrUri)
         return when (uri.scheme) {
-            "file" -> uri.path?.let { File(it) }?.takeIf { it.exists() }?.inputStream()?.use { it.readBytes() }
-            else -> context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            "file" -> uri.path?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }?.inputStream()?.use { it.readBytes() }
+            "content" -> context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            else -> null
         }
     }
 }
@@ -821,6 +842,13 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             runCatching {
                 val now = System.currentTimeMillis()
                 val imageBase64 = ChatImageCache.compressPathOrUriToBase64(appContext, question.questionImageUri)
+                if (imageBase64.isBlank()) {
+                    _uiState.value = _uiState.value.copy(
+                        isSending = false,
+                        statusMessage = "Soru görseli cihazda bulunamadı. Lütfen önce Bulut Yedeğinden Geri Yükle yapın."
+                    )
+                    return@launch
+                }
                 val cleanSubject = SyncWorker.sanitizeTurkishText(question.subject.ifBlank { "Ders" })
                 val cleanTopic = SyncWorker.sanitizeTurkishText(
                     question.aiTopic?.takeIf { it.isNotBlank() } ?: question.topic.ifBlank { "Genel" }
@@ -899,6 +927,13 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     ChatImageCache.compressPathOrUriToBase64(appContext, solutionImageUri.toString())
                 } else {
                     ""
+                }
+                if (solutionImageUri != null && imageBase64.isBlank() && cleanText.isBlank()) {
+                    _uiState.value = _uiState.value.copy(
+                        isSending = false,
+                        statusMessage = "Çözüm görseli okunamadı. Lütfen görseli yeniden seçip deneyin."
+                    )
+                    return@launch
                 }
 
                 val msgDoc = targetCollection.document()
@@ -1539,6 +1574,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
         dmThreadsListener = database.collection("dm_threads")
             .whereArrayContains("participantIds", uid)
+            .limit(40)
             .addSnapshotListener { snap, error ->
                 if (error != null) {
                     Log.w("LeagueChatVM", "dm_threads listener warning: ${error.message}")

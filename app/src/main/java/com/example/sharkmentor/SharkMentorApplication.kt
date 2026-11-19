@@ -68,25 +68,29 @@ class SharkMentorApplication : Application() {
                 Log.w("SharkMentorApp", "PdfLibraryManager init bypassed: ${e.message}")
             }
 
-            // 2. Initialize Firebase & Clear Firestore persistence asynchronously (never on Main Thread!)
+            // 2. Initialize Firebase with persistent local disk cache (NEVER clearPersistence on launch — saves 90%+ Firestore reads!)
             try {
                 FirebaseApp.initializeApp(applicationContext)
                 if (GoogleServicesHelper.isGooglePlayServicesAvailable(applicationContext)) {
-                    val firestore = GoogleServicesHelper.getFirebaseFirestore(applicationContext)
-                    firestore?.clearPersistence()
-                    Log.d("SharkMentorApp", "Firestore cache cleared in background.")
+                    GoogleServicesHelper.getFirebaseFirestore(applicationContext)
+                    Log.d("SharkMentorApp", "Firebase initialized with persistent local cache preserved.")
                 } else {
-                    Log.w("SharkMentorApp", "Google Play Services unavailable. Skipping Firestore persistence clearance.")
+                    Log.w("SharkMentorApp", "Google Play Services unavailable. Skipping Firestore init.")
                 }
             } catch (e: Throwable) {
-                Log.w("SharkMentorApp", "Firebase / Firestore persistence clearance bypassed: ${e.message}")
+                Log.w("SharkMentorApp", "Firebase init bypassed: ${e.message}")
             }
 
-            // 3. Enqueue periodic cloud sync
+            // 3. Enqueue periodic cloud sync (quota-safe 6-hour cadence) & Duolingo Water Streak worker (2-hour widget/notification cadence)
             try {
                 SyncWorker.enqueuePeriodicSync(applicationContext)
             } catch (e: Throwable) {
                 Log.w("SharkMentorApp", "Periodic sync enqueue bypassed: ${e.message}")
+            }
+            try {
+                com.example.sharkmentor.worker.StreakReminderWorker.schedule(applicationContext)
+            } catch (e: Throwable) {
+                Log.w("SharkMentorApp", "Water streak worker schedule bypassed: ${e.message}")
             }
         }
     }

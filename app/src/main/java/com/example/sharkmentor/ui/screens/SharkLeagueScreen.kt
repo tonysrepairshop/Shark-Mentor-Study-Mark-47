@@ -30,7 +30,7 @@ import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Layers
-import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material.icons.filled.MilitaryTech
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
@@ -1888,8 +1888,8 @@ private fun LeaderboardRow(
                                 horizontalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.LocalFireDepartment,
-                                    contentDescription = null,
+                                    imageVector = Icons.Rounded.WaterDrop,
+                                    contentDescription = "Su Serisi",
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(13.dp)
                                 )

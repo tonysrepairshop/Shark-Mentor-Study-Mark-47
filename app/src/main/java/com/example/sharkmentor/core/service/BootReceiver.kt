@@ -26,6 +26,11 @@ class BootReceiver : BroadcastReceiver() {
                 // Timer was not running: do nothing, leave all apps unlocked
                 sessionManager.endSession()
             }
+
+            // Always re-schedule Duolingo Water Streak widget & reminder worker after reboot
+            runCatching {
+                com.example.sharkmentor.worker.StreakReminderWorker.schedule(context.applicationContext)
+            }
         }
     }
 }

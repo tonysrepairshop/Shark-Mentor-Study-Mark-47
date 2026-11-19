@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_shark_original_bg">#052141</color>
-    <color name="ic_launcher_shark_camgoz_bg">#052141</color>
-    <color name="ic_launcher_shark_mako_bg">#17233B</color>
-    <color name="ic_launcher_shark_hammerhead_bg">#05203A</color>
-    <color name="ic_launcher_shark_kaplan_bg">#051E37</color>
-    <color name="ic_launcher_shark_greatwhite_bg">#1A253A</color>
-    <color name="ic_launcher_shark_megalodon_bg">#132035</color>
+    <color name="ic_launcher_shark_original_bg">#0A2E4D</color>
+    <color name="ic_launcher_shark_camgoz_bg">#0A2E4D</color>
+    <color name="ic_launcher_shark_mako_bg">#083358</color>
+    <color name="ic_launcher_shark_hammerhead_bg">#1E1B4B</color>
+    <color name="ic_launcher_shark_kaplan_bg">#0F2937</color>
+    <color name="ic_launcher_shark_greatwhite_bg">#3B1237</color>
+    <color name="ic_launcher_shark_megalodon_bg">#3A1118</color>
 </resources>

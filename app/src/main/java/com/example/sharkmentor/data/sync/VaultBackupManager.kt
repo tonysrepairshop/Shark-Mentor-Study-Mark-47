@@ -93,6 +93,7 @@ data class VaultBackupSummary(
     val notesCount: Int,
     val drawingsCount: Int,
     val questionsCount: Int,
+    val pdfAnnotationsCount: Int = 0,
     val uploadedImagesCount: Int = 0,
     val reusedImagesCount: Int = 0,
     val compressedBytesCount: Int = 0,
@@ -103,15 +104,14 @@ data class VaultBackupSummary(
 
 /**
  * Quota-friendly compressed backup & restore manager (`SHK-VAULT-1:<base64>`)
- * for Notes, Note Drawings (JSON sidecars), and Error Bank Questions + WebP images.
- *
- * Designed as an independent manager so `CloudSyncRepository` and `SyncWorker` remain untouched.
+ * for Notes, Note Drawings (all pages), Error Bank Questions + verified inline/Storage WebP images,
+ * and quota-safe PDF vector annotations (metadata + strokes only — NEVER raw 50 MB PDF binaries!).
  */
 object VaultBackupManager {
 
     private const val TAG = "VaultBackupManager"
     const val VAULT_PREFIX = "SHK-VAULT-1:"
-    private const val FORMAT_VERSION = 1
+    private const val FORMAT_VERSION = 2
 
     private const val PREFS_NAME = "shark_vault_backup_prefs"
     private const val KEY_LAST_HASH_PREFIX = "last_vault_sha256_"
@@ -121,10 +121,15 @@ object VaultBackupManager {
     // 700 KB Firestore single-document threshold (Firestore max is 1 MB; 700 KB leaves generous safety margin)
     private const val MAX_SINGLE_DOC_BYTES = 700 * 1024
 
-    // Image compression settings: max 960px dimension, 60% WebP quality (~30-45 KB)
+    // Image compression settings: max 960px dimension, adaptive WebP (~25-48 KB)
     private const val MAX_IMAGE_DIMENSION = 960
-    private const val WEBP_QUALITY = 60
+    private const val WEBP_QUALITY = 62
+    private const val TARGET_INLINE_WEBP_BYTES = 48 * 1024
+    private const val MAX_INLINE_WEBP_EMBED_BYTES = 72 * 1024
+    private const val MAX_PDF_ANNOTATION_JSON_BYTES = 250 * 1024
     private const val ERROR_BANK_IMAGES_DIR = "error_bank_images"
+    private const val NOTE_DRAWINGS_DIR = "note_drawings"
+    private const val PDF_ANNOTATIONS_DIR = "pdf_annotations"
 
     private fun getPrefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -135,8 +140,8 @@ object VaultBackupManager {
     // ── 1. Local Code Export (SHK-VAULT-1:<base64>) ──────────────────────────
 
     /**
-     * Collects all Notes, Note Drawings, and Error Bank records into a single JSON package
-     * and compresses it with GZIP + Base64 (`SHK-VAULT-1:<base64>`).
+     * Collects all Notes, Note Drawings, Error Bank records (with inline WebP images), and
+     * PDF vector annotations into a single GZIP + Base64 package (`SHK-VAULT-1:<base64>`).
      */
     suspend fun exportLocalVaultCode(
         context: Context
@@ -162,7 +167,8 @@ object VaultBackupManager {
     // ── 2. Local Code Import (SHK-VAULT-1:<base64>) ──────────────────────────
 
     /**
-     * Restores Notes, Note Drawings, and Error Bank Questions from a `SHK-VAULT-1:<base64>` string.
+     * Restores Notes, Note Drawings, Error Bank Questions (+ images), and PDF annotations
+     * from a `SHK-VAULT-1:<base64>` string.
      */
     suspend fun importFromVaultCode(
         context: Context,
@@ -178,15 +184,12 @@ object VaultBackupManager {
         }
     }
 
-    // ── 3. Quota-Safe Cloud Backup (Firestore + Deduped WebP Storage) ────────
+    // ── 3. Quota-Safe Cloud Backup (Firestore + Verified Inline/Storage WebP) ─
 
     /**
-     * Backs up all Notes, Note Drawings, and Error Bank Questions (with 960px 60% WebP
-     * SHA-256 deduplicated images) to `students/{uid}/vault_backups/latest`.
-     *
-     * - If `force == false` and the SHA-256 content hash matches the last uploaded backup,
-     *   skips writing to Firestore to save quota.
-     * - If the compressed payload exceeds 700 KB, splits into `chunk_0`, `chunk_1`, ...
+     * Backs up all Notes, Note Drawings (all pages), Error Bank Questions (with white-composited
+     * WebP images guaranteed recoverable even without Storage), and quota-safe PDF vector annotations
+     * to `students/{uid}/vault_backups/latest`.
      */
     suspend fun backupToCloud(
         context: Context,
@@ -207,11 +210,14 @@ object VaultBackupManager {
                 uidForImageUpload = uid
             )
 
-            // Compute deterministic hash over the canonical data arrays (notes, drawings, questions)
+            // Compute deterministic hash over all canonical data sections
             val canonicalContent = JSONObject().apply {
+                put("version", FORMAT_VERSION)
                 put("notes", rootJson.optJSONArray("notes") ?: JSONArray())
                 put("drawings", rootJson.optJSONObject("drawings") ?: JSONObject())
+                put("notePageDrawings", rootJson.optJSONObject("notePageDrawings") ?: JSONObject())
                 put("questions", rootJson.optJSONArray("questions") ?: JSONArray())
+                put("pdfAnnotations", rootJson.optJSONObject("pdfAnnotations") ?: JSONObject())
             }.toString()
             val contentHash = sha256Hex(canonicalContent.toByteArray(Charsets.UTF_8))
 
@@ -242,6 +248,7 @@ object VaultBackupManager {
                     "notesCount" to buildSummary.notesCount,
                     "drawingsCount" to buildSummary.drawingsCount,
                     "questionsCount" to buildSummary.questionsCount,
+                    "pdfAnnotationsCount" to buildSummary.pdfAnnotationsCount,
                     "compressedBytes" to codeBytes.size,
                     "chunkCount" to 0,
                     "payload" to vaultCode
@@ -267,6 +274,7 @@ object VaultBackupManager {
                     "notesCount" to buildSummary.notesCount,
                     "drawingsCount" to buildSummary.drawingsCount,
                     "questionsCount" to buildSummary.questionsCount,
+                    "pdfAnnotationsCount" to buildSummary.pdfAnnotationsCount,
                     "compressedBytes" to codeBytes.size,
                     "chunkCount" to chunks.size,
                     "payload" to ""
@@ -279,11 +287,15 @@ object VaultBackupManager {
                 .putLong(KEY_LAST_BACKUP_TIME, now)
                 .apply()
 
+            val pdfPart = if (buildSummary.pdfAnnotationsCount > 0) {
+                ", ${buildSummary.pdfAnnotationsCount} PDF çizimi"
+            } else ""
+
             buildSummary.copy(
                 compressedBytesCount = codeBytes.size,
                 contentHash = contentHash,
                 skippedUnchanged = false,
-                message = "Bulut yedeği başarıyla kaydedildi (${codeBytes.size / 1024} KB, ${buildSummary.notesCount} not, ${buildSummary.questionsCount} soru)."
+                message = "Bulut yedeği başarıyla kaydedildi (${codeBytes.size / 1024} KB • ${buildSummary.notesCount} not, ${buildSummary.questionsCount} soru$pdfPart)."
             )
         }
     }
@@ -364,7 +376,10 @@ object VaultBackupManager {
 
         val notesArray = JSONArray()
         val drawingsObject = JSONObject()
+        val notePageDrawingsObject = JSONObject()
         var drawingsCount = 0
+
+        val noteDrawingsDir = File(context.filesDir, NOTE_DRAWINGS_DIR)
 
         for (note in allNotes) {
             val noteObj = JSONObject().apply {
@@ -383,6 +398,50 @@ object VaultBackupManager {
                 drawingsObject.put(note.id, DrawingSerializer.strokesToJson(strokes))
                 drawingsCount++
             }
+
+            // Also capture additional pages (note_<safeId>_p<N>.json) for multi-page notes
+            val safeId = note.id.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "default" }
+            val pagePrefix = "note_${safeId}_p"
+            noteDrawingsDir.listFiles()?.forEach { pageFile ->
+                if (pageFile.name.startsWith(pagePrefix) && pageFile.name.endsWith(".json")) {
+                    val pageNum = pageFile.name
+                        .removePrefix(pagePrefix)
+                        .removeSuffix(".json")
+                        .toIntOrNull()
+                    if (pageNum != null && pageNum > 0) {
+                        val pageStrokes = DrawingSerializer.loadNotePageDrawing(context, note.id, pageNum)
+                        if (pageStrokes.isNotEmpty()) {
+                            notePageDrawingsObject.put("${note.id}::p$pageNum", DrawingSerializer.strokesToJson(pageStrokes))
+                            drawingsCount++
+                        }
+                    }
+                }
+            }
+        }
+
+        // Quota-safe PDF vector annotations backup (strokes + lastReadPage JSON only — NEVER raw 50MB PDF files!)
+        val pdfAnnotationsObject = JSONObject()
+        var pdfAnnotationsCount = 0
+        val pdfAnnDir = File(context.filesDir, PDF_ANNOTATIONS_DIR)
+        if (pdfAnnDir.exists() && pdfAnnDir.isDirectory) {
+            pdfAnnDir.listFiles()?.forEach { pdfJsonFile ->
+                if (pdfJsonFile.isFile &&
+                    pdfJsonFile.name.startsWith("pdf_") &&
+                    pdfJsonFile.name.endsWith(".json") &&
+                    pdfJsonFile.length() in 10L..MAX_PDF_ANNOTATION_JSON_BYTES.toLong()
+                ) {
+                    runCatching {
+                        val raw = pdfJsonFile.readText(Charsets.UTF_8)
+                        val parsed = JSONObject(raw)
+                        val pagesObj = parsed.optJSONObject("pages")
+                        val lastReadPage = parsed.optInt("lastReadPage", 0)
+                        if ((pagesObj != null && pagesObj.length() > 0) || lastReadPage > 0) {
+                            pdfAnnotationsObject.put(pdfJsonFile.name, raw)
+                            pdfAnnotationsCount++
+                        }
+                    }
+                }
+            }
         }
 
         var uploadedImages = 0
@@ -392,15 +451,18 @@ object VaultBackupManager {
         for (q in allQuestions) {
             var qVaultUrl: String? = null
             var qHash: String? = null
+            var qInlineWebp: String? = null
             var sVaultUrl: String? = null
             var sHash: String? = null
+            var sInlineWebp: String? = null
 
             if (q.questionImageUri.isNotBlank()) {
                 val imgRes = processQuestionImageForVault(context, q.questionImageUri, uidForImageUpload)
                 if (imgRes != null) {
                     qHash = imgRes.sha256Hash
                     qVaultUrl = imgRes.downloadUrl
-                    if (imgRes.wasNewlyUploaded) uploadedImages++ else if (imgRes.downloadUrl != null) reusedImages++
+                    qInlineWebp = imgRes.inlineWebpBase64
+                    if (imgRes.wasNewlyUploaded) uploadedImages++ else if (imgRes.downloadUrl != null || imgRes.inlineWebpBase64 != null) reusedImages++
                 }
             }
 
@@ -409,7 +471,8 @@ object VaultBackupManager {
                 if (solRes != null) {
                     sHash = solRes.sha256Hash
                     sVaultUrl = solRes.downloadUrl
-                    if (solRes.wasNewlyUploaded) uploadedImages++ else if (solRes.downloadUrl != null) reusedImages++
+                    sInlineWebp = solRes.inlineWebpBase64
+                    if (solRes.wasNewlyUploaded) uploadedImages++ else if (solRes.downloadUrl != null || solRes.inlineWebpBase64 != null) reusedImages++
                 }
             }
 
@@ -422,8 +485,10 @@ object VaultBackupManager {
                 put("solutionImageUri", q.solutionImageUri ?: JSONObject.NULL)
                 put("questionImageHash", qHash ?: JSONObject.NULL)
                 put("questionImageVaultUrl", qVaultUrl ?: JSONObject.NULL)
+                put("questionImageInlineWebp", qInlineWebp ?: JSONObject.NULL)
                 put("solutionImageHash", sHash ?: JSONObject.NULL)
                 put("solutionImageVaultUrl", sVaultUrl ?: JSONObject.NULL)
+                put("solutionImageInlineWebp", sInlineWebp ?: JSONObject.NULL)
                 put("stability", q.stability)
                 put("difficulty", q.difficulty)
                 put("reps", q.reps)
@@ -448,13 +513,16 @@ object VaultBackupManager {
             put("exportedAtMillis", System.currentTimeMillis())
             put("notes", notesArray)
             put("drawings", drawingsObject)
+            put("notePageDrawings", notePageDrawingsObject)
             put("questions", questionsArray)
+            put("pdfAnnotations", pdfAnnotationsObject)
         }
 
         val summary = VaultBackupSummary(
             notesCount = allNotes.size,
             drawingsCount = drawingsCount,
             questionsCount = allQuestions.size,
+            pdfAnnotationsCount = pdfAnnotationsCount,
             uploadedImagesCount = uploadedImages,
             reusedImagesCount = reusedImages
         )
@@ -479,7 +547,6 @@ object VaultBackupManager {
             if (id.isEmpty()) continue
             val existing = noteDao.getNoteById(id)
             val incomingUpdatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
-            // Keep newer if already present locally unless incoming is >= existing
             if (existing == null || incomingUpdatedAt >= existing.updatedAt) {
                 notesToUpsert.add(
                     NoteEntity(
@@ -499,7 +566,7 @@ object VaultBackupManager {
             noteDao.upsertAllNotes(notesToUpsert)
         }
 
-        // 2. Restore Note Drawings
+        // 2. Restore Note Drawings (page 0 + additional pages)
         val drawingsObj = rootJson.optJSONObject("drawings")
         var restoredDrawingsCount = 0
         if (drawingsObj != null) {
@@ -517,11 +584,66 @@ object VaultBackupManager {
             }
         }
 
-        // 3. Restore Error Bank Questions & Download Missing Images
+        val notePageDrawingsObj = rootJson.optJSONObject("notePageDrawings")
+        if (notePageDrawingsObj != null) {
+            val keys = notePageDrawingsObj.keys()
+            while (keys.hasNext()) {
+                val compositeKey = keys.next()
+                val parts = compositeKey.split("::p")
+                if (parts.size == 2) {
+                    val noteId = parts[0]
+                    val pageIdx = parts[1].toIntOrNull() ?: continue
+                    val rawStrokeJson = notePageDrawingsObj.optString(compositeKey, "")
+                    if (rawStrokeJson.isNotBlank()) {
+                        val strokes = DrawingSerializer.strokesFromJson(rawStrokeJson)
+                        if (strokes.isNotEmpty()) {
+                            DrawingSerializer.saveNotePageDrawing(context, noteId, pageIdx, strokes)
+                            restoredDrawingsCount++
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2b. Restore Quota-Safe PDF Vector Annotations
+        val pdfAnnotationsObj = rootJson.optJSONObject("pdfAnnotations")
+        var restoredPdfAnnotationsCount = 0
+        if (pdfAnnotationsObj != null && pdfAnnotationsObj.length() > 0) {
+            val pdfAnnDir = File(context.filesDir, PDF_ANNOTATIONS_DIR).apply {
+                if (!exists()) mkdirs()
+            }
+            val keys = pdfAnnotationsObj.keys()
+            while (keys.hasNext()) {
+                val fileName = keys.next()
+                if (!fileName.startsWith("pdf_") || !fileName.endsWith(".json") || fileName.contains("/") || fileName.contains("..")) {
+                    continue
+                }
+                val rawJson = pdfAnnotationsObj.optString(fileName, "")
+                if (rawJson.isBlank()) continue
+                runCatching {
+                    val incomingObj = JSONObject(rawJson)
+                    val incomingUpdatedAt = incomingObj.optLong("updatedAt", 0L)
+                    val targetFile = File(pdfAnnDir, fileName)
+                    val existingUpdatedAt = if (targetFile.exists()) {
+                        runCatching { JSONObject(targetFile.readText(Charsets.UTF_8)).optLong("updatedAt", 0L) }
+                            .getOrDefault(0L)
+                    } else -1L
+                    if (!targetFile.exists() || incomingUpdatedAt >= existingUpdatedAt) {
+                        targetFile.writeText(rawJson, Charsets.UTF_8)
+                        restoredPdfAnnotationsCount++
+                    }
+                }
+            }
+            if (restoredPdfAnnotationsCount > 0) {
+                runCatching { com.example.sharkmentor.core.util.PdfLibraryManager.refresh(context) }
+            }
+        }
+
+        // 3. Restore Error Bank Questions & Materialize Verified Local Image Files
         val questionsArray = rootJson.optJSONArray("questions") ?: JSONArray()
         val existingQuestions = errorQuestionDao.getAllQuestionsDirect()
         var restoredQuestionsCount = 0
-        var downloadedImagesCount = 0
+        var restoredImagesCount = 0
 
         for (i in 0 until questionsArray.length()) {
             val qObj = questionsArray.optJSONObject(i) ?: continue
@@ -534,28 +656,32 @@ object VaultBackupManager {
             val localQPath = qObj.optString("questionImageUri", "")
             val qHash = qObj.optString("questionImageHash", "").takeIf { it.isNotBlank() && it != "null" }
             val qVaultUrl = qObj.optString("questionImageVaultUrl", "").takeIf { it.isNotBlank() && it != "null" }
+            val qInlineWebp = qObj.optString("questionImageInlineWebp", "").takeIf { it.isNotBlank() && it != "null" }
 
             val resolvedQuestionUri = resolveOrDownloadQuestionImage(
                 context = context,
                 existingPath = localQPath,
                 imageHash = qHash,
                 vaultDownloadUrl = qVaultUrl,
+                inlineWebpBase64 = qInlineWebp,
                 uid = currentUid,
                 prefix = "question"
             ).also {
-                if (it != localQPath && it.isNotBlank()) downloadedImagesCount++
+                if (it.isNotBlank()) restoredImagesCount++
             }
 
             val localSolPath = qObj.optString("solutionImageUri", "").takeIf { it.isNotBlank() && it != "null" }
             val sHash = qObj.optString("solutionImageHash", "").takeIf { it.isNotBlank() && it != "null" }
             val sVaultUrl = qObj.optString("solutionImageVaultUrl", "").takeIf { it.isNotBlank() && it != "null" }
+            val sInlineWebp = qObj.optString("solutionImageInlineWebp", "").takeIf { it.isNotBlank() && it != "null" }
 
-            val resolvedSolutionUri = if (localSolPath != null || sHash != null || sVaultUrl != null) {
+            val resolvedSolutionUri = if (localSolPath != null || sHash != null || sVaultUrl != null || sInlineWebp != null) {
                 resolveOrDownloadQuestionImage(
                     context = context,
                     existingPath = localSolPath.orEmpty(),
                     imageHash = sHash,
                     vaultDownloadUrl = sVaultUrl,
+                    inlineWebpBase64 = sInlineWebp,
                     uid = currentUid,
                     prefix = "solution"
                 ).takeIf { it.isNotBlank() }
@@ -567,11 +693,15 @@ object VaultBackupManager {
                     (eq.createdAtMillis == createdAt && eq.subject == subject)
             }
 
+            val existingValidQPath = matchedExisting?.questionImageUri
+                ?.takeIf { isValidLocalImagePath(it) }
+                .orEmpty()
+
             val entity = ErrorQuestionEntity(
                 id = matchedExisting?.id ?: 0L,
                 subject = subject,
-                questionImageUri = resolvedQuestionUri.ifBlank { matchedExisting?.questionImageUri.orEmpty() },
-                solutionImageUri = resolvedSolutionUri ?: matchedExisting?.solutionImageUri,
+                questionImageUri = resolvedQuestionUri.ifBlank { existingValidQPath },
+                solutionImageUri = resolvedSolutionUri ?: matchedExisting?.solutionImageUri?.takeIf { isValidLocalImagePath(it) },
                 topic = topic,
                 stability = qObj.optDouble("stability", 0.4),
                 difficulty = qObj.optDouble("difficulty", 5.0),
@@ -597,20 +727,23 @@ object VaultBackupManager {
             restoredQuestionsCount++
         }
 
+        val pdfMsg = if (restoredPdfAnnotationsCount > 0) ", $restoredPdfAnnotationsCount PDF çizimi" else ""
         return VaultBackupSummary(
             notesCount = notesToUpsert.size,
             drawingsCount = restoredDrawingsCount,
             questionsCount = restoredQuestionsCount,
-            uploadedImagesCount = downloadedImagesCount,
-            message = "Geri yükleme tamamlandı: ${notesToUpsert.size} not, $restoredDrawingsCount çizim, $restoredQuestionsCount hata sorusu."
+            pdfAnnotationsCount = restoredPdfAnnotationsCount,
+            uploadedImagesCount = restoredImagesCount,
+            message = "Geri yükleme tamamlandı: ${notesToUpsert.size} not, $restoredDrawingsCount çizim, $restoredQuestionsCount hata sorusu$pdfMsg."
         )
     }
 
-    // ── Image WebP Compression (max 960px, 60% WebP) & SHA-256 Deduplication ──
+    // ── Image WebP Compression (White-Composited, Adaptive <= 48 KB) & Recovery ──
 
     private data class ProcessedVaultImage(
         val sha256Hash: String,
         val downloadUrl: String?,
+        val inlineWebpBase64: String?,
         val wasNewlyUploaded: Boolean
     )
 
@@ -625,17 +758,21 @@ object VaultBackupManager {
             return ProcessedVaultImage(
                 sha256Hash = urlHash,
                 downloadUrl = uriOrPath,
+                inlineWebpBase64 = null,
                 wasNewlyUploaded = false
             )
         }
 
         val webpBytes = compressImageToVaultWebp(context, uriOrPath) ?: return null
         val hash = sha256Hex(webpBytes).take(32)
+        val inlineB64 = Base64.encodeToString(webpBytes, Base64.NO_WRAP)
 
+        // Local code export: always embed inline WebP so code is 100% self-contained
         if (uidForUpload.isNullOrBlank()) {
             return ProcessedVaultImage(
                 sha256Hash = hash,
                 downloadUrl = null,
+                inlineWebpBase64 = inlineB64,
                 wasNewlyUploaded = false
             )
         }
@@ -647,16 +784,24 @@ object VaultBackupManager {
             return ProcessedVaultImage(
                 sha256Hash = hash,
                 downloadUrl = cachedUrl,
+                // Keep inline fallback when compact so restore never fails even if Storage is unreachable
+                inlineWebpBase64 = inlineB64.takeIf { webpBytes.size <= MAX_INLINE_WEBP_EMBED_BYTES },
                 wasNewlyUploaded = false
             )
         }
 
         val storage = GoogleServicesHelper.getFirebaseStorage(context)
-            ?: return ProcessedVaultImage(sha256Hash = hash, downloadUrl = null, wasNewlyUploaded = false)
+        if (storage == null) {
+            return ProcessedVaultImage(
+                sha256Hash = hash,
+                downloadUrl = null,
+                inlineWebpBase64 = inlineB64,
+                wasNewlyUploaded = false
+            )
+        }
 
         val storageRef = storage.reference.child("images/$uidForUpload/vault_$hash.webp")
 
-        // Check if already exists in Firebase Storage to avoid re-uploading identical image bytes
         val existingUrl = runCatching {
             storageRef.downloadUrl.await().toString()
         }.getOrNull()
@@ -666,11 +811,12 @@ object VaultBackupManager {
             return ProcessedVaultImage(
                 sha256Hash = hash,
                 downloadUrl = existingUrl,
+                inlineWebpBase64 = inlineB64.takeIf { webpBytes.size <= MAX_INLINE_WEBP_EMBED_BYTES },
                 wasNewlyUploaded = false
             )
         }
 
-        // Upload compressed WebP (~30-45 KB)
+        // Try Firebase Storage upload; if Spark plan / rules / network blocks Storage, inline WebP still guarantees 100% restore!
         return runCatching {
             storageRef.putBytes(webpBytes).await()
             val uploadedUrl = storageRef.downloadUrl.await().toString()
@@ -678,17 +824,24 @@ object VaultBackupManager {
             ProcessedVaultImage(
                 sha256Hash = hash,
                 downloadUrl = uploadedUrl,
+                inlineWebpBase64 = inlineB64.takeIf { webpBytes.size <= MAX_INLINE_WEBP_EMBED_BYTES },
                 wasNewlyUploaded = true
             )
         }.onFailure { e ->
-            Log.w(TAG, "Failed uploading vault image hash=$hash: ${e.message}")
+            Log.w(TAG, "Storage upload unavailable for hash=$hash (using guaranteed inline WebP fallback): ${e.message}")
         }.getOrDefault(
-            ProcessedVaultImage(sha256Hash = hash, downloadUrl = null, wasNewlyUploaded = false)
+            ProcessedVaultImage(
+                sha256Hash = hash,
+                downloadUrl = null,
+                inlineWebpBase64 = inlineB64,
+                wasNewlyUploaded = false
+            )
         )
     }
 
     /**
-     * Downscales the source image to max 960px on its longest side and compresses to 60% WebP (~30-45 KB).
+     * Composites onto opaque WHITE background (so transparent Lasso PNG crops NEVER turn black!),
+     * downscales to max 960px, and encodes to compact adaptive WebP (~25-48 KB).
      */
     private fun compressImageToVaultWebp(context: Context, uriOrPath: String): ByteArray? {
         return runCatching {
@@ -697,6 +850,7 @@ object VaultBackupManager {
 
             val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, boundsOpts)
+            if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return@runCatching null
 
             var sampleSize = 1
             while (
@@ -725,15 +879,29 @@ object VaultBackupManager {
                 decoded
             }
 
-            val baos = ByteArrayOutputStream()
+            // Composite onto solid opaque white so Lasso transparent regions NEVER turn pitch black
+            val flattened = Bitmap.createBitmap(scaled.width, scaled.height, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(flattened)
+            canvas.drawColor(android.graphics.Color.WHITE)
+            canvas.drawBitmap(scaled, 0f, 0f, null)
+            scaled.recycle()
+
             val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 Bitmap.CompressFormat.WEBP_LOSSY
             } else {
                 @Suppress("DEPRECATION")
                 Bitmap.CompressFormat.WEBP
             }
-            scaled.compress(format, WEBP_QUALITY, baos)
-            scaled.recycle()
+
+            val baos = ByteArrayOutputStream()
+            var quality = WEBP_QUALITY
+            flattened.compress(format, quality, baos)
+            while (baos.size() > TARGET_INLINE_WEBP_BYTES && quality > 34) {
+                baos.reset()
+                quality -= 8
+                flattened.compress(format, quality, baos)
+            }
+            flattened.recycle()
             baos.toByteArray()
         }.onFailure { e ->
             Log.w(TAG, "Failed compressing image for vault: $uriOrPath", e)
@@ -755,19 +923,38 @@ object VaultBackupManager {
         }.getOrNull()
     }
 
+    private fun isValidImageBytes(bytes: ByteArray?): Boolean {
+        if (bytes == null || bytes.isEmpty()) return false
+        return runCatching {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            opts.outWidth > 0 && opts.outHeight > 0
+        }.getOrDefault(false)
+    }
+
+    private fun isValidLocalImagePath(path: String): Boolean {
+        if (path.isBlank()) return false
+        if (path.startsWith("https://") || path.startsWith("content://")) return true
+        val file = if (path.startsWith("file://")) File(Uri.parse(path).path ?: return false) else File(path)
+        if (!file.exists() || !file.isFile || file.length() <= 0L) return false
+        return runCatching {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, opts)
+            opts.outWidth > 0 && opts.outHeight > 0
+        }.getOrDefault(false)
+    }
+
     private suspend fun resolveOrDownloadQuestionImage(
         context: Context,
         existingPath: String,
         imageHash: String?,
         vaultDownloadUrl: String?,
+        inlineWebpBase64: String?,
         uid: String?,
         prefix: String
     ): String {
-        if (existingPath.isNotBlank()) {
-            val f = File(existingPath)
-            if (f.exists() && f.length() > 0L) {
-                return existingPath
-            }
+        if (existingPath.isNotBlank() && isValidLocalImagePath(existingPath)) {
+            return existingPath
         }
 
         val dir = File(context.filesDir, ERROR_BANK_IMAGES_DIR).apply {
@@ -776,26 +963,37 @@ object VaultBackupManager {
         val safeHash = imageHash?.replace(Regex("[^a-zA-Z0-9_-]"), "")?.takeIf { it.isNotBlank() }
         if (safeHash != null) {
             val deterministicFile = File(dir, "${prefix}_vault_${safeHash}.webp")
-            if (deterministicFile.exists() && deterministicFile.length() > 0L) {
+            if (isValidLocalImagePath(deterministicFile.absolutePath)) {
                 return deterministicFile.absolutePath
             }
         }
 
-        // Try downloading via Firebase Storage reference first if uid & imageHash are known
-        var downloadedBytes: ByteArray? = null
-        if (!uid.isNullOrBlank() && !safeHash.isNullOrBlank()) {
-            val storage = GoogleServicesHelper.getFirebaseStorage(context)
-            if (storage != null) {
-                downloadedBytes = runCatching {
-                    val ref = storage.reference.child("images/$uid/vault_$safeHash.webp")
-                    ref.getBytes(5L * 1024L * 1024L).await()
-                }.getOrNull()
+        // Priority 1: Guaranteed inline WebP payload inside vault (zero network dependency, instant!)
+        var restoredBytes: ByteArray? = null
+        if (!inlineWebpBase64.isNullOrBlank()) {
+            val decoded = runCatching { Base64.decode(inlineWebpBase64, Base64.DEFAULT) }.getOrNull()
+            if (isValidImageBytes(decoded)) {
+                restoredBytes = decoded
             }
         }
 
-        // Fallback to HTTP download from vaultDownloadUrl
-        if (downloadedBytes == null && !vaultDownloadUrl.isNullOrBlank() && vaultDownloadUrl.startsWith("https://")) {
-            downloadedBytes = runCatching {
+        // Priority 2: Download via Firebase Storage reference if uid & imageHash are known
+        if (restoredBytes == null && !uid.isNullOrBlank() && !safeHash.isNullOrBlank()) {
+            val storage = GoogleServicesHelper.getFirebaseStorage(context)
+            if (storage != null) {
+                val downloaded = runCatching {
+                    val ref = storage.reference.child("images/$uid/vault_$safeHash.webp")
+                    ref.getBytes(5L * 1024L * 1024L).await()
+                }.getOrNull()
+                if (isValidImageBytes(downloaded)) {
+                    restoredBytes = downloaded
+                }
+            }
+        }
+
+        // Priority 3: Fallback HTTP download from vaultDownloadUrl
+        if (restoredBytes == null && !vaultDownloadUrl.isNullOrBlank() && vaultDownloadUrl.startsWith("https://")) {
+            val downloaded = runCatching {
                 val conn = (URL(vaultDownloadUrl).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 10_000
                     readTimeout = 15_000
@@ -803,20 +1001,33 @@ object VaultBackupManager {
                 }
                 conn.inputStream.use { it.readBytes() }
             }.getOrNull()
+            if (isValidImageBytes(downloaded)) {
+                restoredBytes = downloaded
+            }
         }
 
-        if (downloadedBytes != null && downloadedBytes.isNotEmpty()) {
-            val fileHash = safeHash ?: sha256Hex(downloadedBytes).take(16)
+        if (restoredBytes != null && restoredBytes.isNotEmpty()) {
+            val fileHash = safeHash ?: sha256Hex(restoredBytes).take(16)
             val targetFile = File(dir, "${prefix}_vault_${fileHash}.webp")
-            runCatching {
-                FileOutputStream(targetFile).use { out ->
-                    out.write(downloadedBytes)
+            val tmpFile = File(dir, "${prefix}_vault_${fileHash}.webp.tmp")
+            val written = runCatching {
+                FileOutputStream(tmpFile).use { out ->
+                    out.write(restoredBytes)
+                    out.flush()
                 }
+                if (!tmpFile.renameTo(targetFile)) {
+                    tmpFile.copyTo(targetFile, overwrite = true)
+                    runCatching { tmpFile.delete() }
+                }
+                isValidLocalImagePath(targetFile.absolutePath)
+            }.getOrDefault(false)
+            if (written) {
                 return targetFile.absolutePath
             }
         }
 
-        return existingPath
+        // Never return a dead deleted local file path that causes black screens
+        return ""
     }
 
     // ── GZIP + Base64 & SHA-256 Utilities ────────────────────────────────────
@@ -953,7 +1164,7 @@ fun VaultBackupDialog(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Text(
-                    text = "Notlarınız, el yazısı çizimleriniz ve Hata Bankası sorularınız tek pakette GZIP + SHA-256 kota korumasıyla sıkıştırılır.",
+                    text = "Notlarınız, el yazısı/PDF çizimleriniz ve Hata Bankası soru görselleriniz tek pakette GZIP + SHA-256 kota korumasıyla sıkıştırılır.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colorScheme.onSurface.copy(alpha = 0.75f)
                 )

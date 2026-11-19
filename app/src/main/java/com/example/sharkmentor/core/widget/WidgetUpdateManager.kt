@@ -39,6 +39,7 @@ data class WidgetSnapshot(
     val streakCount: Int = 0,
     val streakFreezeAvailable: Int = 0,
     val isStreakDoneToday: Boolean = false,
+    val daysSinceLastStudy: Int = 0,
     val last7Days: List<DayFocusStatus> = emptyList(),
     val timerState: TimerState = TimerState(),
     val isSessionManagerActive: Boolean = false,
@@ -53,6 +54,8 @@ object WidgetThemeTokens {
     val OffWhite = ColorProvider(day = Color(0xFFF8FAFC), night = Color(0xFFF8FAFC))
     val MutedBlue = ColorProvider(day = Color(0xFF9FB3CE), night = Color(0xFF9FB3CE))
     val IceBlue = ColorProvider(day = Color(0xFF38BDF8), night = Color(0xFF38BDF8))
+    val WaterDropAqua = ColorProvider(day = Color(0xFF22D3EE), night = Color(0xFF22D3EE))
+    val WaterDropBg = ColorProvider(day = Color(0x3322D3EE), night = Color(0x3322D3EE))
     val OceanTeal = ColorProvider(day = Color(0xFF2EC4B6), night = Color(0xFF2EC4B6))
     val SignaturePurple = ColorProvider(day = Color(0xFF7C3AED), night = Color(0xFF7C3AED))
     val AlertAmber = ColorProvider(day = Color(0xFFF59E0B), night = Color(0xFFF59E0B))
@@ -64,6 +67,9 @@ object WidgetThemeTokens {
     val ActiveBlueBg = ColorProvider(day = Color(0x3338BDF8), night = Color(0x3338BDF8))
     val TrackBg = ColorProvider(day = Color(0xFF1B3459), night = Color(0xFF1B3459))
     val DarkOnAccent = ColorProvider(day = Color(0xFF04101E), night = Color(0xFF04101E))
+    val WaterCelebrationBg = ColorProvider(day = Color(0xFF08223A), night = Color(0xFF08223A))
+    val WaterUrgentBg = ColorProvider(day = Color(0xFF28101C), night = Color(0xFF28101C))
+    val WaterWarningBg = ColorProvider(day = Color(0xFF1B1933), night = Color(0xFF1B1933))
 }
 
 object WidgetUpdateManager {
@@ -82,11 +88,12 @@ object WidgetUpdateManager {
         val dailyGoalMinutes = deskPrefs.getLong("daily_goal_minutes", DEFAULT_DAILY_GOAL_MINUTES).coerceAtLeast(30L)
         val isDeskActive = isDeskFlag || timerState.timerPhase == TimerPhase.FOCUSING
 
-        val streakState = runCatching { StreakRepository(context).streakState.value }
+        val streakRepository = StreakRepository(context)
+        val initialStreakState = runCatching { streakRepository.streakState.value }
             .getOrElse { com.example.sharkmentor.data.repository.StreakState() }
         val today = LocalDate.now()
         val todayStr = today.format(DateTimeFormatter.ISO_LOCAL_DATE)
-        val isStreakDoneToday = streakState.lastStreakDate == todayStr
+        val initialDoneToday = initialStreakState.lastStreakDate == todayStr
 
         val dbSnapshot = runCatching {
             val db = SharkMentorDatabase.getDatabase(context)
@@ -140,7 +147,7 @@ object WidgetUpdateManager {
                     6 -> "Ct"
                     else -> "Pz"
                 }
-                val completed = effectiveMins >= 20L || (date == today && isStreakDoneToday)
+                val completed = effectiveMins >= 20L || (date == today && initialDoneToday)
                 DayFocusStatus(
                     dayLabel = label,
                     minutes = effectiveMins,
@@ -157,6 +164,9 @@ object WidgetUpdateManager {
             val resources = db.goalsDao().getAllResourcesRaw()
             val allFocus = db.sessionDao().getAllSessionsRaw()
                 .filter { activeSessionUuid == null || it.cloudId != activeSessionUuid }
+            val syncedStreakState = runCatching {
+                streakRepository.syncFromRoomSessions(allFocus, totalTodayMinutes)
+            }.getOrDefault(initialStreakState)
             val totalAllMinutes = (allFocus.sumOf { it.durationSeconds } / 60L) + liveActiveMinutes
             val reflections = db.dailyReflectionDao().getRecentReflectionsRaw()
             val avgScore = if (reflections.isNotEmpty()) {
@@ -177,7 +187,8 @@ object WidgetUpdateManager {
                 masteryScore = report.overallScore,
                 todayFocusMinutes = totalTodayMinutes,
                 pendingReviews = dueCount,
-                last7Days = dayStatuses
+                last7Days = dayStatuses,
+                syncedStreakState = syncedStreakState
             )
         }.getOrElse {
             val fallback7Days = (6 downTo 0).map { offset ->
@@ -194,7 +205,7 @@ object WidgetUpdateManager {
                 DayFocusStatus(
                     dayLabel = label,
                     minutes = 0L,
-                    isCompleted = date == today && isStreakDoneToday,
+                    isCompleted = date == today && initialDoneToday,
                     isToday = date == today
                 )
             }
@@ -202,18 +213,23 @@ object WidgetUpdateManager {
                 masteryScore = 0,
                 todayFocusMinutes = 0L,
                 pendingReviews = 0,
-                last7Days = fallback7Days
+                last7Days = fallback7Days,
+                syncedStreakState = initialStreakState
             )
         }
+
+        val resolvedStreak = dbSnapshot.syncedStreakState
+        val isStreakDoneToday = resolvedStreak.lastStreakDate == todayStr || dbSnapshot.todayFocusMinutes >= 20L
 
         WidgetSnapshot(
             masteryScore = dbSnapshot.masteryScore,
             todayFocusMinutes = dbSnapshot.todayFocusMinutes,
             dailyGoalMinutes = dailyGoalMinutes,
             pendingReviews = dbSnapshot.pendingReviews,
-            streakCount = streakState.streakCount,
-            streakFreezeAvailable = streakState.streakFreezeAvailable,
-            isStreakDoneToday = isStreakDoneToday || dbSnapshot.todayFocusMinutes >= 20L,
+            streakCount = resolvedStreak.streakCount,
+            streakFreezeAvailable = resolvedStreak.streakFreezeAvailable,
+            isStreakDoneToday = isStreakDoneToday,
+            daysSinceLastStudy = resolvedStreak.daysSinceLastStudy,
             last7Days = dbSnapshot.last7Days,
             timerState = timerState,
             isSessionManagerActive = isSessionActive,
@@ -255,6 +271,7 @@ object WidgetUpdateManager {
         val masteryScore: Int,
         val todayFocusMinutes: Long,
         val pendingReviews: Int,
-        val last7Days: List<DayFocusStatus>
+        val last7Days: List<DayFocusStatus>,
+        val syncedStreakState: com.example.sharkmentor.data.repository.StreakState
     )
 }

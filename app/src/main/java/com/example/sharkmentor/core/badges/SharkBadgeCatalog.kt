@@ -13,7 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoGraph
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
@@ -300,7 +300,7 @@ object SharkBadgeCatalog {
             thresholds = MENTOR_MASTER_THRESHOLDS,
             primaryColorHex = 0xFFDC2626,
             secondaryColorHex = 0xFFF87171,
-            icon = Icons.Default.LocalFireDepartment,
+            icon = Icons.Rounded.WaterDrop,
             category = BadgeCategory.MENTORSHIP,
             symbolText = ""
         ),

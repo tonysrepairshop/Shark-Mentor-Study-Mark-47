@@ -347,10 +347,10 @@ class SharkMentorWidget : GlanceAppWidget() {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Image(
-                                provider = ImageProvider(R.drawable.ic_widget_flame),
-                                contentDescription = null,
+                                provider = ImageProvider(R.drawable.ic_widget_water_drop),
+                                contentDescription = "Su Serisi",
                                 modifier = GlanceModifier.size(12.dp),
-                                colorFilter = ColorFilter.tint(WidgetThemeTokens.AlertAmber)
+                                colorFilter = ColorFilter.tint(WidgetThemeTokens.WaterDropAqua)
                             )
                             Spacer(modifier = GlanceModifier.width(4.dp))
                             Text(

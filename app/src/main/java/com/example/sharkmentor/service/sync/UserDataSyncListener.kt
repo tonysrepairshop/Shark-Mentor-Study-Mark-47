@@ -61,7 +61,7 @@ class UserDataSyncListener(private val context: Context) {
         val fs = firestore ?: return
 
         // 1. Institution Schedules
-        val schedulesRef = fs.collection("users/$uid/institution_schedules")
+        val schedulesRef = fs.collection("users/$uid/institution_schedules").limit(150)
         listeners.add(schedulesRef.addSnapshotListener { snapshot, e ->
             if (e != null) {
                 if (e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) return@addSnapshotListener
@@ -110,7 +110,7 @@ class UserDataSyncListener(private val context: Context) {
         val defaultInstitution = userPrefs.institutionId.takeIf { !it.isNullOrBlank() } ?: "INDIVIDUAL"
         val goalsPath = if (defaultInstitution == "INDIVIDUAL") "students/$uid/goals" else "institutions/$defaultInstitution/students/$uid/goals"
         
-        val goalsRef = fs.collection(goalsPath)
+        val goalsRef = fs.collection(goalsPath).limit(150)
         listeners.add(goalsRef.addSnapshotListener { snapshot, e ->
             if (e != null) {
                 if (e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) return@addSnapshotListener
@@ -161,7 +161,7 @@ class UserDataSyncListener(private val context: Context) {
         })
 
         // 3. AI Simulations
-        val simRef = fs.collection("users/$uid/ai_simulations")
+        val simRef = fs.collection("users/$uid/ai_simulations").limit(100)
         listeners.add(simRef.addSnapshotListener { snapshot, e ->
             if (e != null) {
                 if (e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) return@addSnapshotListener
@@ -238,7 +238,7 @@ class UserDataSyncListener(private val context: Context) {
         })
 
         // 5. Training Folders
-        val foldersRef = fs.collection("users/$uid/training_folders")
+        val foldersRef = fs.collection("users/$uid/training_folders").limit(100)
         listeners.add(foldersRef.addSnapshotListener { snapshot, e ->
             if (e != null) {
                 if (e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) return@addSnapshotListener
@@ -273,7 +273,7 @@ class UserDataSyncListener(private val context: Context) {
         })
 
         // 6. Training Questions
-        val questionsRef = fs.collection("users/$uid/training_questions")
+        val questionsRef = fs.collection("users/$uid/training_questions").limit(150)
         listeners.add(questionsRef.addSnapshotListener { snapshot, e ->
             if (e != null) {
                 if (e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) return@addSnapshotListener
@@ -313,7 +313,7 @@ class UserDataSyncListener(private val context: Context) {
         })
 
         // 7. Notes
-        val notesRef = fs.collection("users/$uid/notes")
+        val notesRef = fs.collection("users/$uid/notes").limit(150)
         listeners.add(notesRef.addSnapshotListener { snapshot, e ->
             if (e != null) {
                 if (e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) return@addSnapshotListener

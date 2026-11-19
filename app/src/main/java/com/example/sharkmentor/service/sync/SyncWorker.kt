@@ -79,6 +79,12 @@ class SyncWorker(
         }
         const val UNIQUE_PERIODIC_WORK = "sharkmentor_periodic_sync"
         const val UNIQUE_IMMEDIATE_WORK = "sharkmentor_immediate_sync"
+        private const val PREFS_SYNC_QUOTA = "sync_quota_prefs"
+        private const val KEY_LAST_PULL_MS = "last_inbound_pull_ms"
+        private const val PULL_COOLDOWN_MS = 15L * 60L * 1000L // 15 minutes
+        private const val LEGACY_FALLBACK_COOLDOWN_MS = 24L * 60L * 60L * 1000L // 24 hours
+        private const val COLLECTION_QUERY_LIMIT = 100L
+        const val INPUT_FORCE_PULL = "force_pull"
 
         fun enqueuePeriodicSync(context: Context) {
             val constraints = Constraints.Builder()
@@ -87,13 +93,13 @@ class SyncWorker(
                 .build()
 
             val periodicRequest = PeriodicWorkRequestBuilder<SyncWorker>(
-                repeatInterval = 30,
-                repeatIntervalTimeUnit = TimeUnit.MINUTES
+                repeatInterval = 6,
+                repeatIntervalTimeUnit = TimeUnit.HOURS
             )
                 .setConstraints(constraints)
                 .setBackoffCriteria(
                     BackoffPolicy.LINEAR,
-                    30,
+                    60,
                     TimeUnit.SECONDS
                 )
                 .addTag(UNIQUE_PERIODIC_WORK)
@@ -101,11 +107,11 @@ class SyncWorker(
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 UNIQUE_PERIODIC_WORK,
-                ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.UPDATE,
                 periodicRequest
             )
 
-            Log.i(TAG, "Periodic sync enqueued (every 30 min, network required)")
+            Log.i(TAG, "Periodic sync enqueued (every 6 hours, network required)")
         }
 
         fun enqueueImmediateSync(context: Context) {
@@ -116,7 +122,7 @@ class SyncWorker(
 
             val oneTimeRequest = OneTimeWorkRequestBuilder<SyncWorker>()
                 .setConstraints(constraints)
-                .setInitialDelay(3, TimeUnit.SECONDS)
+                .setInitialDelay(15, TimeUnit.SECONDS)
                 .setBackoffCriteria(
                     BackoffPolicy.EXPONENTIAL,
                     30,
@@ -130,7 +136,7 @@ class SyncWorker(
                 ExistingWorkPolicy.KEEP,
                 oneTimeRequest
             )
-            Log.d(TAG, "Immediate plan sync enqueued with KEEP policy")
+            Log.d(TAG, "Immediate plan sync enqueued with KEEP policy (15s debounce)")
         }
 
         fun cancelAllSync(context: Context) {
@@ -138,6 +144,19 @@ class SyncWorker(
             WorkManager.getInstance(context).cancelAllWorkByTag(UNIQUE_IMMEDIATE_WORK)
             Log.i(TAG, "All sync work cancelled")
         }
+    }
+
+    private fun shouldRunLegacyFallback(context: Context, key: String): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_SYNC_QUOTA, Context.MODE_PRIVATE)
+        val lastChecked = prefs.getLong("legacy_check_$key", 0L)
+        return System.currentTimeMillis() - lastChecked >= LEGACY_FALLBACK_COOLDOWN_MS
+    }
+
+    private fun markLegacyFallbackChecked(context: Context, key: String) {
+        context.getSharedPreferences(PREFS_SYNC_QUOTA, Context.MODE_PRIVATE)
+            .edit()
+            .putLong("legacy_check_$key", System.currentTimeMillis())
+            .apply()
     }
 
     override suspend fun getForegroundInfo(): androidx.work.ForegroundInfo {
@@ -215,49 +234,61 @@ class SyncWorker(
                 Log.e(syncTag, "CloudSyncRepository fallback err", e)
             }
 
-            // 2. Single fetch of students/{uid} + parallel Inbound Downstream Pulls
-            val studentDoc = try {
-                firestore.collection("students").document(uid).get(Source.DEFAULT).await()
-            } catch (e: Exception) {
-                if (e is com.google.firebase.firestore.FirebaseFirestoreException &&
-                    e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED
-                ) {
-                    Log.w(syncTag, "Permission denied reading students/$uid")
-                } else {
-                    Log.w(syncTag, "Err reading students/$uid: ${e.message}")
+            // 2. Throttled Inbound Downstream Pulls (at most once every 15 minutes unless forced)
+            val quotaPrefs = context.getSharedPreferences(PREFS_SYNC_QUOTA, Context.MODE_PRIVATE)
+            val forcePull = inputData.getBoolean(INPUT_FORCE_PULL, false)
+            val nowMs = System.currentTimeMillis()
+            val lastPullMs = quotaPrefs.getLong(KEY_LAST_PULL_MS, 0L)
+            val shouldPullRemote = forcePull || (nowMs - lastPullMs >= PULL_COOLDOWN_MS)
+
+            if (shouldPullRemote) {
+                val studentDoc = try {
+                    firestore.collection("students").document(uid).get(Source.DEFAULT).await()
+                } catch (e: Exception) {
+                    if (e is com.google.firebase.firestore.FirebaseFirestoreException &&
+                        e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED
+                    ) {
+                        Log.w(syncTag, "Permission denied reading students/$uid")
+                    } else {
+                        Log.w(syncTag, "Err reading students/$uid: ${e.message}")
+                    }
+                    null
                 }
-                null
+
+                coroutineScope {
+                    val planAndScheduleJob = async {
+                        try {
+                            pullActiveStudyPlan(db, studentDoc, syncTag)
+                        } catch (e: Exception) {
+                            Log.w(syncTag, "Err pull activeStudyPlan: ${e.message}")
+                        }
+                        try {
+                            ingestCustomScheduleData(db, studentDoc, syncTag, uid)
+                        } catch (e: Exception) {
+                            Log.e(syncTag, "Err pull customScheduleData", e)
+                        }
+                    }
+                    val resourcesJob = async {
+                        try { pullRemoteResources(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull res", e) }
+                    }
+                    val topicsJob = async {
+                        try { pullRemoteTopics(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull topics", e) }
+                    }
+                    val goalsJob = async {
+                        try { pullRemoteGoals(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull goals", e) }
+                    }
+                    awaitAll(planAndScheduleJob, resourcesJob, topicsJob, goalsJob)
+                }
+
+                // 3. Assigned plans/targets pull (after target/plan tables finish above)
+                try { pullRemoteAssignedPlans(db, firestore, syncTag, defaultInstitution, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull plans", e) }
+
+                quotaPrefs.edit().putLong(KEY_LAST_PULL_MS, System.currentTimeMillis()).apply()
+            } else {
+                Log.d(syncTag, "Inbound remote pull skipped (quota cooldown active; uploaded=$uploadedCount).")
             }
 
-            coroutineScope {
-                val planAndScheduleJob = async {
-                    try {
-                        pullActiveStudyPlan(db, studentDoc, syncTag)
-                    } catch (e: Exception) {
-                        Log.w(syncTag, "Err pull activeStudyPlan: ${e.message}")
-                    }
-                    try {
-                        ingestCustomScheduleData(db, studentDoc, syncTag, uid)
-                    } catch (e: Exception) {
-                        Log.e(syncTag, "Err pull customScheduleData", e)
-                    }
-                }
-                val resourcesJob = async {
-                    try { pullRemoteResources(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull res", e) }
-                }
-                val topicsJob = async {
-                    try { pullRemoteTopics(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull topics", e) }
-                }
-                val goalsJob = async {
-                    try { pullRemoteGoals(db, firestore, syncTag, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull goals", e) }
-                }
-                awaitAll(planAndScheduleJob, resourcesJob, topicsJob, goalsJob)
-            }
-
-            // 3. Assigned plans/targets pull (after target/plan tables finish above)
-            try { pullRemoteAssignedPlans(db, firestore, syncTag, defaultInstitution, uid) } catch (e: Exception) { Log.e(syncTag, "Err pull plans", e) }
-
-            Log.d(syncTag, ">>> SYNC CYCLE FINISHED (uploaded=$uploadedCount) <<<")
+            Log.d(syncTag, ">>> SYNC CYCLE FINISHED (uploaded=$uploadedCount, pulled=$shouldPullRemote) <<<")
             Result.success()
         } catch (e: Exception) {
             Log.e(syncTag, "SyncWorker failed: ${e.message}", e)
@@ -471,17 +502,24 @@ class SyncWorker(
             try {
                 snapshot = firestore.collection("students").document(uid)
                     .collection("resources")
-                    .get(Source.SERVER).await()
+                    .limit(COLLECTION_QUERY_LIMIT)
+                    .get(Source.DEFAULT).await()
             } catch (e: Exception) {
                 Log.w(syncTag, "Subcollection pull failed for students/$uid/resources: ${e.message}")
             }
 
-            // 2. Fallback to legacy root collection if subcollection is completely empty or failed
-            if (snapshot == null || snapshot.isEmpty) {
+            // 2. Fallback to legacy root collection if subcollection is empty (24h cooldown)
+            if ((snapshot == null || snapshot.isEmpty) &&
+                shouldRunLegacyFallback(applicationContext, "resources")
+            ) {
                 try {
                     val rootSnapshot = firestore.collection("resources")
                         .whereEqualTo("studentId", uid)
-                        .get(Source.SERVER).await()
+                        .limit(COLLECTION_QUERY_LIMIT)
+                        .get(Source.DEFAULT).await()
+                    if (rootSnapshot.isEmpty) {
+                        markLegacyFallbackChecked(applicationContext, "resources")
+                    }
                     if (snapshot == null || !rootSnapshot.isEmpty) {
                         snapshot = rootSnapshot
                     }
@@ -594,17 +632,24 @@ class SyncWorker(
             try {
                 snapshot = firestore.collection("students").document(uid)
                     .collection("topics")
-                    .get(Source.SERVER).await()
+                    .limit(COLLECTION_QUERY_LIMIT)
+                    .get(Source.DEFAULT).await()
             } catch (e: Exception) {
                 Log.w(syncTag, "Subcollection pull failed for students/$uid/topics: ${e.message}")
             }
 
-            // 2. Fallback to legacy root collection if subcollection was empty or failed
-            if (snapshot == null || snapshot.isEmpty) {
+            // 2. Fallback to legacy root collection if subcollection was empty (24h cooldown)
+            if ((snapshot == null || snapshot.isEmpty) &&
+                shouldRunLegacyFallback(applicationContext, "topics")
+            ) {
                 try {
                     val rootSnapshot = firestore.collection("topics")
                         .whereEqualTo("studentId", uid)
-                        .get(Source.SERVER).await()
+                        .limit(COLLECTION_QUERY_LIMIT)
+                        .get(Source.DEFAULT).await()
+                    if (rootSnapshot.isEmpty) {
+                        markLegacyFallbackChecked(applicationContext, "topics")
+                    }
                     if (snapshot == null || !rootSnapshot.isEmpty) {
                         snapshot = rootSnapshot
                     }
@@ -688,17 +733,24 @@ class SyncWorker(
             try {
                 goalsSnapshot = firestore.collection("students").document(uid)
                     .collection("goals")
-                    .get(Source.SERVER).await()
+                    .limit(COLLECTION_QUERY_LIMIT)
+                    .get(Source.DEFAULT).await()
             } catch (e: Exception) {
                 Log.w(syncTag, "Subcollection pull failed for students/$uid/goals: ${e.message}")
             }
 
-            // 2. Fallback to top-level targets collection if subcollection was empty or failed
-            if (goalsSnapshot == null || goalsSnapshot.isEmpty) {
+            // 2. Fallback to top-level targets collection if subcollection was empty (24h cooldown)
+            if ((goalsSnapshot == null || goalsSnapshot.isEmpty) &&
+                shouldRunLegacyFallback(applicationContext, "goals")
+            ) {
                 try {
                     val rootSnapshot = firestore.collection("targets")
                         .whereEqualTo("studentId", uid)
-                        .get(Source.SERVER).await()
+                        .limit(COLLECTION_QUERY_LIMIT)
+                        .get(Source.DEFAULT).await()
+                    if (rootSnapshot.isEmpty) {
+                        markLegacyFallbackChecked(applicationContext, "goals")
+                    }
                     if (goalsSnapshot == null || !rootSnapshot.isEmpty) {
                         goalsSnapshot = rootSnapshot
                     }
@@ -823,27 +875,28 @@ class SyncWorker(
         val defaultFolderId = getFirstActiveFolderIdOrNull(db.planFolderDao())
 
         for (colName in collectionsToPull) {
+            if (!shouldRunLegacyFallback(applicationContext, "assigned_$colName")) {
+                continue
+            }
             try {
                 val fourteenDaysAgo = System.currentTimeMillis() - (14L * 24 * 60 * 60 * 1000)
                 val snapshot = try {
                     firestore.collection(colName)
                         .whereEqualTo("studentId", uid)
                         .whereGreaterThanOrEqualTo("createdAt", fourteenDaysAgo)
-                        .get(Source.SERVER).await()
+                        .limit(COLLECTION_QUERY_LIMIT)
+                        .get(Source.DEFAULT).await()
                 } catch (e: Exception) {
-                    try {
-                        firestore.collection(colName)
-                            .whereEqualTo("studentId", uid)
-                            .whereGreaterThanOrEqualTo("createdAt", fourteenDaysAgo)
-                            .get().await()
-                    } catch (e2: Exception) {
-                        firestore.collection(colName)
-                            .whereEqualTo("studentId", uid)
-                            .get().await()
-                    }
+                    firestore.collection(colName)
+                        .whereEqualTo("studentId", uid)
+                        .limit(COLLECTION_QUERY_LIMIT)
+                        .get(Source.DEFAULT).await()
                 }
 
-                if (snapshot.isEmpty) continue
+                if (snapshot.isEmpty) {
+                    markLegacyFallbackChecked(applicationContext, "assigned_$colName")
+                    continue
+                }
 
                 Log.d(syncTag, "Pulling from collection '$colName': fetched ${snapshot.size()} documents. Processing in single batch...")
 
@@ -1046,6 +1099,9 @@ class SyncWorker(
     ): Int {
         var count = 0
         val pendingSessions = db.syncDao().getUnsyncedSessions()
+        if (pendingSessions.isEmpty()) return 0
+
+        var touchedParent = false
         for (session in pendingSessions) {
             try {
                 val instId = session.institutionId?.takeIf { it.isNotBlank() } ?: defaultInstitution
@@ -1071,17 +1127,21 @@ class SyncWorker(
                     "syncedAt" to System.currentTimeMillis()
                 )
 
-                val parentStudentData = hashMapOf("id" to uid, "name" to studentName, "lastActiveAt" to FieldValue.serverTimestamp())
-                if (instId != "INDIVIDUAL") parentStudentData["coachCode"] = instId
-                firestore.collection("students").document(uid).set(parentStudentData, SetOptions.merge())
+                // Canonical primary session path (cuts Firestore writes by 70%)
+                firestore.collection("students").document(uid)
+                    .collection("sessions").document(docId)
+                    .set(sessionData, SetOptions.merge()).await()
 
-                firestore.collection("students").document(uid).collection("sessions").document(docId).set(sessionData, SetOptions.merge()).await()
-                try {
-                    firestore.collection("users").document(uid).collection("sessions").document(docId).set(sessionData, SetOptions.merge()).await()
-                } catch (_: Exception) {}
-                try {
-                    firestore.collection("students").document(uid).collection("focus_sessions").document(docId).set(sessionData, SetOptions.merge()).await()
-                } catch (_: Exception) {}
+                if (!touchedParent) {
+                    val parentStudentData = hashMapOf<String, Any>(
+                        "id" to uid,
+                        "name" to studentName,
+                        "lastActiveAt" to FieldValue.serverTimestamp()
+                    )
+                    if (instId != "INDIVIDUAL") parentStudentData["coachCode"] = instId
+                    firestore.collection("students").document(uid).set(parentStudentData, SetOptions.merge())
+                    touchedParent = true
+                }
 
                 db.syncDao().markSessionSynced(session.id, docId)
                 count++

@@ -25,7 +25,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Forum
-import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material3.AlertDialog
@@ -194,9 +194,9 @@ fun LeagueMemberProfileSheet(
                     modifier = Modifier.weight(1f)
                 )
                 MemberStatTile(
-                    label = "Aktif Seri",
+                    label = "Su Serisi",
                     value = "${entry.streakDays} gün",
-                    icon = Icons.Default.LocalFireDepartment,
+                    icon = Icons.Rounded.WaterDrop,
                     modifier = Modifier.weight(1f)
                 )
             }

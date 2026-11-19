@@ -184,21 +184,18 @@ class CloudSyncRepository(private val context: Context) {
             try {
                 val resolvedInstId = session.institutionId.takeIf { !it.isNullOrBlank() } ?: defaultInstId
                 val docId = session.cloudId?.takeIf { it.isNotBlank() } ?: session.id.toString()
-
-                val docPath = getCollectionPath(resolvedInstId, uid, "focus_sessions")
                 val docData = buildSessionDocument(session, resolvedInstId)
 
-                val docRef = fs.document("$docPath/$docId")
-                docRef.set(docData, SetOptions.merge()).await()
+                // Canonical primary session path (eliminates 3x duplicate writes per session)
+                fs.collection("students").document(uid).collection("sessions").document(docId)
+                    .set(docData, SetOptions.merge()).await()
 
-                try {
-                    fs.collection("students").document(uid).collection("sessions").document(docId)
-                        .set(docData, SetOptions.merge()).await()
-                } catch (_: Exception) {}
-                try {
-                    fs.collection("users").document(uid).collection("sessions").document(docId)
-                        .set(docData, SetOptions.merge()).await()
-                } catch (_: Exception) {}
+                if (resolvedInstId != "INDIVIDUAL") {
+                    runCatching {
+                        val instPath = getCollectionPath(resolvedInstId, uid, "sessions")
+                        fs.document("$instPath/$docId").set(docData, SetOptions.merge()).await()
+                    }
+                }
 
                 syncDao.markSessionSynced(session.id, docId)
                 synced++
@@ -559,19 +556,39 @@ class CloudSyncRepository(private val context: Context) {
      * If [uri] is already an https:// URL, returns it as-is (idempotent re-sync).
      */
     private suspend fun uploadImageIfLocal(uid: String, uri: String): String {
-        if (uri.startsWith("https://")) return uri
+        val trimmed = uri.trim()
+        if (trimmed.isBlank()) return ""
+        if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) return trimmed
 
         return withContext(Dispatchers.IO) {
-            val inputStream = context.contentResolver.openInputStream(Uri.parse(uri))
-                ?: throw IllegalStateException("Cannot open URI: $uri")
+            val bitmap = when {
+                trimmed.startsWith("content://") -> {
+                    context.contentResolver.openInputStream(Uri.parse(trimmed))?.use { stream ->
+                        BitmapFactory.decodeStream(stream)
+                    }
+                }
+                trimmed.startsWith("file://") -> {
+                    val file = java.io.File(trimmed.removePrefix("file://"))
+                    if (file.exists() && file.length() > 0L) BitmapFactory.decodeFile(file.absolutePath) else null
+                }
+                else -> {
+                    val file = java.io.File(trimmed)
+                    if (file.exists() && file.length() > 0L) BitmapFactory.decodeFile(file.absolutePath) else null
+                }
+            } ?: return@withContext ""
 
-            val bitmap = BitmapFactory.decodeStream(inputStream)
-            inputStream.close()
+            // Composite onto opaque white canvas so transparent Lasso cutouts never turn black
+            val flattened = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(flattened)
+            canvas.drawColor(android.graphics.Color.WHITE)
+            canvas.drawBitmap(bitmap, 0f, 0f, null)
+            bitmap.recycle()
 
             val baos = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.WEBP, WEBP_QUALITY, baos)
+            @Suppress("DEPRECATION")
+            flattened.compress(Bitmap.CompressFormat.WEBP, WEBP_QUALITY, baos)
             val imageBytes = baos.toByteArray()
-            bitmap.recycle()
+            flattened.recycle()
 
             val st = storage ?: throw IllegalStateException("FirebaseStorage unavailable")
             val fileName = "${UUID.randomUUID()}.webp"

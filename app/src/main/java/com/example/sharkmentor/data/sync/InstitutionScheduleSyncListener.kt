@@ -48,6 +48,7 @@ class InstitutionScheduleSyncListener(
                 .collection("users")
                 .document(uid)
                 .collection("institution_schedules")
+                .limit(150)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
