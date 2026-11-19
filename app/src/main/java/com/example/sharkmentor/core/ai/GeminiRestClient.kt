@@ -43,7 +43,8 @@ data class GeminiModelDiscoveryResult(
 
 enum class GeminiEndpointType(val displayName: String) {
     VERTEX_AI_EXPRESS("Vertex AI Express"),
-    GOOGLE_AI_STUDIO("Google AI Studio")
+    GOOGLE_AI_STUDIO("Google AI Studio"),
+    FIREBASE_PROXY("Firebase Gemini Proxy")
 }
 
 class GeminiApiException(
@@ -220,8 +221,16 @@ object GeminiRestClient {
 
     private const val TAG = "GeminiRestClient"
     const val MODEL_ID = "gemini-3.6-flash"
+    const val FALLBACK_MODEL_ID = "gemini-3.5-flash-lite"
+    val STANDARD_ALLOWED_MODELS = listOf(MODEL_ID, FALLBACK_MODEL_ID)
+    private const val PROXY_REGION = "us-central1"
+    private const val PROXY_FUNCTION_NAME = "geminiProxy"
+    const val PROXY_MODEL_HEADER = "X-Shark-Model"
     private const val VERTEX_EXPRESS_BASE = "https://aiplatform.googleapis.com/v1/publishers/google/models"
     private const val AI_STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+    @Volatile
+    var proxyUrlOverride: String? = null
 
     private val ENDPOINT_FALLBACK_HTTP_CODES = setOf(400, 401, 403, 404)
     private val preferredEndpointByKey = ConcurrentHashMap<String, GeminiEndpointType>()
@@ -288,6 +297,19 @@ object GeminiRestClient {
 
     internal fun clearEndpointCacheForTesting() {
         preferredEndpointByKey.clear()
+        proxyUrlOverride = null
+    }
+
+    /**
+     * Resolves the Cloud Functions `geminiProxy` HTTPS URL from [proxyUrlOverride] or Firebase [projectId].
+     */
+    fun resolveProxyUrl(projectId: String?): String? {
+        val override = proxyUrlOverride?.trim()
+            ?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
+        if (override != null) return override
+        val cleanProject = projectId?.trim().orEmpty()
+        if (cleanProject.isBlank()) return null
+        return "https://$PROXY_REGION-$cleanProject.cloudfunctions.net/$PROXY_FUNCTION_NAME"
     }
 
     internal fun mergeEndpointErrors(
@@ -344,6 +366,8 @@ object GeminiRestClient {
         return when (endpoint) {
             GeminiEndpointType.VERTEX_AI_EXPRESS -> "$VERTEX_EXPRESS_BASE/$cleanModel:$suffix"
             GeminiEndpointType.GOOGLE_AI_STUDIO -> "$AI_STUDIO_BASE/$cleanModel:$suffix"
+            GeminiEndpointType.FIREBASE_PROXY ->
+                proxyUrlOverride?.trim()?.takeIf { it.isNotBlank() } ?: "$AI_STUDIO_BASE/$cleanModel:$suffix"
         }
     }
 
@@ -555,6 +579,32 @@ object GeminiRestClient {
             }
         }
 
+        return gson.toJson(root)
+    }
+
+    /**
+     * Builds the JSON payload expected by the Firebase Cloud Functions `geminiProxy` endpoint.
+     * Enforces the standard-mode model whitelist (`gemini-3.6-flash` / `gemini-3.5-flash-lite`).
+     */
+    fun buildProxyRequestBody(
+        modelName: String = MODEL_ID,
+        contents: List<GeminiContent>,
+        systemInstruction: String = "",
+        generationConfig: GeminiGenerationConfig? = null,
+        tools: List<GeminiFunctionDeclaration> = emptyList(),
+        stream: Boolean = false
+    ): String {
+        val cleanRequested = sanitizeModelName(modelName)
+        val effectiveModel = if (cleanRequested in STANDARD_ALLOWED_MODELS) cleanRequested else MODEL_ID
+        val baseJson = buildRequestBody(
+            contents = contents,
+            systemInstruction = systemInstruction,
+            generationConfig = generationConfig,
+            tools = tools
+        )
+        val root = JsonParser.parseString(baseJson).asJsonObject
+        root.addProperty("model", effectiveModel)
+        root.addProperty("stream", stream)
         return gson.toJson(root)
     }
 
@@ -1172,6 +1222,171 @@ object GeminiRestClient {
     }
 
     /**
+     * Executes a standard-mode synchronous Gemini request through the Firebase Cloud Functions
+     * `geminiProxy` endpoint authenticated with a Firebase Auth ID token.
+     */
+    suspend fun generateContentViaProxy(
+        proxyUrl: String,
+        idToken: String,
+        modelName: String = MODEL_ID,
+        contents: List<GeminiContent>,
+        systemInstruction: String = "",
+        generationConfig: GeminiGenerationConfig? = null,
+        tools: List<GeminiFunctionDeclaration> = emptyList()
+    ): GeminiResponse = withContext(Dispatchers.IO) {
+        val cleanUrl = proxyUrl.trim()
+        val cleanToken = idToken.trim()
+        if (cleanUrl.isBlank() || cleanToken.isBlank()) {
+            throw GeminiApiException(
+                message = "Firebase proxy URL veya kimlik doğrulama token'ı eksik.",
+                httpCode = 401,
+                apiStatus = "UNAUTHENTICATED",
+                endpoint = GeminiEndpointType.FIREBASE_PROXY,
+                modelName = modelName
+            )
+        }
+
+        val cleanModel = sanitizeModelName(modelName).let {
+            if (it in STANDARD_ALLOWED_MODELS) it else MODEL_ID
+        }
+        val effectiveConfig = resolveLowLatencyConfig(cleanModel, generationConfig)
+        val bodyJson = buildProxyRequestBody(
+            modelName = cleanModel,
+            contents = contents,
+            systemInstruction = systemInstruction,
+            generationConfig = effectiveConfig,
+            tools = tools,
+            stream = false
+        )
+
+        val request = Request.Builder()
+            .url(cleanUrl)
+            .addHeader("Authorization", "Bearer $cleanToken")
+            .addHeader("Content-Type", "application/json")
+            .post(bodyJson.toRequestBody(jsonMediaType))
+            .build()
+
+        okHttpClient.newCall(request).execute().use { response ->
+            val rawBody = response.body?.string().orEmpty()
+            val actualModel = response.header(PROXY_MODEL_HEADER)
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: cleanModel
+            val usedFallbackModel = actualModel != cleanModel
+            if (!response.isSuccessful) {
+                throw buildHttpApiException(
+                    httpCode = response.code,
+                    rawBody = rawBody,
+                    endpoint = GeminiEndpointType.FIREBASE_PROXY,
+                    modelName = actualModel,
+                    usedFallback = usedFallbackModel
+                )
+            }
+            parseGenerateContentJson(
+                jsonString = rawBody,
+                modelName = actualModel,
+                endpoint = GeminiEndpointType.FIREBASE_PROXY,
+                usedEndpointFallback = usedFallbackModel
+            )
+        }
+    }
+
+    /**
+     * Executes a standard-mode streaming SSE Gemini request through the Firebase Cloud Functions
+     * `geminiProxy` endpoint authenticated with a Firebase Auth ID token.
+     */
+    suspend fun streamGenerateContentViaProxy(
+        proxyUrl: String,
+        idToken: String,
+        modelName: String = MODEL_ID,
+        contents: List<GeminiContent>,
+        systemInstruction: String = "",
+        generationConfig: GeminiGenerationConfig? = null,
+        tools: List<GeminiFunctionDeclaration> = emptyList(),
+        onPartialText: (String) -> Unit = {},
+        onThinkingText: ((String) -> Unit)? = null
+    ): GeminiResponse = withContext(Dispatchers.IO) {
+        val cleanUrl = proxyUrl.trim()
+        val cleanToken = idToken.trim()
+        if (cleanUrl.isBlank() || cleanToken.isBlank()) {
+            throw GeminiApiException(
+                message = "Firebase proxy URL veya kimlik doğrulama token'ı eksik.",
+                httpCode = 401,
+                apiStatus = "UNAUTHENTICATED",
+                endpoint = GeminiEndpointType.FIREBASE_PROXY,
+                modelName = modelName
+            )
+        }
+
+        val cleanModel = sanitizeModelName(modelName).let {
+            if (it in STANDARD_ALLOWED_MODELS) it else MODEL_ID
+        }
+        val effectiveConfig = resolveLowLatencyConfig(cleanModel, generationConfig)
+        val bodyJson = buildProxyRequestBody(
+            modelName = cleanModel,
+            contents = contents,
+            systemInstruction = systemInstruction,
+            generationConfig = effectiveConfig,
+            tools = tools,
+            stream = true
+        )
+
+        val request = Request.Builder()
+            .url(cleanUrl)
+            .addHeader("Authorization", "Bearer $cleanToken")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "text/event-stream")
+            .post(bodyJson.toRequestBody(jsonMediaType))
+            .build()
+
+        okHttpClient.newCall(request).execute().use { response ->
+            val actualModel = response.header(PROXY_MODEL_HEADER)
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: cleanModel
+            val usedFallbackModel = actualModel != cleanModel
+            if (!response.isSuccessful) {
+                val rawBody = response.body?.string().orEmpty()
+                throw buildHttpApiException(
+                    httpCode = response.code,
+                    rawBody = rawBody,
+                    endpoint = GeminiEndpointType.FIREBASE_PROXY,
+                    modelName = actualModel,
+                    usedFallback = usedFallbackModel
+                )
+            }
+
+            val body = response.body ?: throw GeminiApiException(
+                message = "Boş akış yanıtı alındı ($actualModel).",
+                httpCode = response.code,
+                endpoint = GeminiEndpointType.FIREBASE_PROXY,
+                modelName = actualModel,
+                usedEndpointFallback = usedFallbackModel
+            )
+
+            val accumulator = SseStreamAccumulator(
+                modelName = actualModel,
+                endpoint = GeminiEndpointType.FIREBASE_PROXY,
+                usedEndpointFallback = usedFallbackModel,
+                onPartialText = onPartialText,
+                onThinkingText = onThinkingText
+            )
+
+            body.byteStream().use { inputStream ->
+                BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
+                    var line: String? = reader.readLine()
+                    while (line != null) {
+                        if (!accumulator.processLine(line)) break
+                        line = reader.readLine()
+                    }
+                }
+            }
+
+            accumulator.finish()
+        }
+    }
+
+    /**
      * Fetches selectable Gemini models for custom key configuration.
      * - Queries `GET https://generativelanguage.googleapis.com/v1beta/models?pageSize=100` with `x-goog-api-key`.
      * - If `AQ.` key fails `/models`, gracefully returns recommended Vertex Gemini models list (never empty).
@@ -1571,6 +1786,17 @@ object GeminiRestClient {
             full.contains("sockettimeoutexception") ||
             full.contains("software caused connection abort") ||
             full.contains("no address associated with hostname")
+    }
+
+    fun isTimeoutError(throwable: Throwable?): Boolean {
+        if (throwable == null) return false
+        if (throwable is SocketTimeoutException || throwable.cause is SocketTimeoutException) {
+            return true
+        }
+        val full = "${throwable.javaClass.simpleName} ${throwable.message} ${throwable.cause?.message}".lowercase()
+        return full.contains("sockettimeoutexception") ||
+            full.contains("timed out") ||
+            full.contains("timeout")
     }
 
     private fun buildHttpApiException(

@@ -5,9 +5,11 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
 class GeminiRestClientTest {
@@ -398,5 +400,81 @@ class GeminiRestClientTest {
         assertTrue(ApiKeyRotator.shouldRotateKey(ex401))
 
         assertFalse(ApiKeyRotator.shouldRotateKey(UnknownHostException("offline")))
+    }
+
+    @Test
+    fun standardModelPolicy_enforcesGemini36PrimaryAndGemini35FlashLiteSoleFallback() {
+        assertEquals("gemini-3.6-flash", GeminiAiFactory.SOLE_GEMINI_MODEL)
+        assertEquals("gemini-3.5-flash-lite", GeminiAiFactory.CONTROLLED_404_FALLBACK_MODEL)
+        assertEquals("gemini-3.5-flash-lite", GeminiAiFactory.FALLBACK_MODEL_3_6)
+        assertEquals(listOf("gemini-3.6-flash", "gemini-3.5-flash-lite"), GeminiAiFactory.STANDARD_ALLOWED_MODELS)
+
+        assertEquals("gemini-3.6-flash", UserAiPreferences.BUILTIN_DEFAULT_MODEL)
+        assertEquals("gemini-3.5-flash-lite", UserAiPreferences.CONTROLLED_404_FALLBACK_MODEL)
+        assertEquals(listOf("gemini-3.6-flash", "gemini-3.5-flash-lite"), UserAiPreferences.STANDARD_ALLOWED_MODELS)
+
+        assertEquals("gemini-3.6-flash", GeminiRestClient.MODEL_ID)
+        assertEquals("gemini-3.5-flash-lite", GeminiRestClient.FALLBACK_MODEL_ID)
+        assertEquals(listOf("gemini-3.6-flash", "gemini-3.5-flash-lite"), GeminiRestClient.STANDARD_ALLOWED_MODELS)
+    }
+
+    @Test
+    fun isFallbackEligibleFailure_triggersOnlyOn404_429_503_andTimeout() {
+        assertTrue(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Not found", httpCode = 404, apiStatus = "NOT_FOUND")))
+        assertTrue(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Quota", httpCode = 429, apiStatus = "RESOURCE_EXHAUSTED")))
+        assertTrue(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Unavailable", httpCode = 503, apiStatus = "UNAVAILABLE")))
+        assertTrue(GeminiAiFactory.isFallbackEligibleFailure(SocketTimeoutException("Read timed out")))
+
+        assertFalse(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Bad request", httpCode = 400, apiStatus = "INVALID_ARGUMENT")))
+        assertFalse(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Unauthorized", httpCode = 401, apiStatus = "UNAUTHENTICATED")))
+        assertFalse(GeminiAiFactory.isFallbackEligibleFailure(UnknownHostException("offline")))
+    }
+
+    @Test
+    fun resolveProxyUrl_derivesFromProjectIdAndSupportsOverride() {
+        assertNull(GeminiRestClient.resolveProxyUrl(null))
+        assertNull(GeminiRestClient.resolveProxyUrl("   "))
+        assertEquals(
+            "https://us-central1-shark-mentor-prod.cloudfunctions.net/geminiProxy",
+            GeminiRestClient.resolveProxyUrl("shark-mentor-prod")
+        )
+
+        GeminiRestClient.proxyUrlOverride = "https://custom-proxy.example.com/geminiProxy"
+        assertEquals(
+            "https://custom-proxy.example.com/geminiProxy",
+            GeminiRestClient.resolveProxyUrl("shark-mentor-prod")
+        )
+    }
+
+    @Test
+    fun buildProxyRequestBody_includesStreamAndEnforcesStandardModelWhitelist() {
+        val primaryJson = GeminiRestClient.buildProxyRequestBody(
+            modelName = "gemini-3.6-flash",
+            contents = listOf(GeminiContent.userText("Merhaba")),
+            systemInstruction = "Kısa cevap ver",
+            generationConfig = GeminiGenerationConfig(temperature = 0.2f, maxOutputTokens = 1024),
+            stream = true
+        )
+        val primaryRoot = JsonParser.parseString(primaryJson).asJsonObject
+        assertEquals("gemini-3.6-flash", primaryRoot.get("model").asString)
+        assertTrue(primaryRoot.get("stream").asBoolean)
+        assertEquals(1, primaryRoot.getAsJsonArray("contents").size())
+
+        val liteJson = GeminiRestClient.buildProxyRequestBody(
+            modelName = "models/gemini-3.5-flash-lite",
+            contents = listOf(GeminiContent.userText("Test")),
+            stream = false
+        )
+        val liteRoot = JsonParser.parseString(liteJson).asJsonObject
+        assertEquals("gemini-3.5-flash-lite", liteRoot.get("model").asString)
+        assertFalse(liteRoot.get("stream").asBoolean)
+
+        val disallowedJson = GeminiRestClient.buildProxyRequestBody(
+            modelName = "gemini-2.5-flash",
+            contents = listOf(GeminiContent.userText("Test")),
+            stream = false
+        )
+        val disallowedRoot = JsonParser.parseString(disallowedJson).asJsonObject
+        assertEquals("gemini-3.6-flash", disallowedRoot.get("model").asString)
     }
 }

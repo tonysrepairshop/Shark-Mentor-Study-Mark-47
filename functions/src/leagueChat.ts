@@ -6,6 +6,9 @@ const db = admin.firestore();
 const messaging = admin.messaging();
 
 const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+const GEMINI_STANDARD_MODELS: string[] = [GEMINI_MODEL, GEMINI_FALLBACK_MODEL];
+const GEMINI_FALLBACK_STATUS_CODES = new Set<number>([404, 429, 503]);
 const BUILTIN_GEMINI_KEYS: string[] = [
   ["AQ", ".Ab8RN6LwvQc6iBYAkhwbGKc", "-IMTX7gB6-TkqwxkGSaclVZtlKw"].join(""),
   ["AQ", ".Ab8RN6JbUbkSsq3tk-16e1ur10NpqId", "BRZTu9lGXqT7twX8RZA"].join(""),
@@ -324,40 +327,62 @@ async function generateAiFallbackSolutionWithGemini36(
   });
 
   const envKey = (process.env.GEMINI_API_KEY || "").trim();
-  const candidateKeys = envKey
-    ? [envKey, ...BUILTIN_GEMINI_KEYS.filter((k) => k !== envKey)]
-    : BUILTIN_GEMINI_KEYS;
+  const envPool = (process.env.GEMINI_API_KEYS || "")
+    .split(/[,;\n]/)
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+  const candidateKeys = Array.from(
+    new Set([...(envKey ? [envKey] : []), ...envPool, ...BUILTIN_GEMINI_KEYS])
+  );
 
-  for (const apiKey of candidateKeys) {
-    const endpoints = apiKey.startsWith("AQ.")
-      ? [
-          `https://aiplatform.googleapis.com/v1/publishers/google/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
-          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`
-        ]
-      : [
-          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`
-        ];
+  // Strict model policy: primary gemini-3.6-flash, single fallback gemini-3.5-flash-lite
+  // (only when primary is 404/NOT_FOUND, 429, 503 or unreachable on every key/endpoint).
+  for (const model of GEMINI_STANDARD_MODELS) {
+    let shouldTryFallbackModel = false;
 
-    for (const url of endpoints) {
-      try {
-        const resp = await postJsonHttps(url, { "x-goog-api-key": apiKey }, payload);
-        if (resp.status >= 200 && resp.status < 300) {
-          const parsed = JSON.parse(resp.body);
-          const candidateParts = parsed?.candidates?.[0]?.content?.parts;
-          if (Array.isArray(candidateParts)) {
-            const answerText = candidateParts
-              .filter((p: Record<string, unknown>) => !p.thought && typeof p.text === "string")
-              .map((p: Record<string, unknown>) => p.text as string)
-              .join("")
-              .trim();
-            if (answerText.length > 0) {
-              return answerText;
+    for (const apiKey of candidateKeys) {
+      const endpoints = apiKey.startsWith("AQ.")
+        ? [
+            `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:generateContent`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
+          ]
+        : [`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`];
+
+      for (const url of endpoints) {
+        try {
+          const resp = await postJsonHttps(url, { "x-goog-api-key": apiKey }, payload);
+          if (resp.status >= 200 && resp.status < 300) {
+            const parsed = JSON.parse(resp.body);
+            const candidateParts = parsed?.candidates?.[0]?.content?.parts;
+            if (Array.isArray(candidateParts)) {
+              const answerText = candidateParts
+                .filter((p: Record<string, unknown>) => !p.thought && typeof p.text === "string")
+                .map((p: Record<string, unknown>) => p.text as string)
+                .join("")
+                .trim();
+              if (answerText.length > 0) {
+                return answerText;
+              }
             }
+          } else if (GEMINI_FALLBACK_STATUS_CODES.has(resp.status)) {
+            shouldTryFallbackModel = true;
+            console.warn(`[leagueChat] Gemini ${model} returned HTTP ${resp.status}; fallback eligible.`);
+          } else {
+            console.warn(`[leagueChat] Gemini ${model} returned HTTP ${resp.status}.`);
           }
+        } catch (err) {
+          // Network / timeout errors are fallback-eligible. Never log the key or full URL.
+          shouldTryFallbackModel = true;
+          console.warn(
+            `[leagueChat] Gemini call failed on ${model}:`,
+            err instanceof Error ? err.message.replace(/key=[^&\s]+/g, "key=***") : "unknown error"
+          );
         }
-      } catch (err) {
-        console.warn(`[leagueChat] Gemini call failed on ${GEMINI_MODEL}:`, err);
       }
+    }
+
+    if (!shouldTryFallbackModel) {
+      break;
     }
   }
 

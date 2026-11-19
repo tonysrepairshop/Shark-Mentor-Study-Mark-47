@@ -3,9 +3,12 @@ package com.example.sharkmentor.core.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.util.Base64
@@ -46,17 +49,19 @@ data class GeminiSdkResult(
 /**
  * Pure OkHttp + Gson Gemini execution & failover pipeline.
  *
- * - Default built-in keys (`BuildConfig.GEMINI_API_KEY_1/2/3`) strictly run `gemini-3.6-flash`
- *   across both Vertex AI Express & Google AI Studio endpoints.
- * - User-entered keys run the user's selected supported model, falling back to built-in keys
- *   on `gemini-3.6-flash` if custom keys exhaust quota or fail.
+ * - Standard mode (no custom user key) first routes through Firebase Cloud Functions `geminiProxy`
+ *   using Firebase Auth ID token, and falls back to built-in keys if proxy is unavailable.
+ * - Strict standard-mode model policy: primary `gemini-3.6-flash`, single fallback
+ *   `gemini-3.5-flash-lite` (only on 404/NOT_FOUND, 429, 503 or timeout/unreachable).
+ * - User-entered keys run the user's selected supported model directly against AI Studio / Vertex Express.
  */
 object GeminiAiFactory {
     const val SOLE_GEMINI_MODEL = "gemini-3.6-flash"
-    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-2.5-flash"
+    const val CONTROLLED_404_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+    val STANDARD_ALLOWED_MODELS = listOf(SOLE_GEMINI_MODEL, CONTROLLED_404_FALLBACK_MODEL)
     const val VISION_MODEL = SOLE_GEMINI_MODEL
     const val FAST_MODEL_3_6 = SOLE_GEMINI_MODEL
-    const val FALLBACK_MODEL_3_6 = SOLE_GEMINI_MODEL
+    const val FALLBACK_MODEL_3_6 = CONTROLLED_404_FALLBACK_MODEL
 
     val VISION_PRESET_CONFIG = GeminiGenerationConfig(
         temperature = 0.1f,
@@ -165,8 +170,24 @@ object GeminiAiFactory {
         overrideKey: String? = null,
         overrideModel: String? = null
     ): GeminiResponse = withContext(Dispatchers.IO) {
+        val resolvedConfig = generationConfig ?: taskType.toGenerationConfig()
         val (keys, isBuiltInMode) = resolveKeyCandidates(overrideKey, null)
+
+        var proxyError: Throwable? = null
+        if (overrideKey.isNullOrBlank() && isBuiltInMode) {
+            val (proxyResp, err) = tryExecuteViaProxy(
+                stream = false,
+                contents = contents,
+                systemInstruction = systemPrompt,
+                generationConfig = resolvedConfig,
+                tools = tools
+            )
+            proxyError = err
+            if (proxyResp != null) return@withContext proxyResp
+        }
+
         if (keys.isEmpty()) {
+            if (proxyError != null) throw proxyError
             throw GeminiApiException(
                 message = "Gemini API anahtarı bulunamadı. Ayarlar'dan kendi anahtarınızı ekleyebilirsiniz.",
                 httpCode = 401,
@@ -174,7 +195,6 @@ object GeminiAiFactory {
             )
         }
 
-        val resolvedConfig = generationConfig ?: taskType.toGenerationConfig()
         val customKeysSet = UserAiPreferences.getParsedUserGeminiKeys().toSet()
         val modelResolver: (String) -> String = { key ->
             when {
@@ -201,10 +221,10 @@ object GeminiAiFactory {
         val builtInFallbackKeys = keys.filter {
             it !in customKeysSet && modelResolver(it) != CONTROLLED_404_FALLBACK_MODEL
         }
-        val hasGenuine404 = primaryAttempt.genuine404Error != null || isGenuine404Failure(primaryError)
-        if (builtInFallbackKeys.isNotEmpty() && (isBuiltInMode || primaryAttempt.triedBuiltInKeys) && hasGenuine404) {
+        val canFallbackModel = primaryAttempt.fallbackEligibleError != null || isFallbackEligibleFailure(primaryError)
+        if (builtInFallbackKeys.isNotEmpty() && (isBuiltInMode || primaryAttempt.triedBuiltInKeys) && canFallbackModel) {
             safeLogW(
-                "$SOLE_GEMINI_MODEL returned 404 across built-in endpoints/keys. Trying controlled fallback $CONTROLLED_404_FALLBACK_MODEL..."
+                "$SOLE_GEMINI_MODEL unavailable across built-in endpoints/keys. Trying controlled fallback $CONTROLLED_404_FALLBACK_MODEL..."
             )
             val fallbackAttempt = tryExecuteKeys(
                 keys = builtInFallbackKeys,
@@ -218,7 +238,7 @@ object GeminiAiFactory {
             val fallbackErr = fallbackAttempt.lastError
             throw GeminiApiException(
                 message = "Model $SOLE_GEMINI_MODEL ve yedek $CONTROLLED_404_FALLBACK_MODEL erişilemedi: ${fallbackErr?.localizedMessage ?: primaryError.localizedMessage}",
-                httpCode = (fallbackErr as? GeminiApiException)?.httpCode ?: 404,
+                httpCode = (fallbackErr as? GeminiApiException)?.httpCode ?: (primaryError as? GeminiApiException)?.httpCode ?: 503,
                 modelName = CONTROLLED_404_FALLBACK_MODEL,
                 cause = fallbackErr ?: primaryError
             )
@@ -287,8 +307,26 @@ object GeminiAiFactory {
         onPartialText: (String) -> Unit = {},
         onThinkingText: ((String) -> Unit)? = null
     ): GeminiResponse = withContext(Dispatchers.IO) {
+        val resolvedConfig = generationConfig ?: taskType.toGenerationConfig()
         val (keys, isBuiltInMode) = resolveKeyCandidates(overrideKey, null)
+
+        var proxyError: Throwable? = null
+        if (overrideKey.isNullOrBlank() && isBuiltInMode) {
+            val (proxyResp, err) = tryExecuteViaProxy(
+                stream = true,
+                contents = contents,
+                systemInstruction = systemPrompt,
+                generationConfig = resolvedConfig,
+                tools = tools,
+                onPartialText = onPartialText,
+                onThinkingText = onThinkingText
+            )
+            proxyError = err
+            if (proxyResp != null) return@withContext proxyResp
+        }
+
         if (keys.isEmpty()) {
+            if (proxyError != null) throw proxyError
             throw GeminiApiException(
                 message = "Gemini API anahtarı bulunamadı. Ayarlar'dan kendi anahtarınızı ekleyebilirsiniz.",
                 httpCode = 401,
@@ -296,7 +334,6 @@ object GeminiAiFactory {
             )
         }
 
-        val resolvedConfig = generationConfig ?: taskType.toGenerationConfig()
         val customKeysSet = UserAiPreferences.getParsedUserGeminiKeys().toSet()
         val modelResolver: (String) -> String = { key ->
             when {
@@ -325,10 +362,10 @@ object GeminiAiFactory {
         val builtInFallbackKeys = keys.filter {
             it !in customKeysSet && modelResolver(it) != CONTROLLED_404_FALLBACK_MODEL
         }
-        val hasGenuine404 = primaryAttempt.genuine404Error != null || isGenuine404Failure(primaryError)
-        if (builtInFallbackKeys.isNotEmpty() && (isBuiltInMode || primaryAttempt.triedBuiltInKeys) && hasGenuine404) {
+        val canFallbackModel = primaryAttempt.fallbackEligibleError != null || isFallbackEligibleFailure(primaryError)
+        if (builtInFallbackKeys.isNotEmpty() && (isBuiltInMode || primaryAttempt.triedBuiltInKeys) && canFallbackModel) {
             safeLogW(
-                "Stream: $SOLE_GEMINI_MODEL returned 404 across built-in endpoints/keys. Trying controlled fallback $CONTROLLED_404_FALLBACK_MODEL..."
+                "Stream: $SOLE_GEMINI_MODEL unavailable across built-in endpoints/keys. Trying controlled fallback $CONTROLLED_404_FALLBACK_MODEL..."
             )
             val fallbackAttempt = tryStreamKeys(
                 keys = builtInFallbackKeys,
@@ -344,7 +381,7 @@ object GeminiAiFactory {
             val fallbackErr = fallbackAttempt.lastError
             throw GeminiApiException(
                 message = "Model $SOLE_GEMINI_MODEL ve yedek $CONTROLLED_404_FALLBACK_MODEL erişilemedi: ${fallbackErr?.localizedMessage ?: primaryError.localizedMessage}",
-                httpCode = (fallbackErr as? GeminiApiException)?.httpCode ?: 404,
+                httpCode = (fallbackErr as? GeminiApiException)?.httpCode ?: (primaryError as? GeminiApiException)?.httpCode ?: 503,
                 modelName = CONTROLLED_404_FALLBACK_MODEL,
                 cause = fallbackErr ?: primaryError
             )
@@ -495,16 +532,11 @@ object GeminiAiFactory {
         if (context != null) {
             UserAiPreferences.initialize(context)
         }
+        val hasCustomUserKeys = UserAiPreferences.hasCustomUserGeminiKeys(context)
         val keys = ApiKeyRotator.getAllEffectiveKeys(context)
             .map { GeminiRestClient.sanitizeApiKey(it) }
             .filter { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
             .distinct()
-
-        if (keys.isEmpty()) {
-            return Result.failure(
-                IllegalStateException("Gemini API anahtarı tanımlı değil. Ayarlardan API anahtarı ekleyin.")
-            )
-        }
 
         val resolvedTemp = temperature ?: if (responseJson) 0.2f else if (bitmaps.isNotEmpty()) 0.1f else 0.35f
         val resolvedTopP = topP ?: if (responseJson) 0.8f else 0.85f
@@ -539,6 +571,51 @@ object GeminiAiFactory {
                 inlineFiles = inlineFiles
             )
 
+            // Standard mode (no custom user key): prefer Firebase Cloud Functions proxy first.
+            var proxyError: Throwable? = null
+            if (!hasCustomUserKeys) {
+                var lastProxyEmitted = ""
+                val (proxyResp, err) = tryExecuteViaProxy(
+                    stream = stream,
+                    contents = contents,
+                    systemInstruction = systemInstruction,
+                    generationConfig = genConfig,
+                    tools = tools,
+                    responseJson = responseJson,
+                    onPartialText = { partial ->
+                        lastProxyEmitted = partial
+                        onPartialText(partial)
+                    }
+                )
+                proxyError = err
+                if (proxyResp != null) {
+                    val finalText = if (responseJson) {
+                        GeminiRestClient.extractCleanJsonString(proxyResp.text)
+                    } else {
+                        proxyResp.text.trim()
+                    }
+                    if (finalText.isNotBlank() || proxyResp.functionCalls.isNotEmpty()) {
+                        if (finalText.isNotBlank() && finalText != lastProxyEmitted) {
+                            onPartialText(finalText)
+                        }
+                        return Result.success(
+                            GeminiSdkResult(
+                                text = finalText,
+                                functionCalls = proxyResp.functionCalls,
+                                usedKeyIndex = -1,
+                                modelUsed = proxyResp.modelName.ifBlank { SOLE_GEMINI_MODEL }
+                            )
+                        )
+                    }
+                }
+            }
+
+            if (keys.isEmpty()) {
+                val failure = proxyError
+                    ?: IllegalStateException("Gemini API anahtarı tanımlı değil. Ayarlardan API anahtarı ekleyin.")
+                return Result.failure(failure)
+            }
+
             val startIdx = ApiKeyRotator.getStartIndex(context).coerceAtLeast(0) % keys.size
             val roundRobin = List(keys.size) { offset ->
                 val actualIdx = (startIdx + offset) % keys.size
@@ -549,8 +626,8 @@ object GeminiAiFactory {
             }
             val orderedWithIndex = healthyEntries + coolingEntries
 
-            var lastException: Throwable? = null
-            var genuine404BuiltInError: Throwable? = null
+            var lastException: Throwable? = proxyError
+            var fallbackEligibleBuiltInError: Throwable? = null
             var triedAnyBuiltInKey = false
             var builtInKeysNeedFallbackModel = false
             val userKeysSet = UserAiPreferences.getParsedUserGeminiKeys().toSet()
@@ -611,7 +688,7 @@ object GeminiAiFactory {
                 if (err is CancellationException) throw err
                 lastException = err
 
-                if (err != null && GeminiRestClient.isNetworkUnreachableError(err)) {
+                if (err != null && GeminiRestClient.isNetworkUnreachableError(err) && !GeminiRestClient.isTimeoutError(err)) {
                     return Result.failure(
                         Exception("İnternet bağlantısı kurulamadı. Lütfen ağ bağlantınızı kontrol edin.", err)
                     )
@@ -621,8 +698,10 @@ object GeminiAiFactory {
                     ApiKeyRotator.reportKeyFailure(activeKey)
                 }
 
-                if (isBuiltInKey && genuine404BuiltInError == null && isGenuine404Failure(err)) {
-                    genuine404BuiltInError = err
+                if (isBuiltInKey && fallbackEligibleBuiltInError == null &&
+                    (attempt.fallbackEligibleError != null || isFallbackEligibleFailure(err))
+                ) {
+                    fallbackEligibleBuiltInError = attempt.fallbackEligibleError ?: err
                 }
 
                 if (err != null) {
@@ -638,8 +717,8 @@ object GeminiAiFactory {
                 }
             }
 
-            // Controlled 404 fallback ONLY on built-in keys that did not already try CONTROLLED_404_FALLBACK_MODEL
-            if (triedAnyBuiltInKey && builtInKeysNeedFallbackModel && genuine404BuiltInError != null) {
+            // Controlled fallback (gemini-3.5-flash-lite) ONLY on built-in keys when primary fails with 404/429/503/timeout.
+            if (triedAnyBuiltInKey && builtInKeysNeedFallbackModel && fallbackEligibleBuiltInError != null) {
                 val builtInEntries = orderedWithIndex.filter {
                     it.second !in userKeysSet &&
                         UserAiPreferences.resolveEffectiveGeminiModel(context, it.second) != CONTROLLED_404_FALLBACK_MODEL
@@ -753,7 +832,10 @@ object GeminiAiFactory {
                 lastError = e
                 safeLogE("Gemini REST failed ($modelName, retry=$retry): ${e.message}", e)
                 if (GeminiRestClient.isNetworkUnreachableError(e)) {
-                    return KeyAttemptOutcome(lastError = e)
+                    return KeyAttemptOutcome(
+                        lastError = e,
+                        fallbackEligibleError = if (isFallbackEligibleFailure(e)) e else null
+                    )
                 }
                 val isTransient = (e as? GeminiApiException)?.isOverloadOrTransient == true
                 if (isTransient && retry < maxRetries) {
@@ -765,7 +847,7 @@ object GeminiAiFactory {
         }
         return KeyAttemptOutcome(
             lastError = lastError,
-            genuine404Error = if (isGenuine404Failure(lastError)) lastError else null
+            fallbackEligibleError = if (isFallbackEligibleFailure(lastError)) lastError else null
         )
     }
 
@@ -897,9 +979,89 @@ object GeminiAiFactory {
     private data class KeyAttemptOutcome(
         val response: GeminiResponse? = null,
         val lastError: Throwable? = null,
-        val genuine404Error: Throwable? = null,
+        val fallbackEligibleError: Throwable? = null,
         val triedBuiltInKeys: Boolean = false
     )
+
+    private data class FirebaseProxyContext(
+        val proxyUrl: String,
+        val idToken: String
+    )
+
+    private suspend fun resolveFirebaseProxyContext(): FirebaseProxyContext? {
+        val projectId = runCatching {
+            FirebaseApp.getInstance().options.projectId
+        }.getOrNull()
+        val proxyUrl = GeminiRestClient.resolveProxyUrl(projectId) ?: return null
+        val idToken = runCatching {
+            FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: return null
+        return FirebaseProxyContext(proxyUrl = proxyUrl, idToken = idToken)
+    }
+
+    private suspend fun tryExecuteViaProxy(
+        stream: Boolean,
+        contents: List<GeminiContent>,
+        systemInstruction: String,
+        generationConfig: GeminiGenerationConfig,
+        tools: List<GeminiFunctionDeclaration>,
+        responseJson: Boolean = false,
+        onPartialText: (String) -> Unit = {},
+        onThinkingText: ((String) -> Unit)? = null
+    ): Pair<GeminiResponse?, Throwable?> {
+        val proxyCtx = resolveFirebaseProxyContext() ?: return null to null
+        val partialBackup = StringBuilder()
+        return try {
+            val response = if (!stream) {
+                GeminiRestClient.generateContentViaProxy(
+                    proxyUrl = proxyCtx.proxyUrl,
+                    idToken = proxyCtx.idToken,
+                    modelName = SOLE_GEMINI_MODEL,
+                    contents = contents,
+                    systemInstruction = systemInstruction,
+                    generationConfig = generationConfig,
+                    tools = tools
+                )
+            } else {
+                GeminiRestClient.streamGenerateContentViaProxy(
+                    proxyUrl = proxyCtx.proxyUrl,
+                    idToken = proxyCtx.idToken,
+                    modelName = SOLE_GEMINI_MODEL,
+                    contents = contents,
+                    systemInstruction = systemInstruction,
+                    generationConfig = generationConfig,
+                    tools = tools,
+                    onPartialText = { accumulated ->
+                        partialBackup.setLength(0)
+                        partialBackup.append(accumulated)
+                        if (!responseJson) {
+                            onPartialText(accumulated)
+                        }
+                    },
+                    onThinkingText = onThinkingText
+                )
+            }
+            if (response.text.isBlank() && response.functionCalls.isEmpty()) {
+                null to IllegalStateException("Firebase proxy boş yanıt döndürdü.")
+            } else {
+                response to null
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Throwable) {
+            if (stream && partialBackup.length >= 40) {
+                safeLogW("Proxy stream interrupted mid-response; retaining ${partialBackup.length} streamed chars.")
+                GeminiResponse(
+                    text = partialBackup.toString(),
+                    modelName = SOLE_GEMINI_MODEL,
+                    endpoint = GeminiEndpointType.FIREBASE_PROXY
+                ) to null
+            } else {
+                safeLogW("Firebase Gemini proxy failed; falling back to direct built-in path: ${e.message}")
+                null to e
+            }
+        }
+    }
 
     private suspend fun tryExecuteKeys(
         keys: List<String>,
@@ -910,13 +1072,14 @@ object GeminiAiFactory {
         tools: List<GeminiFunctionDeclaration>
     ): KeyAttemptOutcome {
         var lastError: Throwable? = null
-        var genuine404Error: Throwable? = null
+        var fallbackEligibleError: Throwable? = null
         val userKeysSet = UserAiPreferences.getParsedUserGeminiKeys().toSet()
         var triedBuiltIn = false
 
         for ((idx, key) in keys.withIndex()) {
             val modelName = modelResolver(key)
-            if (key !in userKeysSet) triedBuiltIn = true
+            val isBuiltInKey = key !in userKeysSet
+            if (isBuiltInKey) triedBuiltIn = true
             val maxRetries = 2
             for (retry in 1..maxRetries) {
                 try {
@@ -934,12 +1097,12 @@ object GeminiAiFactory {
                     throw ce
                 } catch (e: Throwable) {
                     lastError = e
-                    if (genuine404Error == null && isGenuine404Failure(e)) {
-                        genuine404Error = e
+                    if (isBuiltInKey && fallbackEligibleError == null && isFallbackEligibleFailure(e)) {
+                        fallbackEligibleError = e
                     }
                     safeLogE("generateContent failed ($modelName, keySlot=${idx + 1}/${keys.size}): ${e.message}", e)
 
-                    if (GeminiRestClient.isNetworkUnreachableError(e)) {
+                    if (GeminiRestClient.isNetworkUnreachableError(e) && !GeminiRestClient.isTimeoutError(e)) {
                         return KeyAttemptOutcome(
                             lastError = GeminiApiException(
                                 message = "Lütfen internet bağlantınızı kontrol edin. Ağ erişilemiyor.",
@@ -949,6 +1112,10 @@ object GeminiAiFactory {
                             ),
                             triedBuiltInKeys = triedBuiltIn
                         )
+                    }
+
+                    if (GeminiRestClient.isTimeoutError(e)) {
+                        break
                     }
 
                     val apiEx = e as? GeminiApiException
@@ -980,7 +1147,7 @@ object GeminiAiFactory {
 
         return KeyAttemptOutcome(
             lastError = lastError ?: GeminiApiException("Gemini yanıt vermedi.", modelName = SOLE_GEMINI_MODEL),
-            genuine404Error = genuine404Error,
+            fallbackEligibleError = fallbackEligibleError,
             triedBuiltInKeys = triedBuiltIn
         )
     }
@@ -996,13 +1163,14 @@ object GeminiAiFactory {
         onThinkingText: ((String) -> Unit)?
     ): KeyAttemptOutcome {
         var lastError: Throwable? = null
-        var genuine404Error: Throwable? = null
+        var fallbackEligibleError: Throwable? = null
         val userKeysSet = UserAiPreferences.getParsedUserGeminiKeys().toSet()
         var triedBuiltIn = false
 
         for ((idx, key) in keys.withIndex()) {
             val modelName = modelResolver(key)
-            if (key !in userKeysSet) triedBuiltIn = true
+            val isBuiltInKey = key !in userKeysSet
+            if (isBuiltInKey) triedBuiltIn = true
             val maxRetries = 2
             for (retry in 1..maxRetries) {
                 val partialBackup = StringBuilder()
@@ -1038,12 +1206,12 @@ object GeminiAiFactory {
                         )
                     }
                     lastError = e
-                    if (genuine404Error == null && isGenuine404Failure(e)) {
-                        genuine404Error = e
+                    if (isBuiltInKey && fallbackEligibleError == null && isFallbackEligibleFailure(e)) {
+                        fallbackEligibleError = e
                     }
                     safeLogE("streamGenerateContent failed ($modelName, keySlot=${idx + 1}/${keys.size}): ${e.message}", e)
 
-                    if (GeminiRestClient.isNetworkUnreachableError(e)) {
+                    if (GeminiRestClient.isNetworkUnreachableError(e) && !GeminiRestClient.isTimeoutError(e)) {
                         return KeyAttemptOutcome(
                             lastError = GeminiApiException(
                                 message = "Lütfen internet bağlantınızı kontrol edin. Ağ erişilemiyor.",
@@ -1053,6 +1221,10 @@ object GeminiAiFactory {
                             ),
                             triedBuiltInKeys = triedBuiltIn
                         )
+                    }
+
+                    if (GeminiRestClient.isTimeoutError(e)) {
+                        break
                     }
 
                     val apiEx = e as? GeminiApiException
@@ -1084,15 +1256,30 @@ object GeminiAiFactory {
 
         return KeyAttemptOutcome(
             lastError = lastError ?: GeminiApiException("Gemini akışı yanıt vermedi.", modelName = SOLE_GEMINI_MODEL),
-            genuine404Error = genuine404Error,
+            fallbackEligibleError = fallbackEligibleError,
             triedBuiltInKeys = triedBuiltIn
         )
     }
 
-    private fun isGenuine404Failure(throwable: Throwable?): Boolean {
-        return (throwable as? GeminiApiException)?.isModelNotFound == true ||
-            throwable?.message?.contains("404") == true ||
-            throwable?.message?.contains("NOT_FOUND", ignoreCase = true) == true
+    internal fun isFallbackEligibleFailure(throwable: Throwable?): Boolean {
+        if (throwable == null) return false
+        val apiEx = throwable as? GeminiApiException
+        if (apiEx != null) {
+            if (apiEx.isModelNotFound || apiEx.isQuotaOrRateLimit || apiEx.isOverloadOrTransient) {
+                return true
+            }
+            if (apiEx.httpCode in setOf(404, 429, 503)) {
+                return true
+            }
+        }
+        if (GeminiRestClient.isTimeoutError(throwable)) return true
+        val msg = throwable.message.orEmpty()
+        return msg.contains("404") ||
+            msg.contains("NOT_FOUND", ignoreCase = true) ||
+            msg.contains("429") ||
+            msg.contains("RESOURCE_EXHAUSTED", ignoreCase = true) ||
+            msg.contains("503") ||
+            msg.contains("UNAVAILABLE", ignoreCase = true)
     }
 
     private fun formatError(t: Throwable?): String {
