@@ -5,9 +5,11 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
 class GeminiRestClientTest {
@@ -398,5 +400,128 @@ class GeminiRestClientTest {
         assertTrue(ApiKeyRotator.shouldRotateKey(ex401))
 
         assertFalse(ApiKeyRotator.shouldRotateKey(UnknownHostException("offline")))
+    }
+
+    @Test
+    fun standardModelPolicy_enforcesGemini36PrimaryAndGemini35FlashLiteSoleFallback() {
+        assertEquals("gemini-3.6-flash", GeminiAiFactory.SOLE_GEMINI_MODEL)
+        assertEquals("gemini-3.5-flash-lite", GeminiAiFactory.CONTROLLED_404_FALLBACK_MODEL)
+        assertEquals("gemini-3.5-flash-lite", GeminiAiFactory.FALLBACK_MODEL_3_6)
+        assertEquals(listOf("gemini-3.6-flash", "gemini-3.5-flash-lite"), GeminiAiFactory.STANDARD_ALLOWED_MODELS)
+
+        assertEquals("gemini-3.6-flash", UserAiPreferences.BUILTIN_DEFAULT_MODEL)
+        assertEquals("gemini-3.5-flash-lite", UserAiPreferences.CONTROLLED_404_FALLBACK_MODEL)
+        assertEquals(listOf("gemini-3.6-flash", "gemini-3.5-flash-lite"), UserAiPreferences.STANDARD_ALLOWED_MODELS)
+
+        assertEquals("gemini-3.6-flash", GeminiRestClient.MODEL_ID)
+        assertEquals("gemini-3.5-flash-lite", GeminiRestClient.FALLBACK_MODEL_ID)
+        assertEquals(listOf("gemini-3.6-flash", "gemini-3.5-flash-lite"), GeminiRestClient.STANDARD_ALLOWED_MODELS)
+    }
+
+    @Test
+    fun isFallbackEligibleFailure_triggersOnlyOn404_429_503_andTimeout() {
+        assertTrue(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Not found", httpCode = 404, apiStatus = "NOT_FOUND")))
+        assertTrue(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Quota", httpCode = 429, apiStatus = "RESOURCE_EXHAUSTED")))
+        assertTrue(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Unavailable", httpCode = 503, apiStatus = "UNAVAILABLE")))
+        assertTrue(GeminiAiFactory.isFallbackEligibleFailure(SocketTimeoutException("Read timed out")))
+
+        assertFalse(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Bad request", httpCode = 400, apiStatus = "INVALID_ARGUMENT")))
+        assertFalse(GeminiAiFactory.isFallbackEligibleFailure(GeminiApiException("Unauthorized", httpCode = 401, apiStatus = "UNAUTHENTICATED")))
+        assertFalse(GeminiAiFactory.isFallbackEligibleFailure(UnknownHostException("offline")))
+    }
+
+    @Test
+    fun resolveProxyUrl_derivesFromProjectIdAndSupportsOverride() {
+        assertNull(GeminiRestClient.resolveProxyUrl(null))
+        assertNull(GeminiRestClient.resolveProxyUrl("   "))
+        assertEquals(
+            "https://us-central1-shark-mentor-prod.cloudfunctions.net/geminiProxy",
+            GeminiRestClient.resolveProxyUrl("shark-mentor-prod")
+        )
+
+        GeminiRestClient.proxyUrlOverride = "https://custom-proxy.example.com/geminiProxy"
+        assertEquals(
+            "https://custom-proxy.example.com/geminiProxy",
+            GeminiRestClient.resolveProxyUrl("shark-mentor-prod")
+        )
+    }
+
+    @Test
+    fun buildProxyRequestBody_includesStreamAndEnforcesStandardModelWhitelist() {
+        val primaryJson = GeminiRestClient.buildProxyRequestBody(
+            modelName = "gemini-3.6-flash",
+            contents = listOf(GeminiContent.userText("Merhaba")),
+            systemInstruction = "Kısa cevap ver",
+            generationConfig = GeminiGenerationConfig(temperature = 0.2f, maxOutputTokens = 1024),
+            stream = true
+        )
+        val primaryRoot = JsonParser.parseString(primaryJson).asJsonObject
+        assertEquals("gemini-3.6-flash", primaryRoot.get("model").asString)
+        assertTrue(primaryRoot.get("stream").asBoolean)
+        assertEquals(1, primaryRoot.getAsJsonArray("contents").size())
+
+        val liteJson = GeminiRestClient.buildProxyRequestBody(
+            modelName = "models/gemini-3.5-flash-lite",
+            contents = listOf(GeminiContent.userText("Test")),
+            stream = false
+        )
+        val liteRoot = JsonParser.parseString(liteJson).asJsonObject
+        assertEquals("gemini-3.5-flash-lite", liteRoot.get("model").asString)
+        assertFalse(liteRoot.get("stream").asBoolean)
+
+        val disallowedJson = GeminiRestClient.buildProxyRequestBody(
+            modelName = "gemini-2.5-flash",
+            contents = listOf(GeminiContent.userText("Test")),
+            stream = false
+        )
+        val disallowedRoot = JsonParser.parseString(disallowedJson).asJsonObject
+        assertEquals("gemini-3.6-flash", disallowedRoot.get("model").asString)
+    }
+
+    @Test
+    fun obfuscatedBuiltInKeys_decodeThreeDistinctVertexExpressKeys() {
+        val keys = ApiKeyRotator.DEFAULT_BUILTIN_GEMINI_KEYS
+        assertEquals(3, keys.size)
+        assertEquals(3, keys.distinct().size)
+        keys.forEach { key ->
+            assertTrue("Expected Vertex Express AQ. prefix", key.startsWith("AQ."))
+            assertEquals(53, key.length)
+        }
+        assertEquals(listOf("tlKw", "8RZA", "6ozw"), keys.map { it.takeLast(4) })
+    }
+
+    @Test
+    fun proxyCircuitBreaker_tripsOnlyOnUnconfiguredOrMissingProxy_andResetsCleanly() {
+        GeminiAiFactory.resetProxyCircuitBreakerForTesting()
+        val now = 1_000_000L
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now))
+
+        // Transient quota or server errors should NOT trip the 10-minute cooldown
+        assertFalse(GeminiAiFactory.markProxyUnavailable(httpCode = 429, rawMessage = "Quota exceeded", nowMs = now))
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 100L))
+        assertFalse(GeminiAiFactory.markProxyUnavailable(httpCode = 500, rawMessage = "Internal error", nowMs = now))
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 100L))
+        assertFalse(GeminiAiFactory.markProxyUnavailable(httpCode = 503, rawMessage = "Overloaded", nowMs = now))
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 100L))
+
+        // 404 (not deployed), 403 (forbidden), or 503 missing secret SHOULD trip cooldown
+        assertTrue(GeminiAiFactory.markProxyUnavailable(httpCode = 404, rawMessage = "Function not found", nowMs = now))
+        assertTrue(GeminiAiFactory.isProxyCoolingDown(now + 1_000L))
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 11L * 60L * 1_000L))
+
+        GeminiAiFactory.resetProxyCircuitBreakerForTesting()
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 1_000L))
+
+        assertTrue(
+            GeminiAiFactory.markProxyUnavailable(
+                httpCode = 503,
+                rawMessage = "Proxy server missing GEMINI_API_KEY configuration",
+                nowMs = now
+            )
+        )
+        assertTrue(GeminiAiFactory.isProxyCoolingDown(now + 5_000L))
+
+        GeminiAiFactory.resetProxyCircuitBreakerForTesting()
+        assertFalse(GeminiAiFactory.isProxyCoolingDown(now + 5_000L))
     }
 }

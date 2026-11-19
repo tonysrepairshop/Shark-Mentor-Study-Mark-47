@@ -11,6 +11,7 @@ import com.example.sharkmentor.ui.zen.dopamine.model.ReflectionMessage
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +32,7 @@ class DopamineProtocolViewModel : ViewModel() {
 
     private val firestore get() = GoogleServicesHelper.getFirebaseFirestore()
     private val auth get() = GoogleServicesHelper.getFirebaseAuth()
+    private var protocolListener: ListenerRegistration? = null
 
     private val _protocolState = MutableStateFlow(DopamineProtocolState())
     val protocolState: StateFlow<DopamineProtocolState> = _protocolState.asStateFlow()
@@ -75,7 +77,8 @@ class DopamineProtocolViewModel : ViewModel() {
         val uid = currentUser?.uid
         if (currentUser == null || uid == null) return
         runCatching {
-            protocolDocRef(uid)?.addSnapshotListener { snapshot, error ->
+            protocolListener?.remove()
+            protocolListener = protocolDocRef(uid)?.addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
 
                 val isActive = snapshot.getBoolean("isActive") ?: false
@@ -237,6 +240,12 @@ class DopamineProtocolViewModel : ViewModel() {
                 _isAiThinking.value = false
             }
         }
+    }
+
+    override fun onCleared() {
+        protocolListener?.remove()
+        protocolListener = null
+        super.onCleared()
     }
 }
 

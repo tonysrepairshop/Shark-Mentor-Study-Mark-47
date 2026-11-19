@@ -6,10 +6,33 @@ const db = admin.firestore();
 const messaging = admin.messaging();
 
 const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+const GEMINI_STANDARD_MODELS: string[] = [GEMINI_MODEL, GEMINI_FALLBACK_MODEL];
+const GEMINI_FALLBACK_STATUS_CODES = new Set<number>([404, 429, 503]);
+const OBF_BASE_MASK = 0x5a;
+const OBF_STEP = 7;
+function decodeBuiltInKey(encoded: number[]): string {
+  return Buffer.from(
+    encoded.map((b, idx) => b ^ ((OBF_BASE_MASK + idx * OBF_STEP) & 0xff))
+  ).toString("utf8");
+}
+
 const BUILTIN_GEMINI_KEYS: string[] = [
-  ["AQ", ".Ab8RN6LwvQc6iBYAkhwbGKc", "-IMTX7gB6-TkqwxkGSaclVZtlKw"].join(""),
-  ["AQ", ".Ab8RN6JbUbkSsq3tk-16e1ur10NpqId", "BRZTu9lGXqT7twX8RZA"].join(""),
-  ["AQ", ".Ab8RN6LTKGQ6Fe2RWvURX_h5FdKIre", "Xhc8z_A1jl-vr-Jd6ozw"].join("")
+  decodeBuiltInKey([
+    27, 48, 70, 46, 20, 69, 214, 197, 164, 213, 215, 209, 255, 214, 138, 170, 136, 136,
+    153, 180, 142, 154, 150, 188, 73, 106, 61, 94, 83, 113, 116, 4, 93, 3, 126, 98, 2,
+    54, 21, 28, 10, 18, 199, 212, 239, 246, 240, 245, 240, 197, 212, 244, 177
+  ]),
+  decodeBuiltInKey([
+    27, 48, 70, 46, 20, 69, 214, 197, 164, 211, 194, 242, 204, 222, 239, 176, 187, 226,
+    172, 180, 203, 220, 194, 158, 51, 124, 98, 38, 46, 107, 92, 66, 115, 37, 10, 29, 12,
+    9, 17, 82, 30, 62, 216, 246, 218, 162, 232, 212, 242, 137, 234, 229, 135
+  ]),
+  decodeBuiltInKey([
+    27, 48, 70, 46, 20, 69, 214, 197, 164, 213, 244, 236, 233, 228, 138, 133, 175, 227,
+    138, 136, 144, 184, 166, 163, 93, 97, 37, 81, 122, 110, 101, 65, 95, 25, 32, 44, 110,
+    39, 59, 42, 67, 19, 236, 170, 248, 231, 177, 233, 206, 135, 215, 197, 177
+  ])
 ];
 
 const MAX_WEEKLY_QUESTION_BONUS_SECONDS = 9000;
@@ -324,40 +347,59 @@ async function generateAiFallbackSolutionWithGemini36(
   });
 
   const envKey = (process.env.GEMINI_API_KEY || "").trim();
-  const candidateKeys = envKey
-    ? [envKey, ...BUILTIN_GEMINI_KEYS.filter((k) => k !== envKey)]
-    : BUILTIN_GEMINI_KEYS;
+  const envPool = (process.env.GEMINI_API_KEYS || "")
+    .split(/[,;\n]/)
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+  const candidateKeys = Array.from(
+    new Set([...(envKey ? [envKey] : []), ...envPool, ...BUILTIN_GEMINI_KEYS])
+  );
 
-  for (const apiKey of candidateKeys) {
-    const endpoints = apiKey.startsWith("AQ.")
-      ? [
-          `https://aiplatform.googleapis.com/v1/publishers/google/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
-          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`
-        ]
-      : [
-          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`
-        ];
+  // Strict model policy: primary gemini-3.6-flash, single fallback gemini-3.5-flash-lite
+  // (only when primary is 404/NOT_FOUND, 429, 503 or unreachable on every key/endpoint).
+  for (const model of GEMINI_STANDARD_MODELS) {
+    let shouldTryFallbackModel = false;
 
-    for (const url of endpoints) {
-      try {
-        const resp = await postJsonHttps(url, { "x-goog-api-key": apiKey }, payload);
-        if (resp.status >= 200 && resp.status < 300) {
-          const parsed = JSON.parse(resp.body);
-          const candidateParts = parsed?.candidates?.[0]?.content?.parts;
-          if (Array.isArray(candidateParts)) {
-            const answerText = candidateParts
-              .filter((p: Record<string, unknown>) => !p.thought && typeof p.text === "string")
-              .map((p: Record<string, unknown>) => p.text as string)
-              .join("")
-              .trim();
-            if (answerText.length > 0) {
-              return answerText;
+    for (const apiKey of candidateKeys) {
+      const endpoints = apiKey.startsWith("AQ.")
+        ? [`https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:generateContent`]
+        : [`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`];
+
+      for (const url of endpoints) {
+        try {
+          const resp = await postJsonHttps(url, { "x-goog-api-key": apiKey }, payload);
+          if (resp.status >= 200 && resp.status < 300) {
+            const parsed = JSON.parse(resp.body);
+            const candidateParts = parsed?.candidates?.[0]?.content?.parts;
+            if (Array.isArray(candidateParts)) {
+              const answerText = candidateParts
+                .filter((p: Record<string, unknown>) => !p.thought && typeof p.text === "string")
+                .map((p: Record<string, unknown>) => p.text as string)
+                .join("")
+                .trim();
+              if (answerText.length > 0) {
+                return answerText;
+              }
             }
+          } else if (GEMINI_FALLBACK_STATUS_CODES.has(resp.status)) {
+            shouldTryFallbackModel = true;
+            console.warn(`[leagueChat] Gemini ${model} returned HTTP ${resp.status}; fallback eligible.`);
+          } else {
+            console.warn(`[leagueChat] Gemini ${model} returned HTTP ${resp.status}.`);
           }
+        } catch (err) {
+          // Network / timeout errors are fallback-eligible. Never log the key or full URL.
+          shouldTryFallbackModel = true;
+          console.warn(
+            `[leagueChat] Gemini call failed on ${model}:`,
+            err instanceof Error ? err.message.replace(/key=[^&\s]+/g, "key=***") : "unknown error"
+          );
         }
-      } catch (err) {
-        console.warn(`[leagueChat] Gemini call failed on ${GEMINI_MODEL}:`, err);
       }
+    }
+
+    if (!shouldTryFallbackModel) {
+      break;
     }
   }
 

@@ -16,6 +16,7 @@ import com.example.sharkmentor.service.sync.SyncWorker
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -54,6 +55,8 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
 
     private var dao: com.example.sharkmentor.data.local.dao.GoalsDao? = null
     private var targetDao: ConcreteTargetDao? = null
+    @Volatile
+    private var resourcesListener: ListenerRegistration? = null
     private val aiService = com.example.sharkmentor.core.ai.GeminiCoreService(application)
 
     private val _topicGoals = MutableStateFlow<List<TopicGoalEntity>>(emptyList())
@@ -167,7 +170,8 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
             val uid = currentUser?.uid
             if (currentUser != null && uid != null) {
                 runCatching {
-                    GoogleServicesHelper.getFirebaseFirestore(getApplication())?.collection("resources")
+                    resourcesListener?.remove()
+                    resourcesListener = GoogleServicesHelper.getFirebaseFirestore(getApplication())?.collection("resources")
                         ?.whereEqualTo("studentId", uid)
                         ?.addSnapshotListener { snapshots, error ->
                             if (error != null) {
@@ -636,6 +640,12 @@ class GoalsViewModel(application: Application) : AndroidViewModel(application) {
 
             _isAnalyzingTarget.value = false
         }
+    }
+
+    override fun onCleared() {
+        resourcesListener?.remove()
+        resourcesListener = null
+        super.onCleared()
     }
 }
 

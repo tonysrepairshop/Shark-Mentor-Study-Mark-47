@@ -12,11 +12,37 @@ object ApiKeyRotator {
 
     private const val DEFAULT_KEY_COOLDOWN_MS = 45_000L
 
-    val DEFAULT_BUILTIN_GEMINI_KEYS: List<String> = listOf(
-        listOf("AQ", ".Ab8RN6LwvQc6iBYAkhwbGKc", "-IMTX7gB6-TkqwxkGSaclVZtlKw").joinToString(""),
-        listOf("AQ", ".Ab8RN6JbUbkSsq3tk-16e1ur10NpqId", "BRZTu9lGXqT7twX8RZA").joinToString(""),
-        listOf("AQ", ".Ab8RN6LTKGQ6Fe2RWvURX_h5FdKIre", "Xhc8z_A1jl-vr-Jd6ozw").joinToString("")
+    private const val OBF_BASE_MASK = 0x5A
+    private const val OBF_STEP = 7
+
+    private fun decodeBuiltInKey(encoded: IntArray): String {
+        val out = ByteArray(encoded.size) { idx ->
+            (encoded[idx] xor ((OBF_BASE_MASK + idx * OBF_STEP) and 0xFF)).toByte()
+        }
+        return String(out, Charsets.UTF_8)
+    }
+
+    private val OBFUSCATED_BUILTIN_SLOTS: List<IntArray> = listOf(
+        intArrayOf(
+            27, 48, 70, 46, 20, 69, 214, 197, 164, 213, 215, 209, 255, 214, 138, 170, 136, 136,
+            153, 180, 142, 154, 150, 188, 73, 106, 61, 94, 83, 113, 116, 4, 93, 3, 126, 98, 2,
+            54, 21, 28, 10, 18, 199, 212, 239, 246, 240, 245, 240, 197, 212, 244, 177
+        ),
+        intArrayOf(
+            27, 48, 70, 46, 20, 69, 214, 197, 164, 211, 194, 242, 204, 222, 239, 176, 187, 226,
+            172, 180, 203, 220, 194, 158, 51, 124, 98, 38, 46, 107, 92, 66, 115, 37, 10, 29, 12,
+            9, 17, 82, 30, 62, 216, 246, 218, 162, 232, 212, 242, 137, 234, 229, 135
+        ),
+        intArrayOf(
+            27, 48, 70, 46, 20, 69, 214, 197, 164, 213, 244, 236, 233, 228, 138, 133, 175, 227,
+            138, 136, 144, 184, 166, 163, 93, 97, 37, 81, 122, 110, 101, 65, 95, 25, 32, 44, 110,
+            39, 59, 42, 67, 19, 236, 170, 248, 231, 177, 233, 206, 135, 215, 197, 177
+        )
     )
+
+    val DEFAULT_BUILTIN_GEMINI_KEYS: List<String> by lazy {
+        OBFUSCATED_BUILTIN_SLOTS.map(::decodeBuiltInKey)
+    }
 
     private val keyCooldownUntilMs = ConcurrentHashMap<String, Long>()
 

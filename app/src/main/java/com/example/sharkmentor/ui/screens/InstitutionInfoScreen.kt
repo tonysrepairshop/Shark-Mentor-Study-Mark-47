@@ -68,8 +68,8 @@ fun InstitutionInfoScreen(
     val studentMeetings by profileViewModel.studentMeetings.collectAsState(initial = emptyList())
     val context = LocalContext.current
 
-    LaunchedEffect(activeCoachId) {
-        if (activeCoachId.isNotBlank() && FirebaseAuth.getInstance().currentUser != null) {
+    DisposableEffect(activeCoachId) {
+        val registration = if (activeCoachId.isNotBlank() && FirebaseAuth.getInstance().currentUser != null) {
             val db = GoogleServicesHelper.getFirebaseFirestore()
             runCatching {
                 db?.collection("meetings")
@@ -79,7 +79,13 @@ fun InstitutionInfoScreen(
                         val dates = snap?.documents?.mapNotNull { it.getTimestamp("appointmentTimestamp")?.toDate() } ?: emptyList()
                         activeBookedDatesList = dates
                     }
-            }
+            }.getOrNull()
+        } else {
+            activeBookedDatesList = emptyList()
+            null
+        }
+        onDispose {
+            registration?.remove()
         }
     }
 
