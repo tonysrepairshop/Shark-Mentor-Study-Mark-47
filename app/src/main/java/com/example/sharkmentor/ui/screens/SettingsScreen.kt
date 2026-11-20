@@ -52,6 +52,9 @@ import com.example.sharkmentor.core.util.SharkAppIcon
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.ui.components.ReflectionTimeDialog
 import kotlinx.coroutines.CoroutineScope
+import com.example.sharkmentor.ui.components.SpecialMemberConfig
+import com.example.sharkmentor.data.weather.WeatherRepository
+import com.example.sharkmentor.data.weather.GeocodingResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -70,6 +73,7 @@ fun SettingsScreen(
     onOpenCountdownSettings: () -> Unit = {},
     onAccountDeleted: () -> Unit = {}
 ) {
+    var selectedTab by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -257,7 +261,8 @@ fun SettingsScreen(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
+            Column {
+                TopAppBar(
                 expandedHeight = 50.dp,
                 title = { Text("Ayarlar") },
                 navigationIcon = {
@@ -266,9 +271,15 @@ fun SettingsScreen(
                     }
                 }
             )
+            TabRow(selectedTabIndex = selectedTab, containerColor = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.primary) {
+                            Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Genel") }, selectedContentColor = MaterialTheme.colorScheme.primary, unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Hava Durumu") }, selectedContentColor = MaterialTheme.colorScheme.primary, unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            }
         }
     ) { padding ->
-        Column(
+                if (selectedTab == 0) {
+                    Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
@@ -390,6 +401,9 @@ fun SettingsScreen(
                 Text("Hesabı Kalıcı Sil", fontWeight = FontWeight.Bold)
             }
         }
+        } else {
+            WeatherSettingsTab(modifier = Modifier.fillMaxSize().padding(padding))
+                }
     }
 }
 
@@ -441,7 +455,7 @@ fun ThemeSelectorSection(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = PaddingValues(vertical = 4.dp)
     ) {
-        items(ThemePalette.entries.toTypedArray()) { palette ->
+        items(ThemePalette.entries.filter { it != ThemePalette.GALATASARAY || SpecialMemberConfig.isEmreBey() }.toTypedArray()) { palette ->
             val isSelected = currentPalette == palette
             Card(
                 modifier = Modifier
@@ -465,6 +479,51 @@ fun ThemeSelectorSection(
     }
 }
 
+@Composable
+private fun WeatherSettingsTab(modifier: Modifier = Modifier) {
+val context = LocalContext.current
+val weatherRepository = remember { WeatherRepository.getInstance(context) }
+val weatherSettings by weatherRepository.settings.collectAsStateWithLifecycle()
+val coroutineScope = rememberCoroutineScope()
+var searchQuery by remember { mutableStateOf("") }
+var searchResults by remember { mutableStateOf<List<GeocodingResult>>(emptyList()) }
+var isSearching by remember { mutableStateOf(false) }
+Column(modifier = modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))) {
+Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+Text("Otomatik Konum", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+Switch(checked = weatherSettings.autoLocation, onCheckedChange = { enabled -> weatherRepository.setAutoLocation(enabled); coroutineScope.launch { weatherRepository.refreshWeather(force = true) } })
+}
+}
+if (!weatherSettings.autoLocation) {
+Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))) {
+Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+Text("Manuel Yerleşim Seçimi", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+Text("Seçili: ${weatherSettings.manualCity}, ${weatherSettings.manualCountry}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+OutlinedTextField(value = searchQuery, onValueChange = { searchQuery = it }, label = { Text("Şehir ara") }, singleLine = true, modifier = Modifier.weight(1f))
+Button(onClick = { if (searchQuery.isNotBlank()) { coroutineScope.launch { isSearching = true; searchResults = weatherRepository.searchLocations(searchQuery.trim()); isSearching = false } } }, enabled = !isSearching) { Text("Ara") }
+}
+searchResults.forEach { res ->
+Surface(modifier = Modifier.fillMaxWidth().clickable { weatherRepository.setManualLocation(res.name, res.country, res.latitude, res.longitude); coroutineScope.launch { weatherRepository.refreshWeather(force = true) }; searchResults = emptyList() }, shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surface) {
+val label = if (res.admin1.isNotBlank()) "${res.name}, ${res.admin1}, ${res.country}" else "${res.name}, ${res.country}"
+Text(text = label, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+}
+}
+}
+}
+}
+Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))) {
+Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+Text("Sıcaklık Birimi", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+SegmentedButton(selected = !weatherSettings.useFahrenheit, onClick = { weatherRepository.setUseFahrenheit(false) }, shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)) { Text("Santigrat (°C)", fontSize = 12.sp) }
+SegmentedButton(selected = weatherSettings.useFahrenheit, onClick = { weatherRepository.setUseFahrenheit(true) }, shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)) { Text("Fahrenhayt (°F)", fontSize = 12.sp) }
+}
+}
+}
+}
+}
 @Composable
 private fun SettingRow(icon: ImageVector, label: String, onClick: () -> Unit) {
     Row(
