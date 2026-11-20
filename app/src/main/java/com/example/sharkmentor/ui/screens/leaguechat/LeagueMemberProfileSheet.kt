@@ -79,7 +79,10 @@ fun LeagueMemberProfileSheet(
     onSendDmRequest: (entry: LeagueEntry, note: String) -> Unit,
     onOpenAcceptedDm: (entry: LeagueEntry) -> Unit = {},
     onBlockUser: (entry: LeagueEntry, block: Boolean) -> Unit = { _, _ -> },
-    onReportUser: (entry: LeagueEntry, reason: String, details: String) -> Unit = { _, _, _ -> }
+    onReportUser: (entry: LeagueEntry, reason: String, details: String) -> Unit = { _, _, _ -> },
+    isIncomingDmRequest: Boolean = false,
+    onAcceptDmRequest: (() -> Unit)? = null,
+    onRejectDmRequest: (() -> Unit)? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val realName = remember(entry.rawName, entry.displayName) {
@@ -335,7 +338,26 @@ fun LeagueMemberProfileSheet(
                             }
                         }
 
-                        "PENDING" -> {
+                        "PENDING" -> { 
+                            if (isIncomingDmRequest && onAcceptDmRequest != null && onRejectDmRequest != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                    Button(
+                                        onClick = { onAcceptDmRequest(); onDismiss() },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)
+                                        ) { Text("İsteği Onayla", fontWeight = FontWeight.Bold) }
+                                    OutlinedButton(
+                                        onClick = { onRejectDmRequest(); onDismiss() },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                        ) { Text("Reddet", fontWeight = FontWeight.Bold) }
+                                    } } else {
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(14.dp),
@@ -352,13 +374,13 @@ fun LeagueMemberProfileSheet(
                                         tint = MaterialTheme.colorScheme.onSecondaryContainer
                                     )
                                     Text(
-                                        text = "Mesaj isteği beklemede. Karşı taraf onayladığında sohbet açılır.",
+                                        text = "İstek gönderildi, onay bekleniyor.",
                                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                         color = MaterialTheme.colorScheme.onSecondaryContainer
                                     )
                                 }
                             }
-                        }
+                        }}
 
                         else -> {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
