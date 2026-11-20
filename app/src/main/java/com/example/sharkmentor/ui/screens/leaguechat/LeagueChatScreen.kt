@@ -82,6 +82,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -175,14 +176,17 @@ fun LeagueChatScreen(
     }
 
     // Shared 1-second clock driving live 105-min question countdowns & tier chips
+    val hasActiveTimedQuestion = remember(uiState.allMessages) { uiState.allMessages.any { it.questionCard?.status == "OPEN" || it.questionCard?.status == "PENDING_APPROVAL" } }
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(hasActiveTimedQuestion) {
+        if (!hasActiveTimedQuestion) return@LaunchedEffect
         while (true) {
             nowMillis = System.currentTimeMillis()
-            delay(1_000L)
+            delay(15_000L)
         }
     }
-
+    DisposableEffect(Unit) { onDispose { chatViewModel.flushActiveChatBackup() } }
+    
     LaunchedEffect(destination) {
         when (destination) {
             is LeagueChatDestination.GroupChat -> {
@@ -460,9 +464,11 @@ fun LeagueChatScreen(
                             },
                             onShareQuestionClick = { showQuestionPicker = true },
                             onSendClick = {
-                                val text = messageInput
-                                messageInput = ""
-                                chatViewModel.sendTextMessage(text)
+                                val text = messageInput.trim()
+                                if (text.isNotEmpty()) {
+                                    messageInput = ""
+                                    chatViewModel.sendTextMessage(text)
+                                }
                             }
                         )
                     }
@@ -819,10 +825,14 @@ fun LeagueChatScreen(
     }
 
     uiState.selectedMemberProfile?.let { member ->
+        val incomingDmThread = uiState.dmThreads.firstOrNull { it.peerUid == member.studentId && it.status == "PENDING" && it.isIncomingRequest }
         LeagueMemberProfileSheet(
             entry = member,
             existingDmStatus = uiState.dmStatusByPeerId[member.studentId],
             isBlocked = uiState.blockedUserIds.contains(member.studentId),
+            isIncomingDmRequest = incomingDmThread != null,
+            onAcceptDmRequest = { incomingDmThread?.let { chatViewModel.respondToDmRequest(it, accept = true) } },
+            onRejectDmRequest = { incomingDmThread?.let { chatViewModel.respondToDmRequest(it, accept = false) } },
             onDismiss = { chatViewModel.dismissMemberProfile() },
             onSendDmRequest = { entry, note -> chatViewModel.sendDmRequest(entry, note) },
             onOpenAcceptedDm = { entry ->
