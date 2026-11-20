@@ -134,6 +134,7 @@ import com.example.sharkmentor.ui.aichat.AiPersona
 import com.example.sharkmentor.ui.aichat.PersonalizedGreetingHeader
 import com.example.sharkmentor.ui.aichat.getFlashCardsForPersona
 import com.example.sharkmentor.ui.aichat.isPersonaAvailable
+import com.example.sharkmentor.ui.components.PendingAiPromptBus
 import com.example.sharkmentor.ui.components.PulsingDotsIndicator
 import com.example.sharkmentor.ui.components.RichChatText
 import com.example.sharkmentor.ui.viewmodel.SharkAiHandoffManager
@@ -172,6 +173,16 @@ fun SharkAiScreen(
     LaunchedEffect(pendingHandoff) {
         if (pendingHandoff != null) {
             viewModel.consumePendingHandoffIfAny()
+        }
+    }
+
+    val pendingPrompt by PendingAiPromptBus.pendingPrompt.collectAsStateWithLifecycle()
+
+    LaunchedEffect(pendingPrompt) {
+        val prompt = pendingPrompt
+        if (!prompt.isNullOrBlank()) {
+            viewModel.onInputTextChanged(prompt)
+            PendingAiPromptBus.pendingPrompt.value = null
         }
     }
 
