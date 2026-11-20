@@ -114,7 +114,9 @@ data class StudyGroupSummary(
     val inviteCode: String,
     val name: String,
     val memberCount: Int,
-    val creatorId: String = ""
+    val creatorId: String = "",
+    val memberIds: List<String> = emptyList(),
+    val memberNames: Map<String, String> = emptyMap()
 )
 
 @Immutable
@@ -188,6 +190,7 @@ data class SharkLeagueUiState(
     val incomingStudyInvite: IncomingStudyInvite? = null,
     val pendingDmRequestCount: Int = 0,
     val dmStatusByPeerId: Map<String, String> = emptyMap(),
+    val incomingPendingDmThreadByPeerId: Map<String, String> = emptyMap(),
     val myShowcaseBadges: List<String> = emptyList(),
     val myUnlockedBadges: Set<String> = emptySet(),
     val myBadgeProgress: Map<String, Int> = emptyMap(),
@@ -649,6 +652,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                 if (error != null) return@addSnapshotListener
                 var pendingCount = 0
                 val statusMap = mutableMapOf<String, String>()
+                val incomingPendingMap = mutableMapOf<String, String>()
                 snap?.documents?.forEach { doc ->
                     val participants = (doc.get("participantIds") as? List<*>)
                         ?.mapNotNull { it?.toString() }
@@ -661,11 +665,13 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     }
                     if (status == "PENDING" && requesterId.isNotBlank() && requesterId != uid) {
                         pendingCount++
+                        incomingPendingMap[requesterId] = doc.id
                     }
                 }
                 _uiState.value = _uiState.value.copy(
                     pendingDmRequestCount = pendingCount,
-                    dmStatusByPeerId = statusMap
+                    dmStatusByPeerId = statusMap,
+                    incomingPendingDmThreadByPeerId = incomingPendingMap
                 )
             }
     }
@@ -1210,6 +1216,139 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    fun updateStudyGroup(groupCode: String, newName: String, removedMemberIds: List<String>) {
+        val cleanName = SyncWorker.sanitizeTurkishText(newName.trim())
+        if (cleanName.length < 2) {
+            _uiState.value = _uiState.value.copy(
+                statusMessage = "Grup adı en az 2 karakter olmalıdır."
+            )
+            return
+        }
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isActionInProgress = true, statusMessage = null)
+            try {
+                val updates = mutableMapOf<String, Any>(
+                    "name" to cleanName,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (removedMemberIds.isNotEmpty()) {
+                    updates["memberIds"] = FieldValue.arrayRemove(*removedMemberIds.toTypedArray())
+                    removedMemberIds.forEach { removedUid ->
+                        updates["memberNames.$removedUid"] = FieldValue.delete()
+                    }
+                }
+                database.collection("study_groups").document(groupCode).update(updates).await()
+                removedMemberIds.forEach { removedUid ->
+                    database.collection("students").document(removedUid)
+                        .update("joinedGroupCodes", FieldValue.arrayRemove(groupCode))
+                        .await()
+                }
+                val updatedGroups = _uiState.value.joinedGroups.map { group ->
+                    if (group.inviteCode == groupCode) {
+                        val remainingMembers = group.memberIds.filterNot { it in removedMemberIds }
+                        val remainingNames = group.memberNames.filterKeys { it !in removedMemberIds }
+                        group.copy(
+                            name = cleanName,
+                            memberIds = remainingMembers,
+                            memberNames = remainingNames,
+                            memberCount = remainingMembers.size.coerceAtLeast(1)
+                        )
+                    } else {
+                        group
+                    }
+                }
+                _uiState.value = _uiState.value.copy(
+                    isActionInProgress = false,
+                    joinedGroups = updatedGroups,
+                    groupName = if (_uiState.value.selectedGroupCode == groupCode) cleanName else _uiState.value.groupName,
+                    statusMessage = "Grup güncellendi."
+                )
+                loadLeague(preserveTab = true)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isActionInProgress = false,
+                    statusMessage = "Grup güncellenemedi: ${e.message ?: "Bilinmeyen hata"}"
+                )
+            }
+        }
+    }
+   
+    fun deleteStudyGroup(groupCode: String) {
+        val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isActionInProgress = true, statusMessage = null)
+            try {
+                database.collection("study_groups").document(groupCode).delete().await()
+                userPrefs.joinedGroupCodes = userPrefs.joinedGroupCodes - groupCode
+                if (!uid.isNullOrBlank() && uid != "student_default") {
+                    database.collection("students").document(uid)
+                        .update("joinedGroupCodes", FieldValue.arrayRemove(groupCode))
+                        .await()
+                }
+                val remainingGroups = _uiState.value.joinedGroups.filterNot { it.inviteCode == groupCode }
+                val nextSelected = if (_uiState.value.selectedGroupCode == groupCode) {
+                    remainingGroups.firstOrNull()?.inviteCode.orEmpty()
+                } else {
+                    _uiState.value.selectedGroupCode
+                }
+                _uiState.value = _uiState.value.copy(
+                    isActionInProgress = false,
+                    joinedGroups = remainingGroups,
+                    selectedGroupCode = nextSelected,
+                    statusMessage = "Grup silindi."
+                )
+                loadLeague(preserveTab = true)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isActionInProgress = false,
+                    statusMessage = "Grup silinemedi: ${e.message ?: "Bilinmeyen hata"}"
+                )
+            }
+        }
+    }
+
+    fun leaveStudyGroup(groupCode: String) {
+        val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isActionInProgress = true, statusMessage = null)
+            try {
+                if (!uid.isNullOrBlank() && uid != "student_default") {
+                    database.collection("study_groups").document(groupCode)
+                        .update(
+                            mapOf(
+                                "memberIds" to FieldValue.arrayRemove(uid),
+                                "memberNames.$uid" to FieldValue.delete(),
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        )
+                        .await()
+                    database.collection("students").document(uid)
+                        .update("joinedGroupCodes", FieldValue.arrayRemove(groupCode))
+                        .await()
+                }
+                userPrefs.joinedGroupCodes = userPrefs.joinedGroupCodes - groupCode
+                val remainingGroups = _uiState.value.joinedGroups.filterNot { it.inviteCode == groupCode }
+                val nextSelected = if (_uiState.value.selectedGroupCode == groupCode) {
+                    remainingGroups.firstOrNull()?.inviteCode.orEmpty()
+                } else {
+                    _uiState.value.selectedGroupCode
+                }
+                _uiState.value = _uiState.value.copy(
+                    isActionInProgress = false,
+                    joinedGroups = remainingGroups,
+                    selectedGroupCode = nextSelected,
+                    statusMessage = "Gruptan ayrıldınız."
+                )
+                loadLeague(preserveTab = true)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isActionInProgress = false,
+                    statusMessage = "Gruptan ayrılınamadı: ${e.message ?: "Bilinmeyen hata"}"
+                )
+            }
+        }
+    }
+    
     // ─── Join Group (6-char code) or Add Friend (SHK-XXXX) ───────────────────
 
     fun joinByCode(rawInputCode: String) {
@@ -1710,7 +1849,40 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             }
         }
     }
-
+    fun respondToDmRequest(peerUid: String, accept: Boolean) {
+        val threadId = _uiState.value.incomingPendingDmThreadByPeerId[peerUid] ?: return
+val newStatus = if (accept) "ACCEPTED" else "REJECTED"
+viewModelScope.launch {
+try {
+    database.collection("dm_threads").document(threadId)
+                    .update(
+                        mapOf(
+                            "status" to newStatus,
+                            "updatedAtMillis" to System.currentTimeMillis(),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                    .await()
+                val updatedDmStatus = _uiState.value.dmStatusByPeerId.toMutableMap().apply {
+                    put(peerUid, newStatus)
+                }
+                val updatedIncoming = _uiState.value.incomingPendingDmThreadByPeerId.toMutableMap().apply {
+                    remove(peerUid)
+                }
+                _uiState.value = _uiState.value.copy(
+                    dmStatusByPeerId = updatedDmStatus,
+                    incomingPendingDmThreadByPeerId = updatedIncoming,
+                    pendingDmRequestCount = updatedIncoming.size,
+                    statusMessage = if (accept) "DM isteği kabul edildi." else "DM isteği reddedildi."
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    statusMessage = "DM isteği yanıtlanamadı: ${e.message ?: "Bilinmeyen hata"}"
+                )
+            }
+        }
+    }
+    
     // ─── Internal Helpers ────────────────────────────────────────────────────
 
     private fun updateEntryNudgeTimestamp(targetStudentId: String, timestampMillis: Long) {
@@ -2217,7 +2389,9 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                                     inviteCode = code,
                                     name = gName,
                                     memberCount = members.size.coerceAtLeast(1),
-                                    creatorId = doc.getString("creatorId") ?: ""
+                                    creatorId = doc.getString("creatorId") ?: "",
+                                    memberIds = members.toList(),
+                                    memberNames = localNames
                                 ),
                                 members,
                                 localNames
