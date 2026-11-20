@@ -55,11 +55,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -76,6 +79,13 @@ import com.example.sharkmentor.core.data.ThemePreferences
 import com.example.sharkmentor.core.theme.ThemeManager
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.ui.components.ControlPanelContent
+import com.example.sharkmentor.data.weather.WeatherRepository
+import com.example.sharkmentor.data.weather.WeatherSettings
+import com.example.sharkmentor.data.weather.WeatherUiState
+import com.example.sharkmentor.ui.components.SpecialMemberConfig
+import com.example.sharkmentor.ui.components.TopBarAiShortcutBox
+import com.example.sharkmentor.ui.components.TopBarWeatherPill
+import com.example.sharkmentor.ui.components.WeatherHourlyDialog
 import com.example.sharkmentor.ui.navigation.Screen
 import com.example.sharkmentor.ui.onboarding.OnboardingScreen
 import com.example.sharkmentor.ui.reflection.DailyReflectionDialog
@@ -173,6 +183,13 @@ fun MainScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val countdownText = uiState.targetCountdownText
 
+val weatherRepository = remember(context) { WeatherRepository.getInstance(context) }
+val weatherState by weatherRepository.weatherState.collectAsState()
+val weatherSettings by weatherRepository.weatherSettings.collectAsState()
+var showWeatherDialog by remember { mutableStateOf(false) }
+LaunchedEffect(Unit) {
+weatherRepository.refreshWeather()
+}
     val errorBankViewModel: ErrorBankViewModel = viewModel()
     val dueQuestionsCount by errorBankViewModel.dueQuestionsCount.collectAsStateWithLifecycle(initialValue = 0)
     val primaryTabRoutes = remember {
@@ -275,6 +292,10 @@ fun MainScreen(
                                     SharkMentorTopBar(
                                         countdown = countdownText,
                                         isCampus = uiState.isCampus,
+weatherState = weatherState,
+weatherSettings = weatherSettings,
+onWeatherClick = { showWeatherDialog = true },
+onOpenSharkAi = { navController.navigate(Screen.Shark.route) { launchSingleTop = true } },
                                         onCountdownClick = {
                                             navController.navigate("countdown_settings") {
                                                 launchSingleTop = true
@@ -512,6 +533,14 @@ fun MainScreen(
                         }
                     )
                 }
+            if (showWeatherDialog) {
+                WeatherHourlyDialog(
+                    weatherState = weatherState,
+                    settings = weatherSettings,
+                    onRefresh = { scope.launch { weatherRepository.refreshWeather(force = true) } },
+                    onDismiss = { showWeatherDialog = false }
+                )
+            }
             }
         }
     }
@@ -528,9 +557,18 @@ fun MainScreen(
 private fun SharkMentorTopBar(
     countdown: String,
     isCampus: Boolean,
+    weatherState: WeatherUiState,
+    weatherSettings: WeatherSettings,
+    onWeatherClick: () -> Unit,
+    onOpenSharkAi: () -> Unit,
     onCountdownClick: () -> Unit = {},
     onMenuClick: () -> Unit
 ) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+    ) {
     TopAppBar(
         expandedHeight = 48.dp,
         title = {
@@ -580,6 +618,24 @@ private fun SharkMentorTopBar(
             actionIconContentColor = MaterialTheme.colorScheme.onSurface
         ),
     )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TopBarWeatherPill(
+                weatherState = weatherState,
+                settings = weatherSettings,
+                onClick = onWeatherClick
+            )
+            TopBarAiShortcutBox(
+                onClick = onOpenSharkAi,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
 }
 
 @Composable
@@ -594,13 +650,15 @@ private fun SharkMentorBranding(countdown: String, isCampus: Boolean) {
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "SharkMentor",
+                text = if (SpecialMemberConfig.isEmreBey()) "Sir Emrw's Mentor" else "SharkMentor",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = if (isCampus) "C A M P U S" else "S T U D Y",
+                text = if (SpecialMemberConfig.isEmreBey()) "E M R W" else if (isCampus) "C A M P U S" else "S T U D Y",
                 fontSize = 9.sp,
                 letterSpacing = 3.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
