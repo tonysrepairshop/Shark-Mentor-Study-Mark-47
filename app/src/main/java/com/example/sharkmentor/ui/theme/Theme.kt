@@ -281,7 +281,7 @@ private val AutumnDarkScheme = darkColorScheme(
     error = Color(0xFFF87171),
     onError = Color(0xFF2A0909),
     errorContainer = Color(0xFF4A1514),
-    onErrorContainer = Color(0xFFFECACA
+    onErrorContainer = Color(0xFFFECACA)
 )
 
 // 9. GALATASARAY (Sarı & Kırmızı Özel)
