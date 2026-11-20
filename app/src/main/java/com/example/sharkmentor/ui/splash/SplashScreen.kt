@@ -92,5 +92,13 @@ fun SplashScreen(onTimeout: () -> Unit) {
             color = MaterialTheme.colorScheme.primary,
             strokeWidth = 3.dp
         )
+        Text(
+            text = "Powered by Emrw",
+            style = MaterialTheme.typography.labelMedium,
+color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f),
+modifier = Modifier
+    .align(Alignment.BottomCenter)
+.padding(bottom = 28.dp)
+        )
     }
 }
