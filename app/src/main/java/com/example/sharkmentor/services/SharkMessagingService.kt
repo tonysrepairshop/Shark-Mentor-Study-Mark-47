@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.sharkmentor.MainActivity
+import com.example.sharkmentor.core.notification.ActiveChatTracker
 import com.example.sharkmentor.R
 import com.example.sharkmentor.core.notification.SharkNotificationEngine
 import com.example.sharkmentor.core.util.AppIconManager
@@ -341,6 +342,7 @@ class SharkMessagingService : FirebaseMessagingService() {
             groupCode: String? = null,
             isDm: Boolean = false
         ) {
+            if (ActiveChatTracker.isViewingChannel(groupCode)) return
             val appCtx = context.applicationContext
             SharkNotificationEngine.init(appCtx)
             if (!markAndCheckShouldNotify(messageId?.takeIf { it.isNotBlank() }?.let { "question:$it" })) return
@@ -421,6 +423,7 @@ class SharkMessagingService : FirebaseMessagingService() {
             groupCode: String? = null,
             isDm: Boolean = false
         ) {
+            if (ActiveChatTracker.isViewingChannel(groupCode)) return
             val appCtx = context.applicationContext
             SharkNotificationEngine.init(appCtx)
             if (!markAndCheckShouldNotify(messageId?.takeIf { it.isNotBlank() }?.let { "chat:$it" })) return
@@ -478,6 +481,19 @@ class SharkMessagingService : FirebaseMessagingService() {
                 notificationManager.notify(notificationId, builder.build())
             }.onFailure {
                 Log.w("SharkMessaging", "Unable to post chat notification: ${it.message}")
+            }
+        }
+        fun cancelChatNotifications(context: Context, channelId: String?) {
+            runCatching {
+               if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return@runCatching
+               val nm = context.applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return@runCatching
+                nm.activeNotifications.forEach { sbn ->
+                    val notifChannel = NotificationCompat.getChannelId(sbn.notification)
+                    if (notifChannel == CHANNEL_CHAT_MESSAGES_ID || notifChannel == CHANNEL_LEAGUE_QUESTIONS_ID) {
+                        if (sbn.tag != null) nm.cancel(sbn.tag, sbn.id) else nm.cancel(sbn.id)
+                    }
+                }
+                
             }
         }
     }
