@@ -12,6 +12,14 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.location.Location
+import android.location.LocationManager
+import androidx.core.content.ContextCompat
+import java.util.Locale
 import kotlin.math.roundToInt
 
 data class WeatherSettings(
@@ -79,7 +87,8 @@ fun weatherConditionLabel(code: Int): String {
 }
 
 class WeatherRepository private constructor(context: Context) {
-
+    private val appContext: Context = context.applicationContext
+    
     private val prefs: SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -214,7 +223,7 @@ class WeatherRepository private constructor(context: Context) {
                 var targetLon = activeSettings.manualLon
 
                 if (activeSettings.autoLocation) {
-                    val geo = fetchGeoJsLocation()
+                    val geo = fetchDeviceLocation() ?: fetchGeoJsLocation()
                     if (geo != null) {
                         targetCity = geo.city
                         targetCountry = geo.country
@@ -326,7 +335,62 @@ class WeatherRepository private constructor(context: Context) {
         val lat: Double,
         val lon: Double
     )
+    @SuppressLint("MissingPermission")
+    private fun fetchDeviceLocation(): GeoJsLocation? {
+        val hasFine = ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine && !hasCoarse) return null
 
+        val locationManager =
+            appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+                ?: return null
+
+        val providers = buildList {
+            add(LocationManager.GPS_PROVIDER)
+            add(LocationManager.NETWORK_PROVIDER)
+            add(LocationManager.PASSIVE_PROVIDER)
+            runCatching { locationManager.getProviders(true) }
+                .getOrNull()
+                ?.forEach { if (!contains(it)) add(it) }
+        }
+
+        var bestLocation: Location? = null
+        for (provider in providers) {
+            val loc = runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull()
+                ?: continue
+            if (bestLocation == null || loc.time > bestLocation.time ||
+                (loc.time == bestLocation.time && loc.accuracy < bestLocation.accuracy)
+            ) {
+                bestLocation = loc
+            }
+        }
+        val location = bestLocation ?: return null
+        val lat = location.latitude
+        val lon = location.longitude
+
+        var city = ""
+        var country = "Turkey"
+        runCatching {
+            @Suppress("DEPRECATION")
+            val addresses = Geocoder(appContext, Locale("tr", "TR")).getFromLocation(lat, lon, 1)
+            val addr = addresses?.firstOrNull()
+            if (addr != null) {
+                city = (addr.adminArea ?: addr.subAdminArea ?: addr.locality ?: "").trim()
+                country = (addr.countryName ?: "Turkey").trim().ifBlank { "Turkey" }
+            }
+        }
+        if (city.isBlank()) {
+            city = "Konumum"
+        }
+        return GeoJsLocation(city = city, country = country, lat = lat, lon = lon)
+    }
+    
     private fun fetchGeoJsLocation(): GeoJsLocation? {
         return try {
             val responseText = httpGet("https://" + "get." + "geojs.io" + "/v1/ip/geo.json")
