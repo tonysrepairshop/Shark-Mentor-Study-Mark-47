@@ -13,8 +13,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.font.FontWeight
 import com.google.firebase.auth.FirebaseAuth
 
-private const val SPECIAL_MEMBER_UID = "dcLyQsJBBaQvL5ItGPOkl8WPwuw1"
-private const val SPECIAL_MEMBER_EMAIL = "emrwator@gmail.com"
+object SpecialMemberConfig {
+    const val EMRE_UID = "dcLyQsJBBaQvL5ItGPOkl8WPwuw1"
+    const val EMRE_EMAIL = "emrwator@gmail.com"
+    fun isEmreBey(): Boolean {
+        val currentUser = FirebaseAuth.getInstance().currentUser ?: return false
+        return currentUser.uid == EMRE_UID && currentUser.email.equals(EMRE_EMAIL, ignoreCase = true)
+    }
+}
 
 @Composable
 fun SpecialMemberWelcomeGate() {
@@ -22,12 +28,7 @@ fun SpecialMemberWelcomeGate() {
 
     if (dismissedInSession) return
 
-    val currentUser = FirebaseAuth.getInstance().currentUser
-    val isSpecialMember = currentUser != null &&
-        currentUser.uid == SPECIAL_MEMBER_UID &&
-        currentUser.email.equals(SPECIAL_MEMBER_EMAIL, ignoreCase = true)
-
-    if (!isSpecialMember) return
+    if (!SpecialMemberConfig.isEmreBey()) return
 
     AlertDialog(
         onDismissRequest = { dismissedInSession = true },
