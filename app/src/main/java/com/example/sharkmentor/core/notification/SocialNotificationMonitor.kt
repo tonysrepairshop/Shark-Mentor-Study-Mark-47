@@ -142,6 +142,7 @@ object SocialNotificationMonitor {
 
                         val previousSeen = seenDmMessageIds[doc.id]
                         if (previousSeen == lastMessageId) return@forEach
+                        if (ActiveChatTracker.isViewingChannel(doc.id)) return@forEach  
                         seenDmMessageIds[doc.id] = lastMessageId
 
                         @Suppress("UNCHECKED_CAST")
@@ -279,7 +280,7 @@ object SocialNotificationMonitor {
                                     doc.getString("senderName").orEmpty()
                                 ).ifBlank { "Grup Üyesi" }
                                 val type = doc.getString("type").orEmpty().ifBlank { "TEXT" }
-
+                                if (ActiveChatTracker.isViewingChannel(groupCode)) return@forEach
                                 if (type == "QUESTION") {
                                     val subj = SyncWorker.sanitizeTurkishText(
                                         doc.getString("questionSubject").orEmpty()
