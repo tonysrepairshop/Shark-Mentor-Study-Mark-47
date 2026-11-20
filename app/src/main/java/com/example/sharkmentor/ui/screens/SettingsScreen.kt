@@ -1,5 +1,12 @@
 package com.example.sharkmentor.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.filled.WbSunny
 import android.app.AlertDialog
 import android.content.Context
 import android.widget.Toast
@@ -73,7 +80,8 @@ fun SettingsScreen(
     onOpenCountdownSettings: () -> Unit = {},
     onAccountDeleted: () -> Unit = {}
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var showWeatherSettings by remember { mutableStateOf(false) }
+    BackHandler(enabled = showWeatherSettings) { showWeatherSettings = false }
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -261,24 +269,19 @@ fun SettingsScreen(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            Column {
+           
                 TopAppBar(
                 expandedHeight = 50.dp,
-                title = { Text("Ayarlar") },
+                title = { Text(if (showWeatherSettings) "Hava Durumu" else "Ayarlar") },
                 navigationIcon = {
-                    IconButton(onClick = onBackClick) {
+                    IconButton(onClick = { if (showWeatherSettings) showWeatherSettings = false else onBackClick() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Geri")
                     }
                 }
-            )
-            TabRow(selectedTabIndex = selectedTab, containerColor = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.primary) {
-                            Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Genel") }, selectedContentColor = MaterialTheme.colorScheme.primary, unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Hava Durumu") }, selectedContentColor = MaterialTheme.colorScheme.primary, unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            }
+           )
         }
     ) { padding ->
-                if (selectedTab == 0) {
+               if (!showWeatherSettings)  {
                     Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -303,8 +306,10 @@ fun SettingsScreen(
                     themePrefs.setPalette(palette)
                 }
             )
+HorizontalDivider()
 
-            HorizontalDivider()
+           AppIconSelectorSection(snackbarHostState = snackbarHostState)
+                        HorizontalDivider()
 
             Text("Yapay Zeka & API", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
 
@@ -326,7 +331,8 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            AppIconSelectorSection(snackbarHostState = snackbarHostState)
+           Text("Hava Durumu", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+           SettingRow(icon = Icons.Default.WbSunny, label = "Hava Durumu Ayarları", onClick = { showWeatherSettings = true })
 
             HorizontalDivider()
 
@@ -488,11 +494,12 @@ val coroutineScope = rememberCoroutineScope()
 var searchQuery by remember { mutableStateOf("") }
 var searchResults by remember { mutableStateOf<List<GeocodingResult>>(emptyList()) }
 var isSearching by remember { mutableStateOf(false) }
-Column(modifier = modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ -> coroutineScope.launch { weatherRepository.refreshWeather(force = true) } }
+    Column(modifier = modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
 Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))) {
 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
 Text("Otomatik Konum", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-Switch(checked = weatherSettings.autoLocation, onCheckedChange = { enabled -> weatherRepository.setAutoLocation(enabled); coroutineScope.launch { weatherRepository.refreshWeather(force = true) } })
+Switch(checked = weatherSettings.autoLocation, onCheckedChange = { enabled -> weatherRepository.setAutoLocation(enabled); if (enabled && ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) { locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)) } else { coroutineScope.launch { weatherRepository.refreshWeather(force = true)  }} })
 }
 }
 if (!weatherSettings.autoLocation) {
