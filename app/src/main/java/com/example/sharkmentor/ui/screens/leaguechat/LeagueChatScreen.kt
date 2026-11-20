@@ -132,6 +132,16 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
+import com.example.sharkmentor.core.notification.ActiveChatTracker
+import com.example.sharkmentor.services.SharkMessagingService
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 
 sealed class LeagueChatDestination {
     data class GroupChat(val groupCode: String, val groupName: String) : LeagueChatDestination()
@@ -154,6 +164,8 @@ fun LeagueChatScreen(
     chatViewModel: LeagueChatViewModel = viewModel()
 ) {
     val context = LocalContext.current
+val clipboardManager = LocalClipboardManager.current
+val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by chatViewModel.uiState.collectAsStateWithLifecycle()
     val wallpaperStyle by remember(context) { ChatWallpaperPrefs.observeStyle(context) }.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
@@ -186,7 +198,38 @@ fun LeagueChatScreen(
         }
     }
     DisposableEffect(Unit) { onDispose { chatViewModel.flushActiveChatBackup() } }
-    
+        val activeChannelId = when (uiState.mode) {
+        LeagueChatMode.GROUP_CHAT -> uiState.groupCode.takeIf { !it.isNullOrBlank() }
+        LeagueChatMode.DM_THREAD -> uiState.activeDmThread?.threadId.takeIf { !it.isNullOrBlank() }
+        LeagueChatMode.DM_INBOX -> null
+    }
+    DisposableEffect(lifecycleOwner, activeChannelId) {
+        val channelId = activeChannelId
+        if (channelId == null) {
+            onDispose { }
+        } else {
+            ActiveChatTracker.enterChat(channelId)
+            SharkMessagingService.cancelChatNotifications(context, channelId)
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> {
+                        ActiveChatTracker.enterChat(channelId)
+                        SharkMessagingService.cancelChatNotifications(context, channelId)
+                    }
+                    Lifecycle.Event.ON_PAUSE -> {
+                        ActiveChatTracker.exitChat(channelId)
+                    }
+                    else -> Unit
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+                ActiveChatTracker.exitChat(channelId)
+            }
+        }
+    }
+
     LaunchedEffect(destination) {
         when (destination) {
             is LeagueChatDestination.GroupChat -> {
@@ -600,6 +643,13 @@ fun LeagueChatScreen(
                                         activeActionMessageId = null
                                         pendingDeleteMessage = message
                                     }
+                    val onCopyMessage: () -> Unit = {
+                        activeActionMessageId = null
+                        if (message.text.isNotBlank()) {
+                            clipboardManager.setText(AnnotatedString(message.text))
+                            Toast.makeText(context, "Mesaj kopyalandı.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
 
                                     when {
                                         message.questionCard != null -> {
@@ -667,7 +717,9 @@ fun LeagueChatScreen(
                                                 onEditClick = onEditMessage,
                                                 onDeleteClick = onDeleteMessage,
                                                 onQuotedMessageClick = scrollToMessageById,
-                                                onSenderClick = openSenderProfile
+                                                onSenderClick = openSenderProfile,
+                            isGroupChat = uiState.mode == LeagueChatMode.GROUP_CHAT,
+                            onCopyClick = onCopyMessage
                                             )
                                         }
                                     }
@@ -1506,7 +1558,9 @@ private fun ChatTextBubble(
     onEditClick: () -> Unit,
     onDeleteClick: () -> Unit,
     onQuotedMessageClick: (String) -> Unit,
-    onSenderClick: () -> Unit
+    onSenderClick: () -> Unit,
+    isGroupChat: Boolean = true,
+    onCopyClick: () -> Unit = {}
 ) {
     val timeLabel = remember(message.createdAtMillis) {
         SimpleDateFormat("HH:mm", Locale("tr")).format(Date(message.createdAtMillis))
@@ -1618,6 +1672,29 @@ private fun ChatTextBubble(
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    if (message.isMine) {
+                        val otherSeenCount = message.seenBy.count { it.isNotBlank() && it != message.senderId }
+                        if (otherSeenCount > 0) {
+                            Icon(
+                                imageVector = Icons.Default.DoneAll,
+                                contentDescription = if (isGroupChat) "Görüldü ($otherSeenCount)" else "Görüldü",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = if (isGroupChat) "Görüldü ($otherSeenCount)" else "Görüldü",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Done,
+                                contentDescription = "Gönderildi",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "Mesaj Seçenekleri",
@@ -1633,6 +1710,8 @@ private fun ChatTextBubble(
             MessageActionDropdown(
                 expanded = isActionMenuExpanded,
                 isMine = message.isMine,
+                        canCopy = message.text.isNotBlank(),
+                        onCopy = onCopyClick,
                 canEdit = (message.type == "TEXT"),
                 onDismiss = onDismissActionMenu,
                 onReply = onReplyClick,
@@ -2199,12 +2278,30 @@ private fun MessageActionDropdown(
     onDismiss: () -> Unit,
     onReply: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    canCopy: Boolean = false,
+    onCopy: () -> Unit = {}
 ) {
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss
     ) {
+        if (canCopy) {
+            DropdownMenuItem(
+                text = { Text("Kopyala") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                },
+                onClick = {
+                    onDismiss()
+                    onCopy()
+                }
+            )
+        }
         DropdownMenuItem(
             text = { Text("Yanıtla") },
             leadingIcon = {
