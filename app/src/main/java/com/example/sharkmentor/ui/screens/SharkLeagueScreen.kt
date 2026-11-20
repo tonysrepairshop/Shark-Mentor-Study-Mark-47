@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.*
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -1075,7 +1076,8 @@ private fun LeagueFilterSection(
                                         contentDescription = "Paylaş",
                                         tint = MaterialTheme.colorScheme.primary
                                     )
-                                } IconButton(onClick = { onManageGroup(selectedGroup) }) { Icon(imageVector = Icons.Default.Edit, contentDescription = "Grubu Yönet", tint = MaterialTheme.colorScheme.primary) }
+                                } 
+IconButton(onClick = { onManageGroup(selectedGroup) }) { Icon(imageVector = Icons.Default.Edit, contentDescription = "Grubu Yönet", tint = MaterialTheme.colorScheme.primary) }
                             }
                         }
                     }
