@@ -148,7 +148,8 @@ data class LeagueChatMessageUi(
     val editedAtMillis: Long = 0L,
     val isDeleted: Boolean = false,
     val questionCard: QuestionCardUi? = null,
-    val solutionReply: SolutionReplyUi? = null
+    val solutionReply: SolutionReplyUi? = null,
+   val seenBy: List<String> = emptyList() 
 )
 
 @Immutable
@@ -317,6 +318,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
     private var dmThreadsListener: ListenerRegistration? = null
     private var rawMessages: List<LeagueChatMessageUi> = emptyList()
     private var rawDmThreads: List<DmThreadUi> = emptyList()
+   private val markedSeenMessageIds = mutableSetOf<String>() 
 
     fun selectFilter(tab: ChatFilterTab) {
         _uiState.value = _uiState.value.copy(activeFilter = tab)
@@ -494,7 +496,9 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
         val uid = resolveCurrentUid()
         val myName = resolveDisplayName(myDisplayNameHint)
+        markedSeenMessageIds.clear() 
         rawMessages = emptyList()
+        
         _uiState.value = _uiState.value.copy(
             mode = LeagueChatMode.GROUP_CHAT,
             currentUid = uid,
@@ -555,6 +559,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
     fun openDmThread(thread: DmThreadUi, myDisplayNameHint: String = "") {
         val uid = resolveCurrentUid()
         val myName = resolveDisplayName(myDisplayNameHint)
+       markedSeenMessageIds.clear()
         rawMessages = emptyList()
         _uiState.value = _uiState.value.copy(
             mode = LeagueChatMode.DM_THREAD,
@@ -1682,6 +1687,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                 val liveMessages = snap?.documents?.mapNotNull { doc ->
                     parseMessageDoc(doc, currentUid)
                 }.orEmpty()
+               markIncomingMessagesAsSeen(liveMessages) 
                     rawMessages = mergeMessagesById(primary = liveMessages, fallback = rawMessages)
                     val channelKey = activeChannelKey()
                     if (channelKey != null && rawMessages.isNotEmpty()) {
@@ -1797,6 +1803,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         } else {
             null
         }
+       val seenBy = (doc.get("seenBy") as? List<*>)?.mapNotNull { it as? String }.orEmpty() 
 
         return LeagueChatMessageUi(
             id = doc.id,
@@ -1816,7 +1823,8 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             isEdited = isEdited,
             editedAtMillis = editedAtMillis,
             questionCard = questionCard,
-            solutionReply = solutionReply
+            solutionReply = solutionReply,
+           seenBy = seenBy 
         )
     }
 
@@ -1897,7 +1905,8 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             LeagueChatMode.DM_INBOX -> null
         }
     }
-
+    private fun markIncomingMessagesAsSeen(messages: List<LeagueChatMessageUi>) { val currentUid = resolveCurrentUid(); if (currentUid == "local_student" || currentUid == "student_default") return; val collection = activeMessagesCollection() ?: return; val database = db ?: return; val unseen = messages.takeLast(25).filter { !it.isMine && it.id.isNotBlank() && currentUid !in it.seenBy && it.id !in markedSeenMessageIds }; if (unseen.isEmpty()) return; unseen.forEach { markedSeenMessageIds.add(it.id) }; viewModelScope.launch(Dispatchers.IO) { runCatching { val batch = database.batch(); unseen.forEach { msg -> batch.update(collection.document(msg.id), "seenBy", FieldValue.arrayUnion(currentUid)) }; batch.commit().await() } } }
+    
     private fun resolveCurrentUid(): String =
         GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid ?: "local_student"
 
@@ -1943,6 +1952,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         messagesListener = null
         dmThreadsListener?.remove()
         dmThreadsListener = null
+       markedSeenMessageIds.clear()
         super.onCleared()
     }
 }
