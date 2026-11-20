@@ -1225,6 +1225,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             return
         }
         viewModelScope.launch {
+val database = db ?: return@launch
             _uiState.value = _uiState.value.copy(isActionInProgress = true, statusMessage = null)
             try {
                 val updates = mutableMapOf<String, Any>(
@@ -1276,6 +1277,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
     fun deleteStudyGroup(groupCode: String) {
         val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid
         viewModelScope.launch {
+val database = db ?: return@launch
             _uiState.value = _uiState.value.copy(isActionInProgress = true, statusMessage = null)
             try {
                 database.collection("study_groups").document(groupCode).delete().await()
@@ -1310,6 +1312,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
     fun leaveStudyGroup(groupCode: String) {
         val uid = GoogleServicesHelper.getCurrentUser(auth, appContext)?.uid
         viewModelScope.launch {
+val database = db ?: return@launch
             _uiState.value = _uiState.value.copy(isActionInProgress = true, statusMessage = null)
             try {
                 if (!uid.isNullOrBlank() && uid != "student_default") {
@@ -1853,6 +1856,7 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         val threadId = _uiState.value.incomingPendingDmThreadByPeerId[peerUid] ?: return
 val newStatus = if (accept) "ACCEPTED" else "REJECTED"
 viewModelScope.launch {
+val database = db ?: return@launch
 try {
     database.collection("dm_threads").document(threadId)
                     .update(
