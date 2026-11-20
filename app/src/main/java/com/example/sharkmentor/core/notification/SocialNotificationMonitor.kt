@@ -24,7 +24,8 @@ object SocialNotificationMonitor {
     private const val TAG = "SocialNotifMonitor"
     private const val PREFS_GROUP_CACHE = "social_notif_group_cache"
     private const val GROUP_NAME_TTL_MS = 24L * 60L * 60L * 1000L
-
+    private const val PREFS_PENDING_REQUESTS = "social_notif_pending_requests"
+    
     @Volatile
     private var activeUid: String? = null
 
@@ -37,7 +38,8 @@ object SocialNotificationMonitor {
     private val groupMessageListeners = ConcurrentHashMap<String, ListenerRegistration>()
     private val groupNamesCache = ConcurrentHashMap<String, String>()
     private val seenDmMessageIds = ConcurrentHashMap<String, String>()
-
+    private val seenPendingRequestIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    
     private fun readCachedGroupName(context: Context, groupCode: String): String? {
         groupNamesCache[groupCode]?.takeIf { it.isNotBlank() }?.let { return it }
         val prefs = context.getSharedPreferences(PREFS_GROUP_CACHE, Context.MODE_PRIVATE)
@@ -110,6 +112,14 @@ object SocialNotificationMonitor {
                     snap.documentChanges.forEach { change ->
                         val doc = change.document
                         val status = doc.getString("status").orEmpty()
+                       if (status == "PENDING") {
+                           val recipientId = doc.getString("recipientId").orEmpty().trim()
+                           val requesterId = doc.getString("requesterId").orEmpty().trim()
+                           if (recipientId == uid && requesterId.isNotBlank() && requesterId != uid && requesterId !in blockedIds && !seenPendingRequestIds.contains(doc.id)) {
+                               val prefs = appCtx.getSharedPreferences(PREFS_PENDING_REQUESTS, Context.MODE_PRIVATE)
+                               val prefKey = "pending_${uid}_${doc.id}"; val alreadyNotified = prefs.getBoolean(prefKey, false)
+                               val createdOrUpdatedAt = maxOf(doc.getLong("updatedAtMillis") ?: 0L, doc.getLong("createdAtMillis") ?: 0L); if (createdOrUpdatedAt >= monitorStartMillis - 60_000L || !alreadyNotified) {
+                          seenPendingRequestIds.add(doc.id); if (!alreadyNotified) prefs.edit().putBoolean(prefKey, true).apply(); val requesterName = SyncWorker.sanitizeTurkishText(doc.getString("requesterName").orEmpty()).trim().ifBlank { "Bir kullanıcı" }; SharkMessagingService.showChatMessageNotification(context = appCtx, senderName = "Yeni Sohbet İsteği", messageText = "$requesterName sana sohbet isteği gönderdi.", messageId = "dm_req_${doc.id}", isDm = true); }; }; return@forEach; }
                         if (status != "ACCEPTED") return@forEach
 
                         val updatedAtMillis = doc.getLong("updatedAtMillis") ?: 0L
@@ -329,6 +339,7 @@ object SocialNotificationMonitor {
         nudgesListener = null
         groupMessageListeners.values.forEach { it.remove() }
         groupMessageListeners.clear()
+       seenPendingRequestIds.clear()
         seenDmMessageIds.clear()
         activeUid = null
     }
