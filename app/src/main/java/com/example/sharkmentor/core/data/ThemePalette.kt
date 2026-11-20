@@ -16,5 +16,6 @@ enum class ThemePalette(
     FOREST("Forest", 0xFF0D1912, 0xFF387A56, "Sakin Çam Ormanı"),
     DREAMS("Dreams", 0xFF1A1318, 0xFFF472B6, "Dingin Gül Kurusu"),
     SAKURA("Sakura", 0xFF1E1517, 0xFFFDA4AF, "Japon Kiraz Çiçeği"),
-    AUTUMN("Autumn", 0xFF181310, 0xFFEA580C, "Kiremit Sonbahar")
+    AUTUMN("Autumn", 0xFF181310, 0xFFEA580C, "Kiremit Sonbahar"),
+    GALATASARAY("Galatasaray", 0xFF1A090D, 0xFFA90432, "Sarı & Kırmızı Özel")
 }
