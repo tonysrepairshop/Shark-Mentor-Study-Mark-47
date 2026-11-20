@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import com.example.sharkmentor.core.data.AppThemeMode
 import com.example.sharkmentor.core.data.ThemePalette
+import com.example.sharkmentor.ui.components.SpecialMemberConfig
 
 // ── Natural Dark Palettes (full M3 token coverage — zero default purple fallback) ──
 
@@ -280,7 +281,40 @@ private val AutumnDarkScheme = darkColorScheme(
     error = Color(0xFFF87171),
     onError = Color(0xFF2A0909),
     errorContainer = Color(0xFF4A1514),
-    onErrorContainer = Color(0xFFFECACA)
+    onErrorContainer = Color(0xFFFECACA
+)
+
+// 9. GALATASARAY (Sarı & Kırmızı Özel)
+private val GalatasarayDarkScheme = darkColorScheme(
+    primary = Color(0xFFFDB912),
+onPrimary = Color(0xFF2B1900),
+primaryContainer = Color(0xFFA90432),
+onPrimaryContainer = Color(0xFFFFE5EA),
+secondary = Color(0xFFD91E36),
+onSecondary = Color(0xFFFFFFFF),
+secondaryContainer = Color(0xFF5E0B1B),
+onSecondaryContainer = Color(0xFFFFD9DF),
+tertiary = Color(0xFFFFD56B),
+onTertiary = Color(0xFF2B1900),
+tertiaryContainer = Color(0xFF4D3600),
+onTertiaryContainer = Color(0xFFFFE8A6),
+background = Color(0xFF16080B),
+onBackground = Color(0xFFFFF8F6),
+surface = Color(0xFF220D12),
+onSurface = Color(0xFFFFF8F6),
+surfaceVariant = Color(0xFF33141B),
+onSurfaceVariant = Color(0xFFE4C4C9),
+surfaceContainerLowest = Color(0xFF100507),
+surfaceContainerLow = Color(0xFF1C0A0E),
+surfaceContainer = Color(0xFF270F15),
+surfaceContainerHigh = Color(0xFF32141C),
+surfaceContainerHighest = Color(0xFF3E1922),
+outline = Color(0xFF7D535B),
+outlineVariant = Color(0xFF4F2A32),
+error = Color(0xFFF87171),
+onError = Color(0xFF2A0909),
+errorContainer = Color(0xFF4A1514),
+onErrorContainer = Color(0xFFFECACA)
 )
 
 // ── Natural Light Palettes (dedicated high-contrast accents per palette) ────
@@ -541,6 +575,38 @@ private val AutumnLightScheme = lightColorScheme(
     onErrorContainer = Color(0xFF7F1D1D)
 )
 
+private val GalatasarayLightScheme = lightColorScheme(
+    primary = Color(0xFFA90432),
+onPrimary = Color(0xFFFFFFFF),
+primaryContainer = Color(0xFFFFE6A1),
+onPrimaryContainer = Color(0xFF3B2200),
+secondary = Color(0xFFC98F00),
+onSecondary = Color(0xFFFFFFFF),
+secondaryContainer = Color(0xFFFFF0C2),
+onSecondaryContainer = Color(0xFF3B2800),
+tertiary = Color(0xFF8C142B),
+onTertiary = Color(0xFFFFFFFF),
+tertiaryContainer = Color(0xFFFFD9DF),
+onTertiaryContainer = Color(0xFF470614),
+background = Color(0xFFFFFBF7),
+onBackground = Color(0xFF1F1215),
+surface = Color(0xFFFFFFFF),
+onSurface = Color(0xFF1F1215),
+surfaceVariant = Color(0xFFFCEEEF),
+onSurfaceVariant = Color(0xFF5E4348),
+surfaceContainerLowest = Color(0xFFFFFFFF),
+surfaceContainerLow = Color(0xFFFFF6F4),
+surfaceContainer = Color(0xFFFDF0F0),
+surfaceContainerHigh = Color(0xFFF9E6E7),
+surfaceContainerHighest = Color(0xFFF4DCDF),
+outline = Color(0xFF9C7B81),
+outlineVariant = Color(0xFFE7CFD3),
+error = Color(0xFFDC2626),
+onError = Color.White,
+errorContainer = Color(0xFFFEE2E2),
+onErrorContainer = Color(0xFF7F1D1D)
+)
+
 // ── Zen Pure Focus Monochrome Scheme ────────────────────────────────────────
 
 private val ZenMonochromeScheme = darkColorScheme(
@@ -592,6 +658,7 @@ private fun paletteSchemeFor(palette: ThemePalette, isDark: Boolean): ColorSchem
             ThemePalette.DREAMS -> DreamsDarkScheme
             ThemePalette.SAKURA -> SakuraDarkScheme
             ThemePalette.AUTUMN -> AutumnDarkScheme
+ThemePalette.GALATASARAY -> GalatasarayDarkScheme
         }
     } else {
         when (palette) {
@@ -603,6 +670,7 @@ private fun paletteSchemeFor(palette: ThemePalette, isDark: Boolean): ColorSchem
             ThemePalette.DREAMS -> DreamsLightScheme
             ThemePalette.SAKURA -> SakuraLightScheme
             ThemePalette.AUTUMN -> AutumnLightScheme
+ThemePalette.GALATASARAY -> GalatasarayLightScheme
         }
     }
 }
@@ -620,11 +688,12 @@ fun SharkMentorTheme(
         AppThemeMode.LIGHT -> false
     }
 
+val effectivePalette = if (palette == ThemePalette.GALATASARAY && !SpecialMemberConfig.isEmreBey()) ThemePalette.SOOTY else palette
     val effectiveIsDark = isDark || isZenMode
     val finalColors = if (isZenMode) {
         ZenMonochromeScheme
     } else {
-        paletteSchemeFor(palette = palette, isDark = isDark)
+        paletteSchemeFor(palette = effectivePalette, isDark = isDark)
     }
 
     val statusBarBg = finalColors.background
