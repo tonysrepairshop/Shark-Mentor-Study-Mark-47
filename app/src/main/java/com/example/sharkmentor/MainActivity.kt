@@ -31,6 +31,7 @@ import com.example.sharkmentor.core.util.PdfBitmapConverter
 import com.example.sharkmentor.ui.MainScreen
 import com.example.sharkmentor.ui.auth.AuthScreen
 import com.example.sharkmentor.ui.theme.SharkMentorTheme
+import com.example.sharkmentor.ui.components.SpecialMemberWelcomeGate
 import com.google.firebase.firestore.SetOptions
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
@@ -100,6 +101,7 @@ class MainActivity : ComponentActivity() {
                             targetRoute = targetRouteState,
                             onTargetRouteConsumed = { targetRouteState = null }
                         )
+                        SpecialMemberWelcomeGate()
                     } else {
                         AuthScreen(
                             onAuthSuccess = {
