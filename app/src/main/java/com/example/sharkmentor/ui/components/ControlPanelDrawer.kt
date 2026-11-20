@@ -241,6 +241,11 @@ fun ControlPanelContent(
                     modifier = Modifier.size(20.dp)
                 )
             }
+                        Text(
+                            text = "Powered by Emrw",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                        )
         }
     }
 }
