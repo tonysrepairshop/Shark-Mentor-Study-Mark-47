@@ -1,5 +1,6 @@
 package com.example.sharkmentor.ui
 
+import android.content.res.Configuration
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -60,6 +61,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -82,6 +84,7 @@ import com.example.sharkmentor.ui.components.ControlPanelContent
 import com.example.sharkmentor.data.weather.WeatherRepository
 import com.example.sharkmentor.data.weather.WeatherSettings
 import com.example.sharkmentor.data.weather.WeatherUiState
+import com.example.sharkmentor.ui.components.PendingAiPromptBus
 import com.example.sharkmentor.ui.components.SpecialMemberConfig
 import com.example.sharkmentor.ui.components.TopBarAiShortcutBox
 import com.example.sharkmentor.ui.components.TopBarWeatherPill
@@ -564,15 +567,31 @@ private fun SharkMentorTopBar(
     onCountdownClick: () -> Unit = {},
     onMenuClick: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-    ) {
+  val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     TopAppBar(
         expandedHeight = 48.dp,
         title = {
-            SharkMentorBranding(countdown = countdown, isCampus = isCampus)
+            Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SharkMentorBranding(countdown = countdown, isCampus = isCampus)
+                    if (isLandscape) {
+                        TopBarWeatherPill(
+                            weatherState = weatherState,
+                            settings = weatherSettings,
+                            onClick = onWeatherClick
+                        )
+                        TopBarAiShortcutBox(
+                            onClick = { prompt ->
+                                PendingAiPromptBus.pendingPrompt.value = prompt
+                                onOpenSharkAi()
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+            }
         },
         actions = {
             // Task 6.2: Restored Target Exam Countdown Widget (YKS remaining days pill)
@@ -618,24 +637,6 @@ private fun SharkMentorTopBar(
             actionIconContentColor = MaterialTheme.colorScheme.onSurface
         ),
     )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            TopBarWeatherPill(
-                weatherState = weatherState,
-                settings = weatherSettings,
-                onClick = onWeatherClick
-            )
-            TopBarAiShortcutBox(
-                onClick = onOpenSharkAi,
-                modifier = Modifier.weight(1f)
-            )
-        }
-    }
 }
 
 @Composable
@@ -650,7 +651,7 @@ private fun SharkMentorBranding(countdown: String, isCampus: Boolean) {
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = if (SpecialMemberConfig.isEmreBey()) "Sir Emrw's Mentor" else "SharkMentor",
+                text = "SharkMentor",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -658,7 +659,7 @@ private fun SharkMentorBranding(countdown: String, isCampus: Boolean) {
                     overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = if (SpecialMemberConfig.isEmreBey()) "E M R W" else if (isCampus) "C A M P U S" else "S T U D Y",
+                text = if (SpecialMemberConfig.isEmreBey()) "Emrw" else if (isCampus) "C A M P U S" else "S T U D Y",
                 fontSize = 9.sp,
                 letterSpacing = 3.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
