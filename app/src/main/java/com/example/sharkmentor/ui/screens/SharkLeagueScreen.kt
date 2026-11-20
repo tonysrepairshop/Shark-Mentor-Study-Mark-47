@@ -83,6 +83,7 @@ import com.example.sharkmentor.ui.viewmodel.SharkTier
 import com.example.sharkmentor.ui.viewmodel.StudyGroupSummary
 import com.example.sharkmentor.ui.viewmodel.nextThreshold
 import com.example.sharkmentor.ui.viewmodel.previousThreshold
+import com.google.firebase.auth.FirebaseAuth
 
 private val PODIUM_GOLD_COLOR = Color(0xFFD97706)
 private val PODIUM_SILVER_COLOR = Color(0xFF64748B)
@@ -112,6 +113,7 @@ fun SharkLeagueScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+     var managingGroup by remember { mutableStateOf<StudyGroupSummary?>(null) }
     val clipboardManager = LocalClipboardManager.current
 
     var showCreateGroupDialog by rememberSaveable { mutableStateOf(false) }
@@ -349,7 +351,7 @@ fun SharkLeagueScreen(
                         onShareText = ::shareInviteText,
                         onOpenCreateGroup = { showCreateGroupDialog = true },
                         onOpenJoinByCode = { showJoinByCodeDialog = true },
-                        onOpenGroupChat = ::openActiveGroupChat,
+                        onOpenGroupChat = ::openActiveGroupChat, onManageGroup = { managingGroup = it },
                         onOpenDmInbox = { activeChatDestination = LeagueChatDestination.DmInbox },
                         onOpenBadgeShowcase = { showBadgeShowcaseSheet = true },
                         onShowcaseBadgeClick = { inspectedMyShowcaseBadge = it },
@@ -433,13 +435,14 @@ fun SharkLeagueScreen(
             }
         )
     }
-
+    managingGroup?.let { group -> ManageStudyGroupDialog(groupCode = group.inviteCode, currentName = group.name, creatorId = group.creatorId, currentUserId = FirebaseAuth.getInstance().currentUser?.uid.orEmpty(), members = group.memberIds.map { id -> id to (group.memberNames[id]?.takeIf { it.isNotBlank() } ?: id.take(8)) }, onDismiss = { managingGroup = null }, onSaveChanges = { newName, removedMemberIds -> viewModel.updateStudyGroup(group.inviteCode, newName, removedMemberIds); managingGroup = null }, onDeleteGroup = { viewModel.deleteStudyGroup(group.inviteCode); managingGroup = null }, onLeaveGroup = { viewModel.leaveStudyGroup(group.inviteCode); managingGroup = null }) }
+    
     selectedMemberForProfile?.let { member ->
         LeagueMemberProfileSheet(
             entry = member,
             existingDmStatus = uiState.dmStatusByPeerId[member.studentId],
             isBlocked = uiState.blockedUserIds.contains(member.studentId),
-            onDismiss = { selectedMemberForProfile = null },
+            onDismiss = { selectedMemberForProfile = null }, isIncomingDmRequest = uiState.incomingPendingDmThreadByPeerId.containsKey(member.studentId), onAcceptDmRequest = { viewModel.respondToDmRequest(member.studentId, accept = true) }, onRejectDmRequest = { viewModel.respondToDmRequest(member.studentId, accept = false) },
             onSendDmRequest = { entry, note -> viewModel.sendDmRequest(entry, note) },
             onOpenAcceptedDm = { entry ->
                 selectedMemberForProfile = null
@@ -638,7 +641,7 @@ private fun LeagueContent(
     onShareText: (String) -> Unit,
     onOpenCreateGroup: () -> Unit,
     onOpenJoinByCode: () -> Unit,
-    onOpenGroupChat: () -> Unit,
+    onOpenGroupChat: () -> Unit, onManageGroup: (StudyGroupSummary) -> Unit,
     onOpenDmInbox: () -> Unit,
     onOpenBadgeShowcase: () -> Unit,
     onShowcaseBadgeClick: (SharkBadgeDef) -> Unit,
@@ -756,7 +759,7 @@ private fun LeagueContent(
                                     "SharkMentor'da \"${group.name}\" çalışma grubuna katıl. 6 Haneli Grup Kodu: ${group.inviteCode}"
                                 )
                             },
-                            onOpenGroupChat = onOpenGroupChat
+                            onOpenGroupChat = onOpenGroupChat, onManageGroup = onManageGroup
                         )
                     }
                 }
@@ -882,7 +885,7 @@ private fun LeagueContent(
                                 "SharkMentor'da \"${group.name}\" çalışma grubuna katıl. 6 Haneli Grup Kodu: ${group.inviteCode}"
                             )
                         },
-                        onOpenGroupChat = onOpenGroupChat
+                        onOpenGroupChat = onOpenGroupChat, onManageGroup = onManageGroup
                     )
                 }
             }
@@ -965,7 +968,7 @@ private fun LeagueFilterSection(
     onToggleInstitutionFilter: (Boolean) -> Unit,
     onCopyGroupCode: (String) -> Unit,
     onShareGroupCode: (StudyGroupSummary) -> Unit,
-    onOpenGroupChat: () -> Unit
+    onOpenGroupChat: () -> Unit, onManageGroup: (StudyGroupSummary) -> Unit
 ) {
     if (uiState.activeTab == LeagueTab.GLOBAL_INDIVIDUAL) {
         if (uiState.institutionCode.isNotBlank()) {
@@ -1072,7 +1075,7 @@ private fun LeagueFilterSection(
                                         contentDescription = "Paylaş",
                                         tint = MaterialTheme.colorScheme.primary
                                     )
-                                }
+                                } IconButton(onClick = { onManageGroup(selectedGroup) }) { Icon(imageVector = Icons.Default.Edit, contentDescription = "Grubu Yönet", tint = MaterialTheme.colorScheme.primary) }
                             }
                         }
                     }
