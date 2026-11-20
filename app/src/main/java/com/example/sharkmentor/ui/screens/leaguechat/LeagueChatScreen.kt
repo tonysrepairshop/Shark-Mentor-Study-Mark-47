@@ -198,8 +198,8 @@ val lifecycleOwner = LocalLifecycleOwner.current
         }
     }
     DisposableEffect(Unit) { onDispose { chatViewModel.flushActiveChatBackup() } }
-        val activeChannelId = when (uiState.mode) {
-        LeagueChatMode.GROUP_CHAT -> uiState.groupCode.takeIf { !it.isNullOrBlank() }
+        val activeChannelId : String?= when (uiState.mode) {
+        LeagueChatMode.GROUP_CHAT -> uiState.activeGroupCode.takeIf { !it.isNullOrBlank() }
         LeagueChatMode.DM_THREAD -> uiState.activeDmThread?.threadId.takeIf { !it.isNullOrBlank() }
         LeagueChatMode.DM_INBOX -> null
     }
