@@ -606,6 +606,43 @@ onError = Color.White,
 errorContainer = Color(0xFFFEE2E2),
 onErrorContainer = Color(0xFF7F1D1D)
 )
+private val BlueberryDarkScheme = darkColorScheme(
+    background = Color(0xFF0E0B1E),
+surface = Color(0xFF171230),
+surfaceVariant = Color(0xFF241B47),
+primary = Color(0xFFA855F7),
+onPrimary = Color(0xFF1B0536),
+primaryContainer = Color(0xFF4C1D95),
+onPrimaryContainer = Color(0xFFF3E8FF),
+secondary = Color(0xFF7C3AED),
+onSecondary = Color(0xFFFFFFFF),
+secondaryContainer = Color(0xFF2E1065),
+onSecondaryContainer = Color(0xFFE9D5FF),
+tertiary = Color(0xFFC084FC),
+onBackground = Color(0xFFF5F3FF),
+onSurface = Color(0xFFF5F3FF),
+onSurfaceVariant = Color(0xFFC4B5FD),
+outlineVariant = Color(0xFF3B2C66)
+)
+
+private val BlueberryLightScheme = lightColorScheme(
+    background = Color(0xFFFAF8FF),
+surface = Color(0xFFFFFFFF),
+surfaceVariant = Color(0xFFEDE9FE),
+primary = Color(0xFF7E22CE),
+onPrimary = Color(0xFFFFFFFF),
+primaryContainer = Color(0xFFDDD6FE),
+onPrimaryContainer = Color(0xFF2E1065),
+secondary = Color(0xFF312E81),
+onSecondary = Color(0xFFFFFFFF),
+secondaryContainer = Color(0xFFE0E7FF),
+onSecondaryContainer = Color(0xFF1E1B4B),
+tertiary = Color(0xFF9333EA),
+onBackground = Color(0xFF1E1B4B),
+onSurface = Color(0xFF1E1B4B),
+onSurfaceVariant = Color(0xFF4C1D95),
+outlineVariant = Color(0xFFC4B5FD)
+)
 
 // ── Zen Pure Focus Monochrome Scheme ────────────────────────────────────────
 
@@ -658,7 +695,8 @@ private fun paletteSchemeFor(palette: ThemePalette, isDark: Boolean): ColorSchem
             ThemePalette.DREAMS -> DreamsDarkScheme
             ThemePalette.SAKURA -> SakuraDarkScheme
             ThemePalette.AUTUMN -> AutumnDarkScheme
-ThemePalette.GALATASARAY -> GalatasarayDarkScheme
+ThemePalette.GALATASARAY -> GalatasarayDarkScheme 
+            ThemePalette.BLUEBERRY -> BlueberryDarkScheme
         }
     } else {
         when (palette) {
@@ -670,7 +708,8 @@ ThemePalette.GALATASARAY -> GalatasarayDarkScheme
             ThemePalette.DREAMS -> DreamsLightScheme
             ThemePalette.SAKURA -> SakuraLightScheme
             ThemePalette.AUTUMN -> AutumnLightScheme
-ThemePalette.GALATASARAY -> GalatasarayLightScheme
+ThemePalette.GALATASARAY -> GalatasarayLightScheme 
+            ThemePalette.BLUEBERRY -> BlueberryLightScheme
         }
     }
 }
