@@ -27,6 +27,8 @@ import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.ErrorQuestionEntity
 import com.example.sharkmentor.data.local.preferences.UserPreferences
 import com.example.sharkmentor.service.sync.SyncWorker
+import com.example.sharkmentor.data.sync.ChatPackBackupManager
+import com.example.sharkmentor.data.sync.ChatPackMessage
 import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
@@ -38,9 +40,12 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -296,6 +301,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
 
     private val appContext = application.applicationContext
     private val userPrefs = UserPreferences.getInstance(appContext)
+        private val chatPackBackupManager by lazy { ChatPackBackupManager(appContext) }
     private val db get() = GoogleServicesHelper.getFirebaseFirestore(appContext)
     private val auth get() = GoogleServicesHelper.getFirebaseAuth(appContext)
 
@@ -364,6 +370,118 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         )
     }
 
+    private fun activeChannelKey(): String? {
+        val state = _uiState.value
+        return when (state.mode) {
+            LeagueChatMode.GROUP_CHAT -> state.activeGroupCode.takeIf { it.isNotBlank() }?.let { "group_$it" }
+            LeagueChatMode.DM_THREAD -> state.activeDmThread?.threadId?.takeIf { it.isNotBlank() }?.let { "dm_$it" }
+            else -> null
+        }
+    }
+
+    private fun activeChannelType(): String {
+        return when (_uiState.value.mode) {
+            LeagueChatMode.DM_THREAD -> "dm"
+            else -> "group"
+        }
+    }
+
+    private fun LeagueChatMessageUi.toChatPackMessage(): ChatPackMessage {
+        return ChatPackMessage(
+            id = id,
+            senderId = senderId,
+            senderName = senderName,
+            text = text,
+            messageType = type,
+            createdAtMillis = createdAtMillis,
+            editedAtMillis = if (editedAtMillis > 0L) editedAtMillis else null,
+            isDeleted = isDeleted
+        )
+    }
+
+    private fun ChatPackMessage.toLeagueChatMessageUi(currentUid: String): LeagueChatMessageUi {
+        val editedAt = editedAtMillis ?: 0L
+        return LeagueChatMessageUi(
+            id = id,
+            senderId = senderId,
+            senderName = senderName,
+            type = messageType.ifBlank { "TEXT" },
+            text = text,
+            createdAtMillis = createdAtMillis,
+            isMine = senderId == currentUid,
+            isEdited = editedAt > 0L,
+            editedAtMillis = editedAt,
+            isDeleted = isDeleted
+        )
+    }
+
+    private fun mergeMessagesById(
+        primary: List<LeagueChatMessageUi>,
+        fallback: List<LeagueChatMessageUi>
+    ): List<LeagueChatMessageUi> {
+        if (fallback.isEmpty()) return primary.sortedBy { it.createdAtMillis }
+        if (primary.isEmpty()) return fallback.sortedBy { it.createdAtMillis }
+        val merged = LinkedHashMap<String, LeagueChatMessageUi>(primary.size + fallback.size)
+        fallback.forEach { msg ->
+            if (msg.id.isNotBlank()) merged[msg.id] = msg
+        }
+        primary.forEach { msg ->
+            if (msg.id.isNotBlank()) merged[msg.id] = msg
+        }
+        return merged.values.sortedBy { it.createdAtMillis }
+    }
+
+    fun flushActiveChatBackup() {
+        val channelKey = activeChannelKey() ?: return
+        val currentMessages = rawMessages
+        if (currentMessages.isEmpty()) return
+        val packMessages = currentMessages.map { it.toChatPackMessage() }
+        val channelType = activeChannelType()
+        val uid = resolveCurrentUid()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching {
+                chatPackBackupManager.saveLocalCache(channelKey, packMessages)
+                if (uid != "local_student" && uid != "student_default") {
+                    chatPackBackupManager.backupPacksToFirebase(
+                        uid = uid,
+                        channelKey = channelKey,
+                        channelType = channelType,
+                        messages = packMessages
+                    )
+                }
+            }
+        }
+    }
+
+    private fun loadCachedAndRestoreChannel(channelKey: String, uid: String) {
+        val cached = runCatching {
+            chatPackBackupManager.loadLocalCache(channelKey).map { it.toLeagueChatMessageUi(uid) }
+        }.getOrNull().orEmpty()
+        if (cached.isNotEmpty()) {
+            rawMessages = mergeMessagesById(primary = rawMessages, fallback = cached)
+            applyBlockedFilters()
+        }
+        if (uid == "local_student" || uid == "student_default") return
+        viewModelScope.launch(Dispatchers.IO) {
+            val restored = runCatching {
+                chatPackBackupManager.restorePacksFromFirebase(uid, channelKey)
+            }.getOrNull().orEmpty()
+            if (restored.isNotEmpty()) {
+                val restoredUi = restored.map { it.toLeagueChatMessageUi(uid) }
+                withContext(Dispatchers.Main) {
+                    if (activeChannelKey() == channelKey) {
+                        rawMessages = mergeMessagesById(primary = rawMessages, fallback = restoredUi)
+                        applyBlockedFilters()
+                        val toCache = rawMessages.map { it.toChatPackMessage() }
+                        withContext(Dispatchers.IO) {
+                            chatPackBackupManager.saveLocalCache(channelKey, toCache)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun openGroupChat(groupCode: String, groupName: String, myDisplayNameHint: String = "") {
         val cleanCode = groupCode.trim().uppercase(Locale.ROOT)
         if (cleanCode.isBlank()) {
@@ -392,6 +510,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             isLoading = true,
             errorMessage = null
         )
+        loadCachedAndRestoreChannel("group_$cleanCode", uid)
 
         refreshBlockedUsers(uid)
         observeDmThreads(uid)
@@ -411,6 +530,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun openDmInbox(myDisplayNameHint: String = "") {
+        flushActiveChatBackup()
         val uid = resolveCurrentUid()
         val myName = resolveDisplayName(myDisplayNameHint)
         messagesListener?.remove()
@@ -449,6 +569,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
             isLoading = true,
             errorMessage = null
         )
+        loadCachedAndRestoreChannel("dm_${thread.threadId}", uid)
         refreshBlockedUsers(uid)
         observeDmThreads(uid)
 
@@ -640,8 +761,10 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
         val state = _uiState.value
         val database = db ?: return
         val uid = resolveCurrentUid()
-        if (uid == "local_student" || uid == "student_default") return
-
+        if (uid == "local_student" || uid == "student_default") {
+            _uiState.update { it.copy(statusMessage = "Mesaj göndermek için hesabına giriş yapmalısın.") }
+            return
+        }
         if (state.mode == LeagueChatMode.DM_THREAD && state.activeDmThread?.status != "ACCEPTED") {
             _uiState.value = state.copy(
                 statusMessage = "Karşı taraf mesaj isteğini onaylamadan mesaj gönderilemez."
@@ -688,6 +811,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     isSending = false,
                     activeReplyTarget = null
                 )
+                   flushActiveChatBackup()
             }.onFailure { e ->
                 Log.w("LeagueChatVM", "sendTextMessage error: ${e.message}")
                 _uiState.value = _uiState.value.copy(
@@ -1555,10 +1679,23 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
                     )
                     return@addSnapshotListener
                 }
-                rawMessages = snap?.documents?.mapNotNull { doc ->
+                val liveMessages = snap?.documents?.mapNotNull { doc ->
                     parseMessageDoc(doc, currentUid)
                 }.orEmpty()
-
+                    rawMessages = mergeMessagesById(primary = liveMessages, fallback = rawMessages)
+                    val channelKey = activeChannelKey()
+                    if (channelKey != null && rawMessages.isNotEmpty()) {
+                        val packMessages = rawMessages.map { it.toChatPackMessage() }
+                        val channelType = activeChannelType()
+                        viewModelScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                   chatPackBackupManager.saveLocalCache(channelKey, packMessages)
+                                   if (currentUid != "local_student" && currentUid != "student_default") {
+                                       chatPackBackupManager.backupPacksToFirebase(uid = currentUid, channelKey = channelKey, channelType = channelType, messages = packMessages)
+                                   }
+                            }}
+                    }
+                            
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     errorMessage = null
@@ -1801,6 +1938,7 @@ class LeagueChatViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onCleared() {
+              flushActiveChatBackup()
         messagesListener?.remove()
         messagesListener = null
         dmThreadsListener?.remove()
