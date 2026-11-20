@@ -38,6 +38,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -236,70 +238,80 @@ fun WeatherHourlyDialog(
     )
 }
 
+object PendingAiPromptBus {
+    val pendingPrompt = MutableStateFlow<String?>(null)
+}
+
 @Composable
 fun TopBarAiShortcutBox(
-    onClick: () -> Unit,
+    onClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val prompts = remember {
         listOf(
-            "\"Bugün ne planlayalım?\"",
-            "\"Deneme analizini yapalım mı?\"",
-            "\"Zayıf konuları çıkaralım\"",
-            "\"25 dk odak seansı kuralım\"",
-            "\"Haftalık programını güncelleyelim\"",
-            "\"Bugünkü hedeflerini belirle\"",
-            "\"Yanlış sorularını özetleyelim\"",
-            "\"Tekrar listeni gözden geçirelim\"",
-            "\"Kısa bir mola sonrası planı?\"",
-            "\"Hangi dersten başlayalım?\"",
-            "\"Net artış stratejini kuralım\"",
-            "\"Sınav öncesi hızlı tekrar?\"",
-            "\"Günlük çalışma ritmini ölçelim\"",
-            "\"Öncelikli konuları sıralayalım\"",
-            "\"Akşam değerlendirmesi yapalım\"",
-            "\"Shark AI ile yol haritanı çiz\""
+            "Bugün ne planlayalım?",
+            "Deneme analizini yapalım mı?",
+            "Zayıf konuları çıkaralım",
+            "25 dk odak seansı kuralım",
+            "Haftalık programını güncelleyelim",
+            "Bugünkü hedeflerini belirle",
+            "Yanlış sorularını özetleyelim",
+            "Tekrar listeni gözden geçirelim",
+            "Kısa bir mola sonrası planı?",
+            "Hangi dersten başlayalım?",
+            "Net artış stratejini kuralım",
+            "Sınav öncesi hızlı tekrar?",
+            "Günlük çalışma ritmini ölçelim",
+            "Öncelikli konuları sıralayalım",
+            "Akşam değerlendirmesi yapalım",
+            "Shark AI ile yol haritanı çiz"
         )
     }
 
     var currentIndex by remember { mutableIntStateOf(0) }
-    val rotation = remember { Animatable(0f) }
+    var visibleText by remember { mutableStateOf("") }
+    var showCursor by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
         while (true) {
-            delay(30_000L)
-            rotation.animateTo(
-                targetValue = 90f,
-                animationSpec = tween(durationMillis = 220)
-            )
+            val fullText = prompts[currentIndex]
+            showCursor = true
+            for (i in 1..fullText.length) {
+                visibleText = fullText.substring(0, i)
+                delay(48L)
+            }
+            repeat(9) {
+                showCursor = !showCursor
+                delay(500L)
+            }
+            showCursor = true
+            for (i in fullText.length - 1 downTo 0) {
+                visibleText = fullText.substring(0, i)
+                delay(24L)
+            }
+            delay(350L)
             currentIndex = (currentIndex + 1) % prompts.size
-            rotation.snapTo(-90f)
-            rotation.animateTo(
-                targetValue = 0f,
-                animationSpec = tween(durationMillis = 220)
-            )
         }
     }
 
+    val currentPrompt = prompts[currentIndex]
+    val cursor = if (showCursor) "|" else ""
+
     Surface(
-        modifier = modifier
-            .graphicsLayer {
-                rotationX = rotation.value
-                cameraDistance = 12f * density
-            }
-            .clickable(onClick = onClick),
+        modifier = modifier.clickable { onClick(currentPrompt) },
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Text(
-            text = prompts[currentIndex],
+            text = "\"$visibleText\"$cursor",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
         )
     }
 }
+
