@@ -185,7 +185,7 @@ fun MainScreen(
 
 val weatherRepository = remember(context) { WeatherRepository.getInstance(context) }
 val weatherState by weatherRepository.weatherState.collectAsState()
-val weatherSettings by weatherRepository.weatherSettings.collectAsState()
+val weatherSettings by weatherRepository.settings.collectAsState()
 var showWeatherDialog by remember { mutableStateOf(false) }
 LaunchedEffect(Unit) {
 weatherRepository.refreshWeather()
