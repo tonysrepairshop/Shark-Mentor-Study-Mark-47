@@ -411,7 +411,7 @@ HorizontalDivider()
                 } "topbar_texts" -> { Box(modifier = Modifier.fillMaxSize().padding(padding)) { TopBarTextSettingsContent(prefs = topBarPrefs) } }
     }
 }
-
+}
 
 
 @Composable
