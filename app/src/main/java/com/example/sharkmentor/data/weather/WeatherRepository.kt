@@ -285,7 +285,7 @@ class WeatherRepository private constructor(context: Context) {
             } catch (e: Exception) {
                 currentState.copy(
                     isLoading = false,
-                    errorMessage = e.message ?: "Hava durumu güncellenemedi"
+                    errorMessage = "İnternet bağlantısı sağlanamadığı için hava durumu verisi yenilenemedi."
                 )
             }
         }
