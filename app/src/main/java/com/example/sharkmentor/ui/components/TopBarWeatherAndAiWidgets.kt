@@ -31,6 +31,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Email
+import java.util.Calendar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AcUnit
 import androidx.compose.material.icons.filled.Cloud
@@ -85,6 +90,7 @@ fun TopBarWeatherPill(
     weatherState: WeatherUiState,
     settings: WeatherSettings,
     onClick: () -> Unit,
+    showBubble: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val tempLabel = weatherState.currentTempCelsius?.let {
@@ -94,9 +100,9 @@ fun TopBarWeatherPill(
     Surface(
         modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(50),
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = if (showBubble) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        border = if (showBubble) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant) else null
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -201,10 +207,22 @@ fun WeatherHourlyDialog(
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
+                    val currentHour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
+                    val filteredHourly = remember(weatherState.hourly, currentHour) {
+                        weatherState.hourly.filter { item ->
+                            val itemHour = item.hourLabel.substringBefore(":").trim().toIntOrNull()
+                            if (itemHour == null) {
+                                true
+                            } else {
+                                val diff = (itemHour - currentHour + 24) % 24
+                                diff in 0..10 || diff >= 22
+                            }
+                        }.ifEmpty { weatherState.hourly }
+                    }
                     LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(weatherState.hourly) { item ->
+                        items(filteredHourly) { item ->
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant,
@@ -261,7 +279,8 @@ object PendingAiPromptBus {
 fun TopBarAiShortcutBox(
     onClick: (String) -> Unit,
     modifier: Modifier = Modifier,
-topBarSettings: TopBarSettings = TopBarSettings()
+topBarSettings: TopBarSettings = TopBarSettings(),
+    showBubble: Boolean = true
 ) {
     val prompts = remember {
         listOf(
@@ -346,7 +365,7 @@ currentIndex = (currentIndex + 1) % activeTexts.size
 TopBarAnimationType.FLIP_BOX -> {
 flipRotation.snapTo(0f)
 while (true) {
-delay(4500L)
+delay(6000L)
 flipRotation.animateTo(90f, animationSpec = tween(220))
 currentIndex = (currentIndex + 1) % activeTexts.size
 flipRotation.snapTo(-90f)
@@ -357,7 +376,7 @@ TopBarAnimationType.FADE,
 TopBarAnimationType.SLIDE_VERTICAL,
 TopBarAnimationType.SCALE_FADE -> {
 while (true) {
-delay(4500L)
+delay(5000L)
 currentIndex = (currentIndex + 1) % activeTexts.size
 }
 }
@@ -390,9 +409,9 @@ currentIndex = (safeIndex + 1) % activeTexts.size
 }
 },
 shape = RoundedCornerShape(12.dp),
-color = MaterialTheme.colorScheme.surfaceVariant,
+color = if (showBubble) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f) else Color.Transparent,
 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+border = if (showBubble) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)) else null
 ) {
 when (topBarSettings.animationType) {
 TopBarAnimationType.NONE -> {
@@ -432,12 +451,12 @@ modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
 }
 TopBarAnimationType.FADE -> {
 AnimatedContent(
-targetState = displayText,
-transitionSpec = { fadeIn(tween(400)) togetherWith fadeOut(tween(400)) },
+targetState = currentIndex,
+transitionSpec = { fadeIn(tween(550)) togetherWith fadeOut(tween(450)) },
 label = "top_bar_fade"
 ) { target ->
 Text(
-text = target,
+text = displayText,
 style = textStyle,
 color = textColor,
 maxLines = 1,
@@ -448,15 +467,15 @@ modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
 }
 TopBarAnimationType.SLIDE_VERTICAL -> {
 AnimatedContent(
-targetState = displayText,
+targetState = currentIndex,
 transitionSpec = {
-(slideInVertically(tween(400)) { it } + fadeIn(tween(400))) togetherWith
-(slideOutVertically(tween(400)) { -it } + fadeOut(tween(400)))
+(slideInVertically(tween(500)) { it } + fadeIn(tween(400))) togetherWith
+(slideOutVertically(tween(500)) { -it } + fadeOut(tween(400)))
 },
 label = "top_bar_slide_vertical"
 ) { target ->
 Text(
-text = target,
+text = displayText,
 style = textStyle,
 color = textColor,
 maxLines = 1,
@@ -467,15 +486,15 @@ modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
 }
 TopBarAnimationType.SCALE_FADE -> {
 AnimatedContent(
-targetState = displayText,
+targetState = currentIndex,
 transitionSpec = {
-(scaleIn(initialScale = 0.85f, animationSpec = tween(400)) + fadeIn(tween(400))) togetherWith
-(scaleOut(targetScale = 1.1f, animationSpec = tween(400)) + fadeOut(tween(400)))
+(scaleIn(initialScale = 0.8f, animationSpec = tween(450)) + fadeIn(tween(400))) togetherWith
+(scaleOut(targetScale = 1.12f, tween(350)) + fadeOut(tween(400)))
 },
 label = "top_bar_scale_fade"
 ) { target ->
 Text(
-text = target,
+text = displayText,
 style = textStyle,
 color = textColor,
 maxLines = 1,
@@ -488,3 +507,38 @@ modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
 }
 }
 
+@Composable
+fun TopBarDmShortcutButton(
+    hasUnread: Boolean,
+    showBubble: Boolean = true,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = if (showBubble) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f) else Color.Transparent,
+        border = if (showBubble) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)) else null,
+        modifier = modifier
+    ) {
+        Box(
+            modifier = Modifier.padding(7.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Email,
+                contentDescription = "Mesajlar",
+                tint = if (hasUnread) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+            if (hasUnread) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(7.dp)
+                        .background(Color(0xFFEF4444), CircleShape)
+                )
+            }
+        }
+    }
+}
