@@ -270,6 +270,8 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        FocusSessionState.setRunning(false)
+        if (FocusTimerService.timerStateFlow.value.timerPhase != TimerPhase.RUNNING) {
+            FocusSessionState.setRunning(false)
+        }
     }
 }
