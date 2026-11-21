@@ -1,6 +1,21 @@
 package com.example.sharkmentor.ui.components
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontFamily
+import com.example.sharkmentor.data.topbar.TopBarAnimationType
+import com.example.sharkmentor.data.topbar.TopBarFontOption
+import com.example.sharkmentor.data.topbar.TopBarSettings
+import com.example.sharkmentor.data.topbar.TopBarTextSource
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -245,7 +260,8 @@ object PendingAiPromptBus {
 @Composable
 fun TopBarAiShortcutBox(
     onClick: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+topBarSettings: TopBarSettings = TopBarSettings()
 ) {
     val prompts = remember {
         listOf(
@@ -268,50 +284,207 @@ fun TopBarAiShortcutBox(
         )
     }
 
-    var currentIndex by remember { mutableIntStateOf(0) }
-    var visibleText by remember { mutableStateOf("") }
-    var showCursor by remember { mutableStateOf(true) }
+val activeTexts = remember(
+topBarSettings.textSource,
+topBarSettings.customTexts,
+topBarSettings.aiQuotes,
+prompts
+) {
+when (topBarSettings.textSource) {
+TopBarTextSource.AI_SUGGESTIONS -> prompts
+TopBarTextSource.CUSTOM_TEXTS ->
+topBarSettings.customTexts.map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { prompts }
+TopBarTextSource.AI_QUOTES ->
+topBarSettings.aiQuotes.map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { prompts }
+}
+}
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            val fullText = prompts[currentIndex]
-            showCursor = true
-            for (i in 1..fullText.length) {
-                visibleText = fullText.substring(0, i)
-                delay(48L)
-            }
-            repeat(9) {
-                showCursor = !showCursor
-                delay(500L)
-            }
-            showCursor = true
-            for (i in fullText.length - 1 downTo 0) {
-                visibleText = fullText.substring(0, i)
-                delay(24L)
-            }
-            delay(350L)
-            currentIndex = (currentIndex + 1) % prompts.size
-        }
-    }
+val fontFamily = when (topBarSettings.fontOption) {
+TopBarFontOption.DEFAULT -> null
+TopBarFontOption.SANS_SERIF -> FontFamily.SansSerif
+TopBarFontOption.SERIF -> FontFamily.Serif
+TopBarFontOption.MONOSPACE -> FontFamily.Monospace
+}
 
-    val currentPrompt = prompts[currentIndex]
-    val cursor = if (showCursor) "|" else ""
+val textColor = topBarSettings.customTextColorArgb?.let { Color(it.toInt()) }
+?: MaterialTheme.colorScheme.onSurfaceVariant
 
-    Surface(
-        modifier = modifier.clickable { onClick(currentPrompt) },
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
-        Text(
-            text = "\"$visibleText\"$cursor",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-        )
-    }
+var currentIndex by remember(activeTexts, topBarSettings.textSource) { mutableIntStateOf(0) }
+var visibleText by remember { mutableStateOf("") }
+var showCursor by remember { mutableStateOf(true) }
+val flipRotation = remember { Animatable(0f) }
+
+LaunchedEffect(topBarSettings.animationType, activeTexts) {
+if (activeTexts.isEmpty()) return@LaunchedEffect
+currentIndex = currentIndex.coerceIn(0, activeTexts.lastIndex)
+when (topBarSettings.animationType) {
+TopBarAnimationType.NONE -> {
+visibleText = activeTexts[currentIndex]
+showCursor = false
+}
+TopBarAnimationType.TYPEWRITER -> {
+while (true) {
+val fullText = activeTexts[currentIndex]
+showCursor = true
+for (i in 1..fullText.length) {
+visibleText = fullText.substring(0, i)
+delay(48L)
+}
+repeat(9) {
+showCursor = !showCursor
+delay(500L)
+}
+showCursor = true
+for (i in fullText.length - 1 downTo 0) {
+visibleText = fullText.substring(0, i)
+delay(24L)
+}
+delay(350L)
+currentIndex = (currentIndex + 1) % activeTexts.size
+}
+}
+TopBarAnimationType.FLIP_BOX -> {
+flipRotation.snapTo(0f)
+while (true) {
+delay(4500L)
+flipRotation.animateTo(90f, animationSpec = tween(220))
+currentIndex = (currentIndex + 1) % activeTexts.size
+flipRotation.snapTo(-90f)
+flipRotation.animateTo(0f, animationSpec = tween(220))
+}
+}
+TopBarAnimationType.FADE,
+TopBarAnimationType.SLIDE_VERTICAL,
+TopBarAnimationType.SCALE_FADE -> {
+while (true) {
+delay(4500L)
+currentIndex = (currentIndex + 1) % activeTexts.size
+}
+}
+}
+}
+
+val safeIndex = currentIndex.coerceIn(0, activeTexts.lastIndex)
+val currentText = activeTexts[safeIndex]
+val cursor = if (showCursor) "|" else ""
+val textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = fontFamily)
+val displayText = if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) "\"$currentText\"" else currentText
+
+Surface(
+modifier = modifier
+.let { baseModifier ->
+if (topBarSettings.animationType == TopBarAnimationType.FLIP_BOX) {
+baseModifier.graphicsLayer {
+rotationX = flipRotation.value
+cameraDistance = 12f * density
+}
+} else {
+baseModifier
+}
+}
+.clickable {
+if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) {
+onClick(currentText)
+} else if (activeTexts.isNotEmpty()) {
+currentIndex = (safeIndex + 1) % activeTexts.size
+}
+},
+shape = RoundedCornerShape(12.dp),
+color = MaterialTheme.colorScheme.surfaceVariant,
+contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+) {
+when (topBarSettings.animationType) {
+TopBarAnimationType.NONE -> {
+Text(
+text = displayText,
+style = textStyle,
+color = textColor,
+maxLines = 1,
+overflow = TextOverflow.Ellipsis,
+modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+)
+}
+TopBarAnimationType.TYPEWRITER -> {
+val typewriterText = if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) {
+"\"$visibleText\"$cursor"
+} else {
+"$visibleText$cursor"
+}
+Text(
+text = typewriterText,
+style = textStyle,
+color = textColor,
+maxLines = 1,
+overflow = TextOverflow.Ellipsis,
+modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+)
+}
+TopBarAnimationType.FLIP_BOX -> {
+Text(
+text = displayText,
+style = textStyle,
+color = textColor,
+maxLines = 1,
+overflow = TextOverflow.Ellipsis,
+modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+)
+}
+TopBarAnimationType.FADE -> {
+AnimatedContent(
+targetState = displayText,
+transitionSpec = { fadeIn(tween(400)) togetherWith fadeOut(tween(400)) },
+label = "top_bar_fade"
+) { target ->
+Text(
+text = target,
+style = textStyle,
+color = textColor,
+maxLines = 1,
+overflow = TextOverflow.Ellipsis,
+modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+)
+}
+}
+TopBarAnimationType.SLIDE_VERTICAL -> {
+AnimatedContent(
+targetState = displayText,
+transitionSpec = {
+(slideInVertically(tween(400)) { it } + fadeIn(tween(400))) togetherWith
+(slideOutVertically(tween(400)) { -it } + fadeOut(tween(400)))
+},
+label = "top_bar_slide_vertical"
+) { target ->
+Text(
+text = target,
+style = textStyle,
+color = textColor,
+maxLines = 1,
+overflow = TextOverflow.Ellipsis,
+modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+)
+}
+}
+TopBarAnimationType.SCALE_FADE -> {
+AnimatedContent(
+targetState = displayText,
+transitionSpec = {
+(scaleIn(initialScale = 0.85f, animationSpec = tween(400)) + fadeIn(tween(400))) togetherWith
+(scaleOut(targetScale = 1.1f, animationSpec = tween(400)) + fadeOut(tween(400)))
+},
+label = "top_bar_scale_fade"
+) { target ->
+Text(
+text = target,
+style = textStyle,
+color = textColor,
+maxLines = 1,
+overflow = TextOverflow.Ellipsis,
+modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+)
+}
+}
+}
+}
 }
 
