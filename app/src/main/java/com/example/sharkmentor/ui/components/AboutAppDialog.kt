@@ -57,7 +57,7 @@ fun AboutAppDialog(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "v1.0 • Mark 47",
+                        text = "Mark 53",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -70,7 +70,7 @@ fun AboutAppDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Bilişsel performans takibi, Sokratik yapay zeka rehberliği, FSRS hafıza algoritması ve mutlak odak disipliniyle hedeflerinize ulaşmanız için geliştirildi.",
+                    text = "Odak seansları, yapay zeka destekli çalışma planlaması, akıllı tekrar takibi ve lig topluluğuyla hedeflerine düzenli adımlarla ulaşman için tasarlandı.",
                     style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -91,7 +91,7 @@ fun AboutAppDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "SharkMentor Core Lab • 2026",
+                        text = "SharkMentor Company",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -99,10 +99,13 @@ fun AboutAppDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
+         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(text = "Powered by Emrw", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.primary)
+             TextButton(onClick = onDismiss) {
                 Text("Kapat", fontWeight = FontWeight.Bold)
             }
-        },
+        }}
+        ,
         shape = RoundedCornerShape(20.dp),
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     )
