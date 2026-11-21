@@ -2,7 +2,7 @@ package com.example.sharkmentor.data.topbar
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.example.sharkmentor.BuildConfig
+import com.example.sharkmentor.core.ai.ApiKeyRotator
 import com.example.sharkmentor.core.ai.GeminiAiFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,7 +62,7 @@ object FocusSessionState {
 }
 
 class TopBarPreferences private constructor(context: Context) {
-
+    private val appContext: Context = context.applicationContext
     private val prefs: SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -183,10 +183,8 @@ class TopBarPreferences private constructor(context: Context) {
             return@withContext Result.failure(IllegalArgumentException("Konu boş olamaz."))
         }
 
-        val apiKey = resolveGeminiApiKey()
-        if (apiKey.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("Gemini API anahtarı bulunamadı."))
-        }
+        var apiKey = ApiKeyRotator.getActiveKey(appContext)
+              val maxKeyAttempts = ApiKeyRotator.getKeyCount(appContext).coerceAtLeast(1)  
 
         val prompt = buildString {
             append("\"$cleanTopic\" filmine, dizisine veya kişisine ait en bilinen 10 motivasyon cümlesini ")
@@ -195,29 +193,23 @@ class TopBarPreferences private constructor(context: Context) {
             append("her satırda yalnızca 1 cümle olacak şekilde toplam 10 satır döndür.")
         }
 
-        val models = listOf(
-            GeminiAiFactory.SOLE_GEMINI_MODEL,
-            GeminiAiFactory.CONTROLLED_404_FALLBACK_MODEL
-        ).distinct()
-
+val models = listOf("gemini-3.6-flash", "gemini-3.5-flash-lite")
         var lastError: Throwable? = null
+        var fallbackQuotes: List<String> = emptyList()
         for (model in models) {
-            val withSearch = requestQuotesFromGemini(apiKey, model, prompt, useGoogleSearch = true)
-            if (withSearch.isSuccess) {
-                val quotes = withSearch.getOrThrow()
-                saveQuotesAndActivate(cleanTopic, quotes)
-                return@withContext Result.success(quotes)
-            }
-            lastError = withSearch.exceptionOrNull()
-
-            val withoutSearch = requestQuotesFromGemini(apiKey, model, prompt, useGoogleSearch = false)
-            if (withoutSearch.isSuccess) {
-                val quotes = withoutSearch.getOrThrow()
-                saveQuotesAndActivate(cleanTopic, quotes)
-                return@withContext Result.success(quotes)
-            }
-            lastError = withoutSearch.exceptionOrNull()
-        }
+            for (attempt in 0 until maxKeyAttempts) { var rotated = false
+                for (useSearch in listOf(true, false)) {
+                    val res = requestQuotesFromGemini(apiKey, model, prompt, useGoogleSearch = useSearch)
+                    if (res.isSuccess) {
+                        ApiKeyRotator.reportKeySuccess(apiKey)
+                        val quotes = res.getOrThrow().take(10)
+                        if (quotes.size >= 5) { saveQuotesAndActivate(cleanTopic, quotes); return@withContext Result.success(quotes) }
+                        if (quotes.size > fallbackQuotes.size) fallbackQuotes = quotes
+                        } else {lastError = res.exceptionOrNull(); val msg = lastError?.message.orEmpty()
+                    if (msg.contains("HTTP 401") || msg.contains("HTTP 403") || msg.contains("HTTP 429")) { ApiKeyRotator.reportKeyFailure(apiKey); apiKey = ApiKeyRotator.rotateToNextKey(appContext); rotated = true; break }
+                    } } if (!rotated) break } } if (fallbackQuotes.isNotEmpty()) { saveQuotesAndActivate(cleanTopic, fallbackQuotes); return@withContext Result.success(fallbackQuotes) }
+                        
+                
 
         Result.failure(lastError ?: IllegalStateException("Motivasyon sözleri alınamadı."))
     }
@@ -237,13 +229,7 @@ class TopBarPreferences private constructor(context: Context) {
     }
 
     private fun resolveGeminiApiKey(): String {
-        val single = BuildConfig.GEMINI_API_KEY.trim()
-        if (single.isNotEmpty()) return single
-        return BuildConfig.GEMINI_API_KEYS
-            .split(',', ';', '\n')
-            .map { it.trim() }
-            .firstOrNull { it.isNotEmpty() }
-            .orEmpty()
+        return ApiKeyRotator.getActiveKey(appContext)
     }
 
     private fun requestQuotesFromGemini(
