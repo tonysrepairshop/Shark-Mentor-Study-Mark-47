@@ -328,23 +328,20 @@ object FocusSessionRecorder {
                     if (shouldSyncCloud60Min) {
                         val prevSyncedSec = lastCloudSyncedSeconds.takeIf { it > 0L }
                             ?: sp.getLong(KEY_LAST_CLOUD_SYNCED_SECONDS, 0L)
-                        val syncedOk = syncSessionToFirestoreInternal(
+                        val syncedOk = runCatching { syncSessionToFirestoreInternal(
                             context = appContext,
                             sessionEntity = savedEntity,
                             sessionUuid = uuid,
                             subjectName = subjectName,
                             previouslySyncedSeconds = prevSyncedSec,
                             isFinal = false
-                        )
+                         }.onFailure { Log.w(TAG, "60-min cloud sync failed; 20-min local loop continues", it) }.getOrDefault(false))
                         if (syncedOk) {
                             lastCloudSyncedSeconds = savedEntity.durationSeconds
                             sp.edit()
                                 .putLong(KEY_LAST_CLOUD_SYNC_ELAPSED_MS, lastCloudSyncElapsedMs)
                                 .putLong(KEY_LAST_CLOUD_SYNCED_SECONDS, savedEntity.durationSeconds)
                                 .apply()
-                            SharkMentorDatabase.getDatabase(appContext)
-                                .syncDao()
-                                .markSessionSynced(savedEntity.id, uuid)
                             Log.i(
                                 TAG,
                                 "60-min cloud sync succeeded: uuid=$uuid, durationSec=${savedEntity.durationSeconds}"
@@ -388,7 +385,10 @@ object FocusSessionRecorder {
                     .putInt(KEY_PHONE_LIFT_COUNT, phoneLiftCount)
                     .putLong(KEY_SCREEN_ON_MILLIS, screenOnMillis)
                     .apply()
+                val uuid = activeSessionId ?: sp.getString(KEY_ACTIVE_SESSION_UUID, null) ?: if (elapsedMillis >= MIN_RECORDABLE_DURATION_MS) UUID.randomUUID().toString().also { activeSessionId = it; sp.edit().putString(KEY_ACTIVE_SESSION_UUID, it).apply() } else null
+                if (uuid != null && elapsedMillis >= 1_000L) { runCatching { val rowId = activeRowId.takeIf { it > 0L } ?: sp.getLong(KEY_ACTIVE_ROW_ID, 0L); val saved = upsertSingleSessionRowInternal(context = appContext, sessionUuid = uuid, existingRowId = rowId, modeName = modeName, durationMillis = elapsedMillis, phoneLiftCount = phoneLiftCount, screenOnMillis = screenOnMillis, markSynced = false); activeRowId = saved.id; sp.edit().putLong(KEY_ACTIVE_ROW_ID, saved.id).apply() }.onFailure { Log.e(TAG, "Pause checkpoint Room upsert failed", it) } }
             }
+            
         }
     }
 
@@ -403,10 +403,11 @@ object FocusSessionRecorder {
         modeName: String,
         subjectName: String = "Genel",
         phoneLiftCount: Int = 0,
-        screenOnMillis: Long = 0L
+        screenOnMillis: Long = 0L, onComplete: (() -> Unit)? = null
     ) {
         val appContext = context.applicationContext
         recorderScope.launch {
+            try {
             mutex.withLock {
                 val sp = prefs(appContext)
                 val alreadyFinalized = isFinalized && sp.getBoolean(KEY_IS_FINALIZED, true)
@@ -459,7 +460,7 @@ object FocusSessionRecorder {
                 )
                 evaluateWaterStreakAndRefreshWidgets(appContext)
 
-                val syncedOk = syncSessionToFirestoreInternal(
+                val syncedOk = runCatching { syncSessionToFirestoreInternal(
                     context = appContext,
                     sessionEntity = finalEntity,
                     sessionUuid = uuid,
@@ -467,6 +468,7 @@ object FocusSessionRecorder {
                     previouslySyncedSeconds = prevSyncedSec,
                     isFinal = true
                 )
+                }.onFailure { Log.w(TAG, "Final cloud sync failed", it) }.getOrDefault(false)
 
                 if (syncedOk) {
                     SharkMentorDatabase.getDatabase(appContext)
@@ -475,6 +477,9 @@ object FocusSessionRecorder {
                 } else {
                     SyncWorker.enqueueImmediateSync(appContext)
                 }
+            }
+            } finally {
+                onComplete?.invoke()
             }
         }
     }
