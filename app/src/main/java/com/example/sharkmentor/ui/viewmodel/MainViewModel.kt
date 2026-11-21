@@ -182,14 +182,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val examTitle = if (rawTitle.isBlank()) "YKS" else rawTitle
         var targetMillis = prefs.getLong("target_date_millis", 0L)
         if (targetMillis <= 0L) {
-            // Default to upcoming June 20 YKS exam date if user hasn't customized yet
-            val cal = java.util.Calendar.getInstance()
-            val currentYear = cal.get(java.util.Calendar.YEAR)
-            cal.set(currentYear, java.util.Calendar.JUNE, 20, 10, 15, 0)
-            if (cal.timeInMillis <= System.currentTimeMillis()) {
-                cal.set(currentYear + 1, java.util.Calendar.JUNE, 20, 10, 15, 0)
-            }
-            targetMillis = cal.timeInMillis
+         _uiState.value = _uiState.value.copy(targetCountdownText = "")
+         return
         }
 
         val diffMillis = targetMillis - System.currentTimeMillis()
