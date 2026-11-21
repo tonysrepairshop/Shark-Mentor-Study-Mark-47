@@ -676,7 +676,8 @@ private val ZenMonochromeScheme = darkColorScheme(
     onError = Color.White,
     errorContainer = Color(0xFF3B1212),
     onErrorContainer = Color(0xFFFCA5A5)
-)
+)private val ChristmasDarkScheme = darkColorScheme(background = Color(0xFF0E1713), surface = Color(0xFF15231D), surfaceVariant = Color(0xFF1F322A), primary = Color(0xFFE5B869), onPrimary = Color(0xFF241904), primaryContainer = Color(0xFF1E4635), onPrimaryContainer = Color(0xFFE4F4EC), secondary = Color(0xFFD65A5A), onSecondary = Color(0xFFFFFFFF), secondaryContainer = Color(0xFF472022), onSecondaryContainer = Color(0xFFFCE4E4), tertiary = Color(0xFF6BCB97), onBackground = Color(0xFFF4F7F5), onSurface = Color(0xFFF4F7F5), onSurfaceVariant = Color(0xFFB8C9C0), outlineVariant = Color(0xFF2E473C))
+private val ChristmasLightScheme = lightColorScheme(background = Color(0xFFFAFBF9), surface = Color(0xFFFFFFFF), surfaceVariant = Color(0xFFEBF2EE), primary = Color(0xFF1B5E3E), onPrimary = Color(0xFFFFFFFF), primaryContainer = Color(0xFFD4EADF), onPrimaryContainer = Color(0xFF0C2E1E), secondary = Color(0xFFB33939), onSecondary = Color(0xFFFFFFFF), secondaryContainer = Color(0xFFF9E2E2), onSecondaryContainer = Color(0xFF471212), tertiary = Color(0xFFA67C2E), onBackground = Color(0xFF13221B), onSurface = Color(0xFF13221B), onSurfaceVariant = Color(0xFF465C51), outlineVariant = Color(0xFFC5D6CD))
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -696,6 +697,7 @@ private fun paletteSchemeFor(palette: ThemePalette, isDark: Boolean): ColorSchem
             ThemePalette.SAKURA -> SakuraDarkScheme
             ThemePalette.AUTUMN -> AutumnDarkScheme
 ThemePalette.GALATASARAY -> GalatasarayDarkScheme 
+            ThemePalette.CHRISTMAS -> ChristmasDarkScheme
             ThemePalette.BLUEBERRY -> BlueberryDarkScheme
         }
     } else {
@@ -710,6 +712,7 @@ ThemePalette.GALATASARAY -> GalatasarayDarkScheme
             ThemePalette.AUTUMN -> AutumnLightScheme
 ThemePalette.GALATASARAY -> GalatasarayLightScheme 
             ThemePalette.BLUEBERRY -> BlueberryLightScheme
+            ThemePalette.CHRISTMAS -> ChristmasLightScheme
         }
     }
 }
@@ -727,7 +730,7 @@ fun SharkMentorTheme(
         AppThemeMode.LIGHT -> false
     }
 
-val effectivePalette = if (palette == ThemePalette.GALATASARAY && !SpecialMemberConfig.isEmreBey()) ThemePalette.SOOTY else palette
+val effectivePalette = if (palette == ThemePalette.GALATASARAY && !SpecialMemberConfig.isEmreBey()) ThemePalette.OCEAN else palette
     val effectiveIsDark = isDark || isZenMode
     val finalColors = if (isZenMode) {
         ZenMonochromeScheme
