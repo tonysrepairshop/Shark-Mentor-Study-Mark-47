@@ -418,7 +418,7 @@ class FocusTimerService : Service() {
             lastScreenOnTimestamp = 0L
         }
         if (current.currentMode != TimerMode.BREAK) {
-            saveSessionToRoom(current.currentMode.displayName, current.timeElapsedMillis, current.phoneLiftCount, totalScreenOnMillis)
+            saveSessionToRoom(current.currentMode.displayName, current.timeElapsedMillis, current.phoneLiftCount, totalScreenOnMillis, onComplete = { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() })
         }
         _timerStateFlow.value = TimerState(
             timerPhase                    = TimerPhase.IDLE,
@@ -427,7 +427,10 @@ class FocusTimerService : Service() {
             completedConsecutiveSessions  = current.completedConsecutiveSessions,
         )
         dismissAllNotifications()
-        stopSelf()
+        if (current.currentMode == TimerMode.BREAK) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun handleReset() {
@@ -449,7 +452,7 @@ class FocusTimerService : Service() {
             lastScreenOnTimestamp = 0L
         }
         if (current.currentMode != TimerMode.BREAK) {
-            saveSessionToRoom(current.currentMode.displayName, current.timeElapsedMillis, current.phoneLiftCount, totalScreenOnMillis)
+            saveSessionToRoom(current.currentMode.displayName, current.timeElapsedMillis, current.phoneLiftCount, totalScreenOnMillis, onComplete = { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() })
         }
         val mode = current.currentMode
         _timerStateFlow.value = TimerState(
@@ -465,7 +468,10 @@ class FocusTimerService : Service() {
             completedConsecutiveSessions  = current.completedConsecutiveSessions,
         )
         dismissAllNotifications()
-        stopSelf()
+        if (current.currentMode == TimerMode.BREAK) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun handleConfirmPresence() {
@@ -738,14 +744,15 @@ class FocusTimerService : Service() {
         }
     }
 
-    private fun saveSessionToRoom(modeName: String, durationMillis: Long, phoneLiftCount: Int, screenOnMillis: Long) {
+    private fun saveSessionToRoom(modeName: String, durationMillis: Long, phoneLiftCount: Int, screenOnMillis: Long, onComplete: (() -> Unit)? = null) {
         FocusSessionRecorder.finalizeSession(
             context = applicationContext,
             elapsedMillis = durationMillis,
             modeName = modeName,
             subjectName = activeSubjectName,
             phoneLiftCount = phoneLiftCount,
-            screenOnMillis = screenOnMillis
+            screenOnMillis = screenOnMillis,
+            onComplete = onComplete
         )
     }
 
