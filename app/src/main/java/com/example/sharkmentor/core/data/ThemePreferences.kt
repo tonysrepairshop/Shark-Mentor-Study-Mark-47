@@ -37,8 +37,8 @@ class ThemePreferences private constructor(context: Context) {
     // ── Color palette ─────────────────────────────────────────────────────────
     private val _palette = MutableStateFlow(
         runCatching {
-            ThemePalette.valueOf(prefs.getString(KEY_PALETTE, ThemePalette.SOOTY.name)!!)
-        }.getOrDefault(ThemePalette.SOOTY)
+            ThemePalette.valueOf(prefs.getString(KEY_PALETTE, ThemePalette.OCEAN.name)!!)
+        }.getOrDefault(ThemePalette.OCEAN)
     )
     val palette: StateFlow<ThemePalette> = _palette.asStateFlow()
 
