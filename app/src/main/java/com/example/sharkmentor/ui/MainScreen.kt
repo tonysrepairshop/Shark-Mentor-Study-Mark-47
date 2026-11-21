@@ -84,6 +84,9 @@ import com.example.sharkmentor.ui.components.ControlPanelContent
 import com.example.sharkmentor.data.weather.WeatherRepository
 import com.example.sharkmentor.data.weather.WeatherSettings
 import com.example.sharkmentor.data.weather.WeatherUiState
+import com.example.sharkmentor.data.topbar.FocusSessionState
+import com.example.sharkmentor.data.topbar.TopBarPreferences
+import com.example.sharkmentor.data.topbar.TopBarSettings
 import com.example.sharkmentor.ui.components.PendingAiPromptBus
 import com.example.sharkmentor.ui.components.SpecialMemberConfig
 import com.example.sharkmentor.ui.components.TopBarAiShortcutBox
@@ -193,6 +196,9 @@ var showWeatherDialog by remember { mutableStateOf(false) }
 LaunchedEffect(Unit) {
 weatherRepository.refreshWeather()
 }
+    val topBarPreferences = remember(context) { TopBarPreferences.getInstance(context) }
+    val topBarSettings by topBarPreferences.settings.collectAsState()
+    val isAnyFocusRunning by FocusSessionState.isAnyFocusRunning.collectAsState()
     val errorBankViewModel: ErrorBankViewModel = viewModel()
     val dueQuestionsCount by errorBankViewModel.dueQuestionsCount.collectAsStateWithLifecycle(initialValue = 0)
     val primaryTabRoutes = remember {
@@ -295,7 +301,10 @@ weatherRepository.refreshWeather()
                                     SharkMentorTopBar(
                                         countdown = countdownText,
                                         isCampus = uiState.isCampus,
-weatherState = weatherState,
+                            topBarSettings = topBarSettings,
+                            isAnyFocusRunning = isAnyFocusRunning,
+                            isPaceKeep = isPaceKeep,
+                                        weatherState = weatherState,
 weatherSettings = weatherSettings,
 onWeatherClick = { showWeatherDialog = true },
 onOpenSharkAi = { navController.navigate(Screen.Shark.route) { launchSingleTop = true } },
@@ -559,6 +568,9 @@ onOpenSharkAi = { navController.navigate(Screen.Shark.route) { launchSingleTop =
 @Composable
 private fun SharkMentorTopBar(
     countdown: String,
+    topBarSettings: TopBarSettings,
+    isAnyFocusRunning: Boolean = false,
+    isPaceKeep: Boolean = false,
     isCampus: Boolean,
     weatherState: WeatherUiState,
     weatherSettings: WeatherSettings,
@@ -568,16 +580,19 @@ private fun SharkMentorTopBar(
     onMenuClick: () -> Unit
 ) {
   val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val hideForFocus = topBarSettings.hideDuringFocus && (isAnyFocusRunning || isPaceKeep)
+    val showBubbles = isLandscape && !topBarSettings.hideBubbles && !topBarSettings.hideTopBarMenu && !hideForFocus
+     val showCountdown = countdown.isNotBlank() && !topBarSettings.hideTopBarMenu && !hideForFocus
     TopAppBar(
         expandedHeight = 48.dp,
         title = {
             Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().padding(end = 10.dp)
                 ) {
                     SharkMentorBranding(countdown = countdown, isCampus = isCampus)
-                    if (isLandscape) {
+                    if (showBubbles) {
                         TopBarWeatherPill(
                             weatherState = weatherState,
                             settings = weatherSettings,
@@ -588,14 +603,16 @@ private fun SharkMentorTopBar(
                                 PendingAiPromptBus.pendingPrompt.value = prompt
                                 onOpenSharkAi()
                             },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f).padding(end = 4.dp),
+                            topBarSettings = topBarSettings
                         )
                     }
             }
         },
         actions = {
             // Task 6.2: Restored Target Exam Countdown Widget (YKS remaining days pill)
-            Surface(
+       if (showCountdown) {
+           Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
@@ -621,7 +638,8 @@ private fun SharkMentorTopBar(
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
-            }
+           }
+       }
             IconButton(onClick = onMenuClick, modifier = Modifier.size(36.dp)) {
                 Icon(
                     Icons.Default.Menu,
@@ -652,7 +670,7 @@ private fun SharkMentorBranding(countdown: String, isCampus: Boolean) {
         ) {
             Text(
                 text = "SharkMentor",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleMedium.copy(lineHeight = 17.sp),
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
@@ -661,7 +679,7 @@ private fun SharkMentorBranding(countdown: String, isCampus: Boolean) {
             Text(
                 text = if (SpecialMemberConfig.isEmreBey()) "Emrw" else if (isCampus) "C A M P U S" else "S T U D Y",
                 fontSize = 9.sp,
-                letterSpacing = 3.sp,
+                letterSpacing = 3.sp, lineHeight = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
             )
         }
