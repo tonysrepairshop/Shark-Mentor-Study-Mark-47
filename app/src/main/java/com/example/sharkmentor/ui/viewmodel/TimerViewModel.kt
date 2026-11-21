@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import com.example.sharkmentor.data.topbar.FocusSessionState
 
 /**
  * ViewModel for [com.example.sharkmentor.ui.screens.HomeScreen].
@@ -76,6 +77,7 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
                     SessionManager.setTimerRunning(true)
                 } else if (state.timerPhase == TimerPhase.IDLE) {
                     SessionManager.setTimerRunning(false)
+                        FocusSessionState.setRunning(false)
                     SessionManager.setBreakActive(false)
                 }
 
@@ -121,6 +123,7 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         getApplication<Application>().startForegroundService(intent)
+        FocusSessionState.setRunning(true)
     }
 
     /** Pause the running timer. No-op if not in FOCUSING phase. */
@@ -130,6 +133,7 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
             _timerState.value = currentState.copy(timerPhase = TimerPhase.PAUSED)
         }
         sendCommand(FocusTimerService.ACTION_PAUSE)
+        FocusSessionState.setRunning(false)
     }
 
     /** Resume a paused timer. No-op if not in PAUSED phase. */
@@ -139,6 +143,7 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
             _timerState.value = currentState.copy(timerPhase = TimerPhase.FOCUSING)
         }
         sendCommand(FocusTimerService.ACTION_RESUME)
+        FocusSessionState.setRunning(true)
     }
 
     /** Reset the timer and stop the service; preserves mode and custom durations. */
@@ -151,10 +156,11 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
             pausedAccumulatedMillis = 0L
         )
         sendCommand(FocusTimerService.ACTION_RESET)
+        FocusSessionState.setRunning(false)
     }
 
     /** Stop the timer immediately and dismiss the notification. */
-    fun stopTimer() = sendCommand(FocusTimerService.ACTION_STOP)
+    fun stopTimer() { FocusSessionState.setRunning(false); sendCommand(FocusTimerService.ACTION_STOP) }
 
     /**
      * Confirm that the user is present during a STOPWATCH presence check.
@@ -236,6 +242,7 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
 
         // Notify SessionManager
         SessionManager.setTimerRunning(true)
+        FocusSessionState.setRunning(true)
     }
 
     fun stopOrCancelFocusSession() {
@@ -258,9 +265,11 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
 
         // Notify SessionManager
         SessionManager.setTimerRunning(false)
+        FocusSessionState.setRunning(false)
     }
 
     override fun onCleared() {
         super.onCleared()
+        FocusSessionState.setRunning(false)
     }
 }
