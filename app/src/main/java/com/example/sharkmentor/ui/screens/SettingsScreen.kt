@@ -21,6 +21,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Tune
+import com.example.sharkmentor.data.topbar.TopBarPreferences
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
@@ -80,9 +82,11 @@ fun SettingsScreen(
     onOpenCountdownSettings: () -> Unit = {},
     onAccountDeleted: () -> Unit = {}
 ) {
-    var showWeatherSettings by remember { mutableStateOf(false) }
-    BackHandler(enabled = showWeatherSettings) { showWeatherSettings = false }
+    var activeSubPage by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = activeSubPage != null) { activeSubPage = when (activeSubPage) { "topbar_weather", "topbar_texts" -> "topbar_hub"; "topbar_hub" -> null; else -> null } }
     val context = LocalContext.current
+    val topBarPrefs = remember(context) { TopBarPreferences.getInstance(context) }
+    val topBarSettings by topBarPrefs.settings.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var showTimeDialog by remember { mutableStateOf(false) }
@@ -272,16 +276,16 @@ fun SettingsScreen(
            
                 TopAppBar(
                 expandedHeight = 50.dp,
-                title = { Text(if (showWeatherSettings) "Hava Durumu" else "Ayarlar") },
+              title = { Text(when (activeSubPage) { "topbar_hub" -> "Üst Bar Kontrolleri"; "topbar_weather" -> "Hava Durumu"; "topbar_texts" -> "Üst Bar Yazıları"; else -> "Ayarlar" }) },  
                 navigationIcon = {
-                    IconButton(onClick = { if (showWeatherSettings) showWeatherSettings = false else onBackClick() }) {
+                    IconButton(onClick = { when (activeSubPage) { "topbar_weather", "topbar_texts" -> activeSubPage = "topbar_hub"; "topbar_hub" -> activeSubPage = null; else -> onBackClick() } }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Geri")
                     }
                 }
            )
         }
     ) { padding ->
-               if (!showWeatherSettings)  {
+               when (activeSubPage) { null -> {
                     Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -331,8 +335,8 @@ HorizontalDivider()
 
             HorizontalDivider()
 
-           Text("Hava Durumu", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-           SettingRow(icon = Icons.Default.WbSunny, label = "Hava Durumu Ayarları", onClick = { showWeatherSettings = true })
+           Text("Üst Bar Kontrolleri", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+           SettingRow(icon = Icons.Default.Tune, label = "Üst Bar Kontrolleri", onClick = { activeSubPage = "topbar_hub" })
 
             HorizontalDivider()
 
@@ -344,11 +348,6 @@ HorizontalDivider()
                 onClick = { showTimeDialog = true }
             )
 
-            SettingRow(
-                icon = Icons.Default.CalendarMonth,
-                label = "Hedef Sınav & Geri Sayım",
-                onClick = onOpenCountdownSettings
-            )
 
             HorizontalDivider()
 
@@ -407,9 +406,9 @@ HorizontalDivider()
                 Text("Hesabı Kalıcı Sil", fontWeight = FontWeight.Bold)
             }
         }
-        } else {
+        } "topbar_hub" -> { Box(modifier = Modifier.fillMaxSize().padding(padding)) { TopBarControlHubContent(settings = topBarSettings, onToggleHideBubbles = topBarPrefs::setHideBubbles, onToggleHideTopBarMenu = topBarPrefs::setHideTopBarMenu, onToggleHideDuringFocus = topBarPrefs::setHideDuringFocus, onOpenWeatherSettings = { activeSubPage = "topbar_weather" }, onOpenTextSettings = { activeSubPage = "topbar_texts" }, onOpenCountdownSettings = { onOpenCountdownSettings() }) } } "topbar_weather" -> {
             WeatherSettingsTab(modifier = Modifier.fillMaxSize().padding(padding))
-                }
+                } "topbar_texts" -> { Box(modifier = Modifier.fillMaxSize().padding(padding)) { TopBarTextSettingsContent(prefs = topBarPrefs) } }
     }
 }
 
