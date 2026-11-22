@@ -26,7 +26,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
@@ -91,29 +94,39 @@ fun FirstTimeTutorialOverlay(
     val steps = remember {
         listOf(
             TutorialStep(
-                title = "Kalem ve Silgi Paketleri",
-                description = "Notlar ve PDF araç çubuğunda kalem veya silgi simgesine uzun basarak farklı uçlara ve çizgi/alan silgisine hızlıca geçebilirsin.",
+                title = "Gerçek Koçluk Yolu ve Serbest Takip",
+                description = "Ana ekrandaki üst anahtardan Serbest Takip ile adım adım ilerleyen Gerçek Koçluk Yolu arasında tek dokunuşla geçiş yapabilirsin.",
+                icon = Icons.Default.Route
+            ),
+            TutorialStep(
+                title = "Günlük Hedef, Sapma (-/+) ve Canlı Başlıklar",
+                description = "Günlük süre hedefini belirleyip eksi/artı durumunu canlı izleyebilir; odak başlatırken seçtiğin başlık ve alt detayı ligdeki arkadaşlarınla paylaşabilirsin.",
+                icon = Icons.Default.Flag
+            ),
+            TutorialStep(
+                title = "Kitap Kampları ve Bölünmüş Video Stüdyosu",
+                description = "Kütüphanedeki kitaplarını video kamplarıyla eşleştirip haftalık plana dağıtabilir; videoyu uygulama içinde izlerken alttan AI'ya soru sorup not alabilirsin.",
+                icon = Icons.Default.PlayCircleOutline
+            ),
+            TutorialStep(
+                title = "Kalem, Silgi ve Metin Kutusu",
+                description = "Notlar ve PDF araç çubuğunda kalem veya silgi simgesine uzun basarak uç ve çizgi/alan silgisi seçebilir, çizim üzerine metin kutusu ekleyebilirsin.",
                 icon = Icons.Default.Edit
             ),
             TutorialStep(
                 title = "Kement ile Anında AI Çözüm",
-                description = "Notlarda veya PDF üzerinde kementle bir soruyu çevreleyip doğrudan AI'ya sorabilir, ekran görüntüsü kırpabilir ya da metin kutusu ekleyebilirsin.",
+                description = "Notlarda veya PDF üzerinde kementle bir soruyu çevreleyip doğrudan AI'ya çözdürebilir ya da ekran görüntüsü kırpabilirsin.",
                 icon = Icons.Default.Star
             ),
             TutorialStep(
                 title = "Yüzen Odak Sayacı ve Kısayollar",
-                description = "Not Özellikleri'nden açılan taşınabilir odak sayacıyla çalışırken süreni takip edebilir; harici klavyede Ctrl+F ile arama, Ctrl+S ile anlık kayıt yapabilirsin.",
+                description = "Not Özellikleri'nden açılan taşınabilir odak sayacıyla çalışırken süreni izleyebilir; klavyede Ctrl+F ile arama, Ctrl+S ile kayıt yapabilirsin.",
                 icon = Icons.Default.PlayArrow
             ),
             TutorialStep(
                 title = "Üst Bar, Hızlı DM ve Kişiselleştirme",
-                description = "Üst bar ayarlarından film/karakter motivasyon sözleri çekip animasyon seçebilir, DM simgesinden doğrudan mesajlarına ulaşabilirsin.",
+                description = "Üst bar ayarlarından motivasyon sözleri ve animasyon seçebilir, DM simgesinden mesajlarına, Profil'den hedef sınavına hızla ulaşabilirsin.",
                 icon = Icons.Default.Email
-            ),
-            TutorialStep(
-                title = "Profil ve Tema İncelikleri",
-                description = "Profil ekranında sınıf ve hedef sınavına dokunarak anında düzenleyebilir, Ayarlar'dan yalnızca kalem modu ve uygulama simgesini özelleştirebilirsin.",
-                icon = Icons.Default.Settings
             )
         )
     }

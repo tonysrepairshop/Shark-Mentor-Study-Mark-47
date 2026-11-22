@@ -98,8 +98,9 @@ data class TimerState(
     // ── Mandatory break flag ──────────────────────────────────────────────────
     val isMandatoryBreakRequired     : Boolean = false,
 
-    // ── AFK stats ─────────────────────────────────────────────────────────────
+    // ── AFK stats & Active Subject ────────────────────────────────────────────
     val phoneLiftCount               : Int     = 0,
+    val activeSubject                : String  = "Genel",
 ) {
 
     // ── Legacy boolean helpers (derived from timerPhase) ─────────────────────

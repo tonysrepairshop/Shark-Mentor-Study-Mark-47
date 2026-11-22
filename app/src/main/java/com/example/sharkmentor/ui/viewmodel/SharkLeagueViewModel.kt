@@ -326,7 +326,12 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
         val oldMe = currentState.myEntry ?: return
         val liveWeeklySecs = baseCompletedWeeklySeconds + liveElapsedFocusSeconds(timerState)
         val liveFocusing = isCurrentlyFocusing(timerState)
-        if (oldMe.weeklyFocusSeconds == liveWeeklySecs && oldMe.isStudyingNow == liveFocusing) return
+        val liveActiveSubject = if (liveFocusing) {
+            timerState.activeSubject.takeIf { it.isNotBlank() && it != "Genel" }
+                ?: com.example.sharkmentor.core.coaching.CoachingEngine.livePresence.value.activeSubject.takeIf { it.isNotBlank() }
+                ?: com.example.sharkmentor.core.coaching.CoachingEngine.buildFormattedFocusSubject()
+        } else null
+        if (oldMe.weeklyFocusSeconds == liveWeeklySecs && oldMe.isStudyingNow == liveFocusing && oldMe.activeSubject == liveActiveSubject) return
 
         val effectiveSecs = liveWeeklySecs.coerceAtLeast(0L) + oldMe.cappedBonusSeconds
         val resolvedTier = SharkLeagueRules.resolveEffectiveTier(
@@ -340,7 +345,8 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
             weeklyFocusSeconds = liveWeeklySecs,
             dailyAverageMinutes = ((liveWeeklySecs / 60L) / 7L).toInt(),
             tier = resolvedTier,
-            isStudyingNow = liveFocusing
+            isStudyingNow = liveFocusing,
+            activeSubject = liveActiveSubject
         )
 
         val updatedLeaderboard = SharkLeagueRules.sortLeagueEntries(
@@ -971,8 +977,12 @@ class SharkLeagueViewModel(application: Application) : AndroidViewModel(applicat
                     currentWeekKey = currentWeekKey,
                     lastWeekOutcome = lastWeekOutcome
                 )
+                com.example.sharkmentor.core.coaching.CoachingEngine.flushPendingPresenceIfConnected(appContext)
                 val myActiveSubject = if (liveFocusing) {
-                    studentDoc?.getString("activeSubject")?.takeIf { it.isNotBlank() }
+                    liveTimerState.activeSubject.takeIf { it.isNotBlank() && it != "Genel" }
+                        ?: com.example.sharkmentor.core.coaching.CoachingEngine.livePresence.value.activeSubject.takeIf { it.isNotBlank() }
+                        ?: studentDoc?.getString("activeSubject")?.takeIf { it.isNotBlank() }
+                        ?: com.example.sharkmentor.core.coaching.CoachingEngine.buildFormattedFocusSubject()
                 } else {
                     null
                 }

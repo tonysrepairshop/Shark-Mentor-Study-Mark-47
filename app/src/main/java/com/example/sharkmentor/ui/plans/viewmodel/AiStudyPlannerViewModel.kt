@@ -247,10 +247,16 @@ class AiStudyPlannerViewModel(application: Application) : AndroidViewModel(appli
                     "GÜN $dayIndex ($dayName): ${if (blockedTimes.isEmpty()) "Serbest Gün" else blockedTimes.joinToString(", ")}"
                 }.joinToString("\n")
 
+                val targetCompassPrompt = runCatching {
+                    com.example.sharkmentor.core.coaching.CoachingEngine.buildAiSystemCompassPrompt(getApplication())
+                }.getOrDefault("")
+
                 // 2. System Instruction for Gemini 3.6 Flash
                 val systemPrompt = """
                     Sen SharkMentor'un kıdemli pedagojik planlama motorusun.
-                    GÖREV: Öğrencinin konu yetkinliklerine, hedef tarihine ve önceki hafta verilerine dayanarak 7 günlük (Pazartesi-Pazar) operasyonel çalışma planı hazırla.
+                    GÖREV: Öğrencinin konu yetkinliklerine, hedef üniversite/bölüm/sıralama pusulasına, günlük çalışma hedefi sapmalarına ve önceki hafta verilerine dayanarak 7 günlük (Pazartesi-Pazar) operasyonel çalışma planı hazırla.
+
+                    $targetCompassPrompt
 
                     ÖĞRENCİNİN KİLİTLİ OKUL/DERS SAATLERİ:
                     $scheduleConstraintsPrompt

@@ -87,7 +87,12 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         (state.displayMillis / 60000L).coerceAtLeast(1L).toInt()
                     }
-                    startFocusSession(sessionDurationMinutes, "Genel")
+                    val resolvedSubject = state.activeSubject.takeIf { it.isNotBlank() && it != "Genel" }
+                        ?: runCatching {
+                            com.example.sharkmentor.core.coaching.CoachingEngine.ensureInitialized(getApplication())
+                            com.example.sharkmentor.core.coaching.CoachingEngine.buildFormattedFocusSubject()
+                        }.getOrDefault("Genel")
+                    startFocusSession(sessionDurationMinutes, resolvedSubject)
                 } else if (wasActiveSession && !isActiveSession) {
                     stopOrCancelFocusSession()
                 }
@@ -103,13 +108,19 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
      * even after a fresh service instance is created.
      * MUST be called while the app is foregrounded.
      */
-    fun startTimer(mode: TimerMode, subject: String = "Genel") {
+    fun startTimer(mode: TimerMode, subject: String = "") {
         val state = _timerState.value
+        val resolvedSubject = subject.trim().takeIf { it.isNotBlank() }
+            ?: runCatching {
+                com.example.sharkmentor.core.coaching.CoachingEngine.ensureInitialized(getApplication())
+                com.example.sharkmentor.core.coaching.CoachingEngine.buildFormattedFocusSubject()
+            }.getOrDefault("Genel")
 
         // Optimistic UI update for immediate response
         _timerState.value = state.copy(
             currentMode = mode,
-            timerPhase = TimerPhase.FOCUSING
+            timerPhase = TimerPhase.FOCUSING,
+            activeSubject = resolvedSubject
         )
 
         val intent = Intent(getApplication(), FocusTimerService::class.java).apply {
@@ -117,7 +128,7 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
             putExtra(FocusTimerService.EXTRA_MODE,             mode.name)
             putExtra(FocusTimerService.EXTRA_POMODORO_MINUTES, state.customPomodoroDurationMinutes)
             putExtra(FocusTimerService.EXTRA_BREAK_MINUTES,    state.breakDurationMinutes)
-            putExtra(FocusTimerService.EXTRA_SUBJECT,          subject)
+            putExtra(FocusTimerService.EXTRA_SUBJECT,          resolvedSubject)
         }
         
         if (mode == TimerMode.BLOCK_90) {
@@ -227,22 +238,14 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
     fun startFocusSession(durationMinutes: Int, subject: String) {
         val context = getApplication<Application>()
         val sessionManager = FocusSessionManager(context)
-        sessionManager.startSession(durationMinutes, subject)
+        val cleanSubject = subject.trim().ifBlank { "Genel Odak" }
+        sessionManager.startSession(durationMinutes, cleanSubject)
 
-        // Live Presence Fix
-        val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
-        if (uid != null) {
-            val db = GoogleServicesHelper.getFirebaseFirestore(getApplication())
-            val studentRef = db?.collection("students")?.document(uid)
-            val updates = hashMapOf<String, Any>(
-                "isStudying" to true,
-                "activeSubject" to if (subject.isNotBlank()) subject else "Genel Odak",
-                "sessionStartTime" to FieldValue.serverTimestamp()
-            )
-            studentRef?.set(updates, SetOptions.merge())
-                ?.addOnSuccessListener { Log.d("Presence", "Masa nabzı başlatıldı: $subject") }
-                ?.addOnFailureListener { e -> Log.e("Presence", "Masa hatası", e) }
-        }
+        com.example.sharkmentor.core.coaching.CoachingEngine.updateLivePresenceOfflineFirst(
+            context = context,
+            isStudying = true,
+            subject = cleanSubject
+        )
 
         // Notify SessionManager
         SessionManager.setTimerRunning(true)
@@ -254,18 +257,10 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
         val sessionManager = FocusSessionManager(context)
         sessionManager.endSession()
 
-        // Live Presence Clear
-        val uid = GoogleServicesHelper.getCurrentUser(context = getApplication())?.uid
-        if (uid != null) {
-            val db = GoogleServicesHelper.getFirebaseFirestore(getApplication())
-            val studentRef = db?.collection("students")?.document(uid)
-            val updates = hashMapOf<String, Any>(
-                "isStudying" to false,
-                "activeSubject" to FieldValue.delete(),
-                "sessionStartTime" to FieldValue.delete()
-            )
-            studentRef?.update(updates)
-        }
+        com.example.sharkmentor.core.coaching.CoachingEngine.updateLivePresenceOfflineFirst(
+            context = context,
+            isStudying = false
+        )
 
         // Notify SessionManager
         SessionManager.setTimerRunning(false)

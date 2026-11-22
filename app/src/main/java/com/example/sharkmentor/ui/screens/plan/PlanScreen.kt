@@ -18,13 +18,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharkmentor.core.coaching.BookCampManager
 import com.example.sharkmentor.data.local.entity.PlanEntity
 import com.example.sharkmentor.data.local.entity.PlanFolderEntity
+import com.example.sharkmentor.ui.coaching.CampVideoStudyStudioDialog
 import com.example.sharkmentor.ui.components.FlushTextField
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -586,6 +589,31 @@ fun SpaciousPlanTaskCard(
     onDelete: () -> Unit,
     onToggleCompletion: () -> Unit
 ) {
+    val context = LocalContext.current
+    var showCampStudio by remember { mutableStateOf(false) }
+
+    if (showCampStudio) {
+        val (campTitle, episode) = remember(task) {
+            BookCampManager.resolveCampEpisodeForTask(
+                context = context,
+                subject = task.subject,
+                topic = task.topic,
+                taskTitle = task.title,
+                dayHint = task.dayOfWeek
+            )
+        }
+        CampVideoStudyStudioDialog(
+            campTitle = campTitle,
+            subject = task.subject,
+            initialEpisode = episode,
+            onMarkCompleted = {
+                if (!task.isCompleted) onToggleCompletion()
+                showCampStudio = false
+            },
+            onDismiss = { showCampStudio = false }
+        )
+    }
+
     Surface(
         onClick = onToggleCompletion,
         shape = RoundedCornerShape(14.dp),
@@ -680,6 +708,34 @@ fun SpaciousPlanTaskCard(
             }
 
             Spacer(modifier = Modifier.width(6.dp))
+
+            // Direct Camp Video Study Studio Link Chip next to plan box
+            Surface(
+                onClick = { showCampStudio = true },
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayCircleOutline,
+                        contentDescription = "Kamp Videosu",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Kamp",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(4.dp))
 
             IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
                 Icon(

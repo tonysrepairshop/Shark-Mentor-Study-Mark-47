@@ -1067,10 +1067,18 @@ $MANDATORY_PERSONA_RULES
         overrideMaxTokens: Int? = null,
         onPartialText: (String) -> Unit = {}
     ): Result<AiRouterResult> {
+        val compassHeader = runCatching {
+            com.example.sharkmentor.core.coaching.CoachingEngine.buildAiSystemCompassPrompt(context)
+        }.getOrDefault("")
+        val enrichedInstruction = if (compassHeader.isNotBlank() && !systemInstruction.contains("[ÖĞRENCİ HEDEF PUSULASI")) {
+            "$compassHeader\n\n$systemInstruction"
+        } else {
+            systemInstruction
+        }
         return if (attachmentUri != null) {
             executeGeminiVision(
                 prompt = prompt,
-                systemInstruction = systemInstruction,
+                systemInstruction = enrichedInstruction,
                 attachmentUri = attachmentUri,
                 activeEngine = activeEngine,
                 onPartialText = onPartialText
@@ -1079,7 +1087,7 @@ $MANDATORY_PERSONA_RULES
             executeTextStream(
                 activeEngine = activeEngine,
                 prompt = prompt,
-                systemInstruction = systemInstruction,
+                systemInstruction = enrichedInstruction,
                 chatHistory = chatHistory,
                 onPartialText = onPartialText
             )

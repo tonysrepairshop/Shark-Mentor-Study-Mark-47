@@ -278,31 +278,11 @@ class FocusTimerService : Service() {
 
     private fun updatePresenceInFirestore(isStudying: Boolean, subject: String = activeSubjectName) {
         try {
-            val uid = GoogleServicesHelper.getCurrentUser(context = this)?.uid ?: return
-            val db = GoogleServicesHelper.getFirebaseFirestore(this) ?: return
-
-            val data: Map<String, Any> = if (isStudying) {
-                mapOf(
-                    "isStudying" to true,
-                    "activeSubject" to subject,
-                    "sessionStartTime" to FieldValue.serverTimestamp()
-                )
-            } else {
-                mapOf(
-                    "isStudying" to false,
-                    "activeSubject" to FieldValue.delete(),
-                    "sessionStartTime" to FieldValue.delete()
-                )
-            }
-
-            db.collection("students").document(uid)
-                .set(data, SetOptions.merge())
-                .addOnSuccessListener {
-                    Log.d("SharkSync", "Presence updated: isStudying=$isStudying, subject=$subject")
-                }
-                .addOnFailureListener { e ->
-                    Log.e("SharkSync", "Failed to update presence: ${e.message}", e)
-                }
+            com.example.sharkmentor.core.coaching.CoachingEngine.updateLivePresenceOfflineFirst(
+                context = applicationContext,
+                isStudying = isStudying,
+                subject = subject
+            )
         } catch (e: Throwable) {
             Log.w("FocusTimerService", "Presence update failed: ${e.message}")
         }
@@ -311,7 +291,12 @@ class FocusTimerService : Service() {
     // ── Timer control handlers ───────────────────────────────────────────────
 
     private fun handleStart(mode: TimerMode, intentPomodoro: Int?, intentBreak: Int?, subject: String = "Genel") {
-        activeSubjectName = subject
+        val resolvedSubject = subject.trim().takeIf { it.isNotBlank() && it != "Genel" }
+            ?: runCatching {
+                com.example.sharkmentor.core.coaching.CoachingEngine.ensureInitialized(applicationContext)
+                com.example.sharkmentor.core.coaching.CoachingEngine.buildFormattedFocusSubject()
+            }.getOrDefault(subject.ifBlank { "Genel" })
+        activeSubjectName = resolvedSubject
         if (mode != TimerMode.BREAK) {
             activeSessionUuid = FocusSessionRecorder.startSession(
                 context = applicationContext,
@@ -321,7 +306,7 @@ class FocusTimerService : Service() {
         } else {
             activeSessionUuid = null
         }
-        updatePresenceInFirestore(true, activeSubjectName)
+        updatePresenceInFirestore(mode != TimerMode.BREAK, activeSubjectName)
         val current = _timerStateFlow.value
 
         totalScreenOnMillis = 0L
@@ -354,6 +339,7 @@ class FocusTimerService : Service() {
                 else -> current.completedConsecutiveSessions
             },
             isMandatoryBreakRequired = mode == TimerMode.BREAK && current.isMandatoryBreakRequired,
+            activeSubject            = activeSubjectName,
         )
         startForegroundCompat(buildNotification(_timerStateFlow.value))
         acquireWakeLock()
@@ -622,6 +608,9 @@ class FocusTimerService : Service() {
                 phoneLiftCount = current.phoneLiftCount,
                 screenOnMillis = currentScreenOnMillis()
             )
+            if ((newElapsed / 15_000L) > (current.timeElapsedMillis / 15_000L)) {
+                com.example.sharkmentor.core.coaching.CoachingEngine.flushPendingPresenceIfConnected(applicationContext)
+            }
         }
 
         val newState: TimerState = when (current.timerPhase) {
@@ -832,7 +821,10 @@ class FocusTimerService : Service() {
             subjectName = activeSubjectName,
             phoneLiftCount = phoneLiftCount,
             screenOnMillis = screenOnMillis,
-            onComplete = onComplete
+            onComplete = {
+                com.example.sharkmentor.core.coaching.CoachingEngine.refreshTargetAndLedgerAsync(applicationContext)
+                onComplete?.invoke()
+            }
         )
     }
 

@@ -1884,16 +1884,38 @@ private fun LeaderboardRow(
                             }
                         }
                         if (entry.isStudyingNow) {
+                            val activeTopicText = entry.activeSubject
+                                ?.trim()
+                                ?.takeIf { it.isNotBlank() && !it.equals("Genel", ignoreCase = true) }
+                            val badgeLabel = if (activeTopicText != null) {
+                                "Masada • $activeTopicText"
+                            } else {
+                                "Masada • Odakta"
+                            }
                             Surface(
                                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
                             ) {
-                                Text(
-                                    text = "Odakta",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary)
+                                    )
+                                    Text(
+                                        text = badgeLabel,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     }

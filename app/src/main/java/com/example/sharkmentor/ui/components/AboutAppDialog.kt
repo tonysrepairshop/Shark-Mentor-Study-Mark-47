@@ -57,7 +57,7 @@ fun AboutAppDialog(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Mark 55",
+                        text = "Mark 57",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )

@@ -85,6 +85,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -99,11 +100,20 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.sharkmentor.R
+import com.example.sharkmentor.core.coaching.AppStudyMode
+import com.example.sharkmentor.core.coaching.CoachingEngine
 import com.example.sharkmentor.core.timer.TimerMode
 import com.example.sharkmentor.core.timer.TimerPhase
 import com.example.sharkmentor.core.timer.TimerState
 import com.example.sharkmentor.core.util.SessionManager
 import com.example.sharkmentor.core.util.TimeUtils
+import com.example.sharkmentor.data.local.SharkMentorDatabase
+import com.example.sharkmentor.domain.engine.DailyFocusEngine
+import com.example.sharkmentor.ui.coaching.DailyGoalConfigDialog
+import com.example.sharkmentor.ui.coaching.DailyGoalProgressCard
+import com.example.sharkmentor.ui.coaching.DuolingoCoachingPathView
+import com.example.sharkmentor.ui.coaching.FocusTopicSelectorCard
+import com.example.sharkmentor.ui.coaching.StudyModeHeaderSwitcher
 import com.example.sharkmentor.ui.theme.SharkMentorTheme
 import com.example.sharkmentor.ui.viewmodel.AnalyticsViewModel
 import com.example.sharkmentor.ui.viewmodel.TimerViewModel
@@ -145,10 +155,71 @@ fun HomeScreen(
     viewModel          : TimerViewModel     = viewModel(),
     analyticsViewModel : AnalyticsViewModel = viewModel()
 ) {
+    val context = LocalContext.current
+    LaunchedEffect(context) {
+        CoachingEngine.ensureInitialized(context)
+        CoachingEngine.refreshTargetAndLedgerAsync(context)
+    }
+
     val timerState: TimerState by viewModel.timerState.collectAsStateWithLifecycle()
     val currentPage: Int by viewModel.currentPage.collectAsStateWithLifecycle()
     val analyticsState by analyticsViewModel.uiState.collectAsStateWithLifecycle()
     val dailyScore = analyticsState.dailyScore
+
+    val studyMode by CoachingEngine.studyMode.collectAsStateWithLifecycle()
+    val targetContext by CoachingEngine.targetContext.collectAsStateWithLifecycle()
+    val weekdayGoalMins by CoachingEngine.weekdayGoalMinutes.collectAsStateWithLifecycle()
+    val weekendGoalMins by CoachingEngine.weekendGoalMinutes.collectAsStateWithLifecycle()
+    val useAiGoal by CoachingEngine.useAiRecommendedGoal.collectAsStateWithLifecycle()
+    val customFocusTitles by CoachingEngine.customFocusTitles.collectAsStateWithLifecycle()
+    val selectedFocusTitle by CoachingEngine.selectedFocusTitle.collectAsStateWithLifecycle()
+    val focusSubNote by CoachingEngine.focusSubNote.collectAsStateWithLifecycle()
+    val recentLedger by CoachingEngine.recentLedger.collectAsStateWithLifecycle()
+    val weeklyAdvice by CoachingEngine.weeklyVarianceAdvice.collectAsStateWithLifecycle()
+
+    val todayBounds = remember { DailyFocusEngine.getTodayTimeBounds() }
+    val todayDbMinutesFlow = remember(context, todayBounds) {
+        SharkMentorDatabase.getDatabase(context)
+            .sessionDao()
+            .getTodayTotalFocusMinutes(todayBounds.first, todayBounds.second)
+    }
+    val todayDbMinutes by todayDbMinutesFlow.collectAsStateWithLifecycle(initialValue = 0)
+    val activeRunningSeconds = if (
+        (timerState.timerPhase == TimerPhase.FOCUSING || timerState.timerPhase == TimerPhase.PAUSED) &&
+        timerState.currentMode != TimerMode.BREAK
+    ) {
+        (timerState.timeElapsedMillis / 1000L).coerceAtLeast(0L)
+    } else 0L
+
+    val todayTargetMinutes = remember(targetContext, weekdayGoalMins, weekendGoalMins, useAiGoal) {
+        CoachingEngine.getTodayTargetMinutes(targetContext)
+    }
+    val dailyGoalStatus = remember(todayDbMinutes, activeRunningSeconds, todayTargetMinutes) {
+        CoachingEngine.computeDailyGoalStatus(
+            todayCompletedMinutes = todayDbMinutes ?: 0,
+            activeRunningSeconds = activeRunningSeconds,
+            targetMinutes = todayTargetMinutes
+        )
+    }
+
+    val availableFocusTitles = remember(targetContext.examType, customFocusTitles) {
+        CoachingEngine.availableFocusTitles(targetContext.examType)
+    }
+
+    var showDailyGoalDialog by remember { mutableStateOf(false) }
+    if (showDailyGoalDialog) {
+        DailyGoalConfigDialog(
+            weekdayMinutes = weekdayGoalMins,
+            weekendMinutes = weekendGoalMins,
+            useAiRecommendation = useAiGoal,
+            targetContext = targetContext,
+            onSave = { wd, we, ai ->
+                CoachingEngine.setDailyGoals(context, wd, we, ai)
+                showDailyGoalDialog = false
+            },
+            onDismiss = { showDailyGoalDialog = false }
+        )
+    }
 
     val pagerState = rememberPagerState(pageCount = { TimerMode.entries.size })
 
@@ -165,10 +236,14 @@ fun HomeScreen(
     var showBreakConfirmDialog by remember { mutableStateOf(false) }
     var pendingMode by remember { mutableStateOf<TimerMode?>(null) }
 
+    val formattedActiveSubject = remember(selectedFocusTitle, focusSubNote) {
+        CoachingEngine.buildFormattedFocusSubject(selectedFocusTitle, focusSubNote)
+    }
+
     if (showBreakConfirmDialog && pendingMode != null) {
         BreakConfirmDialog(
             onConfirm = {
-                pendingMode?.let { viewModel.startTimer(it) }
+                pendingMode?.let { viewModel.startTimer(it, formattedActiveSubject) }
                 showBreakConfirmDialog = false
                 pendingMode = null
             },
@@ -185,135 +260,170 @@ fun HomeScreen(
             .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.TopCenter
     ) {
-        Column(
-            modifier = Modifier
-                .widthIn(max = 680.dp)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-        Text(
-            text = stringResource(R.string.home_status_today),
-            color = MaterialTheme.colorScheme.onBackground,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        DailyFocusScoreCard(
-            dailyScore = dailyScore,
-            onRefreshScore = { analyticsViewModel.refreshDailyScore() }
-        )
-
-        val isBreakActive by SessionManager.isBreakActive.collectAsStateWithLifecycle()
-
-        // Mola Modu Banner
-        AnimatedVisibility(
-            visible = isBreakActive,
-            enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
-            exit = fadeOut() + slideOutVertically(targetOffsetY = { -it })
-        ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+        if (studyMode == AppStudyMode.REAL_COACHING) {
+            DuolingoCoachingPathView(
+                timerState = timerState,
+                goalStatus = dailyGoalStatus,
+                useAiGoal = useAiGoal,
+                targetContext = targetContext,
+                weeklyAdvice = weeklyAdvice,
+                recentLedger = recentLedger,
+                onSwitchMode = { CoachingEngine.setStudyMode(context, it) },
+                onEditDailyGoal = { showDailyGoalDialog = true },
+                onStartFocusWithSubject = { mode, subject ->
+                    viewModel.startTimer(mode, subject)
+                },
+                onPauseFocus = viewModel::pauseTimer,
+                onResumeFocus = viewModel::resumeTimer,
+                onStopFocus = viewModel::resetTimer
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 680.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                StudyModeHeaderSwitcher(
+                    currentMode = AppStudyMode.FREE_TRACKING,
+                    onModeChange = { CoachingEngine.setStudyMode(context, it) }
+                )
+
+                DailyFocusScoreCard(
+                    dailyScore = dailyScore,
+                    onRefreshScore = { analyticsViewModel.refreshDailyScore() }
+                )
+
+                DailyGoalProgressCard(
+                    goalStatus = dailyGoalStatus,
+                    useAiGoal = useAiGoal,
+                    onEditGoalClick = { showDailyGoalDialog = true }
+                )
+
+                val isBreakActive by SessionManager.isBreakActive.collectAsStateWithLifecycle()
+
+                // Mola Modu Banner
+                AnimatedVisibility(
+                    visible = isBreakActive,
+                    enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
+                    exit = fadeOut() + slideOutVertically(targetOffsetY = { -it })
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Timer,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.size(22.dp)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Timer,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = "Mola Modu",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                Text(
+                                    text = "Dinlenme süresi devam ediyor",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Break banner while mandatory break is running
+                AnimatedVisibility(
+                    visible = isMandatoryBreak,
+                    enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                    exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+                ) {
+                    MolaActiveBanner(remainingMillis = timerState.displayMillis, modifier = Modifier.fillMaxWidth())
+                }
+
+                ModeIndicatorDots(count = TimerMode.entries.size, currentPage = pagerState.currentPage)
+
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(320.dp),
+                    key = { page -> TimerMode.entries[page].name },
+                ) { page ->
+                    val mode = TimerMode.entries[page]
+                    if (mode == TimerMode.BREAK) {
+                        BreakTimerPage(
+                            timerState = timerState,
+                            onSetBreakDuration = viewModel::setBreakDuration,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        TimerPage(
+                            mode = mode,
+                            timerState = timerState,
+                            onConfirmPresence = viewModel::confirmPresence,
+                            onSetPomodoroDuration = viewModel::setCustomPomodoroDuration,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+
+                val selectedMode = TimerMode.entries[pagerState.currentPage]
+
+                if (selectedMode != TimerMode.BREAK) {
+                    FocusTopicSelectorCard(
+                        availableTitles = availableFocusTitles,
+                        customTitles = customFocusTitles,
+                        selectedTitle = selectedFocusTitle,
+                        subNote = focusSubNote,
+                        onSelectTitle = { CoachingEngine.selectFocusTitle(context, it) },
+                        onSubNoteChange = { CoachingEngine.setFocusSubNote(context, it) },
+                        onAddCustomTitle = { CoachingEngine.addCustomFocusTitle(context, it) },
+                        onRemoveCustomTitle = { CoachingEngine.removeCustomFocusTitle(context, it) }
                     )
-                    Column {
-                        Text(
-                            text = "Mola Modu",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                        Text(
-                            text = "Dinlenme süresi devam ediyor",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
+                }
+
+                TimerControls(
+                    mode = selectedMode,
+                    timerState = timerState,
+                    onStart = { viewModel.startTimer(selectedMode, formattedActiveSubject) },
+                    onPause = viewModel::pauseTimer,
+                    onResume = viewModel::resumeTimer,
+                    onReset = viewModel::resetTimer,
+                    onStartDuringBreak = {
+                        pendingMode = selectedMode
+                        showBreakConfirmDialog = true
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                )
+
+                if (selectedMode == TimerMode.BLOCK_90 || selectedMode == TimerMode.POMODORO) {
+                    ConsecutiveSessionsBadge(count = timerState.completedConsecutiveSessions)
+                } else if (selectedMode == TimerMode.BREAK && timerState.isMandatoryBreakRequired) {
+                    TextButton(
+                        onClick = viewModel::resetConsecutiveSessions,
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+                    ) {
+                        Text(stringResource(R.string.btn_skip_session), fontSize = 12.sp)
                     }
                 }
             }
         }
-
-        // Break banner while mandatory break is running
-        AnimatedVisibility(
-            visible = isMandatoryBreak,
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-        ) {
-            MolaActiveBanner(remainingMillis = timerState.displayMillis, modifier = Modifier.fillMaxWidth())
-        }
-
-        ModeIndicatorDots(count = TimerMode.entries.size, currentPage = pagerState.currentPage)
-
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(320.dp),
-            key = { page -> TimerMode.entries[page].name },
-        ) { page ->
-            val mode = TimerMode.entries[page]
-            if (mode == TimerMode.BREAK) {
-                BreakTimerPage(
-                    timerState = timerState,
-                    onSetBreakDuration = viewModel::setBreakDuration,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                TimerPage(
-                    mode = mode,
-                    timerState = timerState,
-                    onConfirmPresence = viewModel::confirmPresence,
-                    onSetPomodoroDuration = viewModel::setCustomPomodoroDuration,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-        }
-
-        val selectedMode = TimerMode.entries[pagerState.currentPage]
-
-        TimerControls(
-            mode = selectedMode,
-            timerState = timerState,
-            onStart = { viewModel.startTimer(selectedMode) },
-            onPause = viewModel::pauseTimer,
-            onResume = viewModel::resumeTimer,
-            onReset = viewModel::resetTimer,
-            onStartDuringBreak = {
-                pendingMode = selectedMode
-                showBreakConfirmDialog = true
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-        )
-
-        if (selectedMode == TimerMode.BLOCK_90 || selectedMode == TimerMode.POMODORO) {
-            ConsecutiveSessionsBadge(count = timerState.completedConsecutiveSessions)
-        } else if (selectedMode == TimerMode.BREAK && timerState.isMandatoryBreakRequired) {
-            TextButton(
-                onClick = viewModel::resetConsecutiveSessions,
-                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
-            ) {
-                Text(stringResource(R.string.btn_skip_session), fontSize = 12.sp)
-            }
-        }
     }
-}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

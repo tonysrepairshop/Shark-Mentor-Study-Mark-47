@@ -40,11 +40,19 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.sharkmentor.ui.viewmodel.GoalsViewModel
 import com.example.sharkmentor.ui.viewmodel.SubjectFolderUiModel
 import com.example.sharkmentor.ui.components.AddConcreteTargetDialog
+import com.example.sharkmentor.core.coaching.BookCampManager
+import com.example.sharkmentor.core.coaching.CoachingEngine
+import com.example.sharkmentor.ui.coaching.CampVideoStudyStudioDialog
+import com.example.sharkmentor.ui.coaching.ResourceCampConfigDialog
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.AutoGraph
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.ui.text.style.TextOverflow
 
 @Composable
 fun GoalsScreen(
@@ -70,6 +78,10 @@ fun GoalsScreen(
     val isAnalyzingTarget = uiState.isAnalyzingTarget
     var isTargetDialogOpen by remember { mutableStateOf(false) }
     var isTargetExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(target) {
+        CoachingEngine.refreshTargetAndLedgerAsync(context)
+    }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -514,13 +526,53 @@ fun ResourceCard(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    LaunchedEffect(context) {
+        BookCampManager.ensureLoaded(context)
+    }
+    val allBindings by BookCampManager.bindingsByResourceId.collectAsStateWithLifecycle()
+    val campBinding = remember(resource, allBindings) {
+        BookCampManager.resolveCampForResource(context, resource)
+    }
+
     var inputText by remember(resource.completedUnits) { mutableStateOf(resource.completedUnits.toString()) }
     var showEditDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showCampConfigDialog by remember { mutableStateOf(false) }
+    var showCampStudioDialog by remember { mutableStateOf(false) }
 
     val progressFraction = if (resource.totalUnits > 0) {
         (resource.completedUnits.toFloat() / resource.totalUnits.toFloat()).coerceIn(0f, 1f)
     } else 0f
+
+    if (showCampConfigDialog) {
+        ResourceCampConfigDialog(
+            resource = resource,
+            initialBinding = campBinding,
+            onSaved = { },
+            onOpenStudio = {
+                showCampConfigDialog = false
+                showCampStudioDialog = true
+            },
+            onDismiss = { showCampConfigDialog = false }
+        )
+    }
+
+    if (showCampStudioDialog) {
+        val currentEp = campBinding.currentEpisode()
+        CampVideoStudyStudioDialog(
+            campTitle = campBinding.campTitle,
+            subject = resource.subject,
+            initialEpisode = currentEp,
+            allEpisodes = campBinding.episodes.ifEmpty { listOf(currentEp) },
+            onMarkCompleted = {
+                BookCampManager.advanceCampDay(context, resource)
+                onIncrement()
+                showCampStudioDialog = false
+            },
+            onDismiss = { showCampStudioDialog = false }
+        )
+    }
     
     if (showEditDialog) {
         AlertDialog(
@@ -761,6 +813,98 @@ fun ResourceCard(
                             else
                                 MaterialTheme.colorScheme.outline
                         )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // ── Mark 57 Book Video Camp & Daily Planner Bar ──
+            val currentEp = campBinding.currentEpisode()
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${campBinding.campTitle} (${campBinding.instructor})",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${campBinding.currentDay}/${campBinding.totalDays}. Gün • ${currentEp.topicTitle}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Surface(
+                            onClick = { showCampConfigDialog = true },
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Settings,
+                                    contentDescription = "Kamp Ayarla",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Text(
+                                    text = "Kamp",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+
+                        Surface(
+                            onClick = { showCampStudioDialog = true },
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayCircleOutline,
+                                    contentDescription = "Stüdyoda İzle",
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "İzle",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
             }

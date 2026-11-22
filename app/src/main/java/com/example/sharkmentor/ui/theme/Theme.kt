@@ -757,7 +757,7 @@ ThemePalette.GALATASARAY -> GalatasarayLightScheme
 @Composable
 fun SharkMentorTheme(
     themeMode: AppThemeMode = AppThemeMode.SYSTEM,
-    palette: ThemePalette = ThemePalette.SOOTY,
+    palette: ThemePalette = ThemePalette.OCEAN,
     isZenMode: Boolean = false,
     content: @Composable () -> Unit
 ) {
