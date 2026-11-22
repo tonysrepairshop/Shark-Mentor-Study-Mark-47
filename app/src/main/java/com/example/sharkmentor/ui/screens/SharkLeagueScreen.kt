@@ -150,7 +150,7 @@ fun SharkLeagueScreen(
     }
 
     if (activeChatDestination != null) {
-        if (activeChatDestination is LeagueChatDestination.DmInbox || activeChatDestination is LeagueChatDestination.DirectMessage) {
+        if (activeChatDestination is LeagueChatDestination.DmInbox || activeChatDestination is LeagueChatDestination.PeerDm) {
             LaunchedEffect(activeChatDestination) {
                 com.example.sharkmentor.core.notification.SocialNotificationMonitor.clearUnreadDmIndicator()
             }

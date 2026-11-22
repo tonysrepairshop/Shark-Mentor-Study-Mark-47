@@ -602,7 +602,7 @@ object CoachingEngine {
                     val daySessions = recentSessions.filter { it.completedAt in dStart..dEnd }
                     val workedMins = (daySessions.sumOf { it.durationSeconds } / 60L).toInt()
                     val topSubj = daySessions
-                        .groupBy { it.subject.ifBlank { "Genel" } }
+                        .groupBy { it.modeName.ifBlank { "Genel" } }
                         .maxByOrNull { (_, list) -> list.sumOf { it.durationSeconds } }
                         ?.key.orEmpty()
 
