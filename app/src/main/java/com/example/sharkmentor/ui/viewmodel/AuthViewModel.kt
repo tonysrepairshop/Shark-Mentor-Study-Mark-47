@@ -211,10 +211,12 @@ class AuthViewModel : ViewModel() {
                 dbObj.collection("students").document(uid)
                     .set(studentData, SetOptions.merge())
                     .addOnSuccessListener {
+                        com.example.sharkmentor.ui.components.FirstTimeTutorialPrefs.markEligibleForNewUserOrGuest(getApplication())
                         authState = AuthResultState.Success
                         onSuccess()
                     }
                     .addOnFailureListener {
+                        com.example.sharkmentor.ui.components.FirstTimeTutorialPrefs.markEligibleForNewUserOrGuest(getApplication())
                         authState = AuthResultState.Success
                         onSuccess()
                     }

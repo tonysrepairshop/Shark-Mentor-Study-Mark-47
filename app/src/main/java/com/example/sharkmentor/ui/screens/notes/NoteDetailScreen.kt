@@ -53,7 +53,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -98,17 +97,24 @@ import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VerticalAlignTop
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -141,6 +147,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -155,8 +162,15 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -168,11 +182,15 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -184,17 +202,20 @@ import com.example.sharkmentor.core.util.PaperTint
 import com.example.sharkmentor.core.util.PdfBitmapConverter
 import com.example.sharkmentor.core.util.PdfExporter
 import com.example.sharkmentor.data.local.entity.NoteEntity
+import com.example.sharkmentor.ui.components.FloatingFocusTimerOverlay
 import com.example.sharkmentor.ui.components.RichSolutionContent
 import com.example.sharkmentor.ui.components.formatMathAsPlainText
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingCanvasOverlay
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingController
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
+import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTextBoxFormattingPanel
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
+import com.example.sharkmentor.ui.screens.notes.drawing.EraserPackagePickerPanel
 import com.example.sharkmentor.ui.screens.notes.drawing.LassoAiSolveSheet
+import com.example.sharkmentor.ui.screens.notes.drawing.NoteDrawingPreferences
 import com.example.sharkmentor.ui.screens.notes.drawing.PenCustomColorDialog
 import com.example.sharkmentor.ui.screens.notes.drawing.PenLassoActionsPanel
 import com.example.sharkmentor.ui.screens.notes.drawing.PenPackagePickerPanel
-import com.example.sharkmentor.ui.screens.notes.drawing.PenPalmRejectionGlyph
 import com.example.sharkmentor.ui.screens.notes.drawing.PenRedoGlyph
 import com.example.sharkmentor.ui.screens.notes.drawing.PenShapePickerPanel
 import com.example.sharkmentor.ui.screens.notes.drawing.PenStrokeSettingsPanel
@@ -265,12 +286,18 @@ val NoteTextPurple = Color(0xFF8E24AA)
 val NoteHighlightYellow = Color(0xFFFFEB3B)
 
 enum class ActiveColorPanel {
-    NONE, PEN, HIGHLIGHT
+    NONE, PEN, HIGHLIGHT, FONT, FONT_SIZE
 }
 
 enum class ActivePenPanel {
-    NONE, SETTINGS, SHAPES, LASSO, PEN_PACKAGES
+    NONE, SETTINGS, SHAPES, LASSO, PEN_PACKAGES, ERASER_PACKAGES, TEXT_BOX
 }
+
+private data class NoteSearchMatch(
+    val pageIndex: Int,
+    val start: Int,
+    val end: Int
+)
 
 enum class ToolbarDockState {
     BOTTOM, TOP, LEFT, RIGHT, FLOATING
@@ -380,24 +407,31 @@ fun NoteDetailScreen(
                     drawingScope.launch(Dispatchers.IO) {
                         DrawingSerializer.saveNotePageDrawing(context, targetId, pageIdx, updatedStrokes)
                     }
+                },
+                onTextBoxesChanged = { updatedBoxes ->
+                    val targetId = vmNoteId
+                    drawingScope.launch(Dispatchers.IO) {
+                        DrawingSerializer.saveNotePageTextBoxes(context, targetId, pageIdx, updatedBoxes)
+                    }
                 }
             ).also { ctrl ->
                 ctrl.bindPreferencesContext(context)
                 if (template != null) {
                     ctrl.updateLastSelectedPenTool(template.lastSelectedPenTool)
+                    ctrl.updateLastSelectedEraserTool(template.lastSelectedEraserTool, context)
                     ctrl.selectTool(template.activeTool)
                     ctrl.penColor = template.penColor
                     ctrl.strokeWidth = template.strokeWidth
                     ctrl.alpha = template.alpha
                     ctrl.eraserRadius = template.eraserRadius
-                    ctrl.updateStylusOnlyMode(template.stylusOnlyMode)
                     ctrl.pressureSensitivityEnabled = template.pressureSensitivityEnabled
                 }
                 if (vmNoteId.isNotBlank()) {
                     drawingScope.launch(Dispatchers.IO) {
-                        val loaded = DrawingSerializer.loadNotePageDrawing(context, vmNoteId, pageIdx)
+                        val loaded = DrawingSerializer.loadNotePageAnnotations(context, vmNoteId, pageIdx)
                         withContext(Dispatchers.Main) {
-                            ctrl.setInitialStrokes(loaded)
+                            ctrl.setInitialStrokes(loaded.strokes)
+                            ctrl.setInitialTextBoxes(loaded.textBoxes)
                         }
                     }
                 }
@@ -407,27 +441,27 @@ fun NoteDetailScreen(
 
     val drawingController = getOrCreatePageDrawingController(safeActivePageIndex)
 
-    // Keep tool/color/stroke/pressure synchronized across all page controllers
+    // Keep tool/color/stroke/eraser/pressure synchronized across all page controllers
     LaunchedEffect(
         drawingController.activeTool,
         drawingController.lastSelectedPenTool,
+        drawingController.lastSelectedEraserTool,
         drawingController.penColor,
         drawingController.strokeWidth,
         drawingController.alpha,
         drawingController.eraserRadius,
-        drawingController.stylusOnlyMode,
         drawingController.pressureSensitivityEnabled,
         pageDrawingControllers.size
     ) {
         pageDrawingControllers.values.forEach { ctrl ->
             if (ctrl !== drawingController) {
                 ctrl.updateLastSelectedPenTool(drawingController.lastSelectedPenTool)
+                ctrl.updateLastSelectedEraserTool(drawingController.lastSelectedEraserTool, context)
                 ctrl.selectTool(drawingController.activeTool)
                 ctrl.penColor = drawingController.penColor
                 ctrl.strokeWidth = drawingController.strokeWidth
                 ctrl.alpha = drawingController.alpha
                 ctrl.eraserRadius = drawingController.eraserRadius
-                ctrl.updateStylusOnlyMode(drawingController.stylusOnlyMode)
                 ctrl.pressureSensitivityEnabled = drawingController.pressureSensitivityEnabled
             }
         }
@@ -437,10 +471,11 @@ fun NoteDetailScreen(
         if (vmNoteId.isNotBlank()) {
             for (idx in 0 until pageFieldValues.size) {
                 val ctrl = getOrCreatePageDrawingController(idx)
-                val loadedStrokes = withContext(Dispatchers.IO) {
-                    DrawingSerializer.loadNotePageDrawing(context, vmNoteId, idx)
+                val loaded = withContext(Dispatchers.IO) {
+                    DrawingSerializer.loadNotePageAnnotations(context, vmNoteId, idx)
                 }
-                ctrl.setInitialStrokes(loadedStrokes)
+                ctrl.setInitialStrokes(loaded.strokes)
+                ctrl.setInitialTextBoxes(loaded.textBoxes)
             }
         }
     }
@@ -563,6 +598,7 @@ fun NoteDetailScreen(
             if (nextCtrl != null) {
                 val curCtrl = getOrCreatePageDrawingController(i)
                 curCtrl.setInitialStrokes(nextCtrl.strokes.toList())
+                curCtrl.setInitialTextBoxes(nextCtrl.textBoxes.toList())
             }
         }
         pageDrawingControllers.remove(oldTotalCount - 1)
@@ -598,6 +634,75 @@ fun NoteDetailScreen(
 
     var selectedTextColor by remember { mutableStateOf<Color?>(null) }
     var selectedHighlightColor by remember { mutableStateOf<Color?>(null) }
+    var selectedFontSizeSp by remember { mutableFloatStateOf(NoteRichTextHelper.DEFAULT_FONT_SIZE_SP) }
+    var selectedFontOption by remember { mutableStateOf(NoteFontOption.DEFAULT) }
+
+    // Page plane zoom & in-note search state
+    var noteZoomScale by rememberSaveable(activeNoteId) { mutableFloatStateOf(1.0f) }
+    var isSearchBarVisible by remember(activeNoteId) { mutableStateOf(false) }
+    var searchQuery by remember(activeNoteId) { mutableStateOf("") }
+    var currentSearchMatchIndex by remember(activeNoteId) { mutableIntStateOf(0) }
+    val searchFocusRequester = remember { FocusRequester() }
+    var lastTypedGrowthPage by remember { mutableIntStateOf(-1) }
+
+    // Observe NoteDrawingPreferences for Floating Focus Timer menu state
+    LaunchedEffect(context) {
+        NoteDrawingPreferences.ensureLoaded(context)
+    }
+    val showFloatingFocusTimer by NoteDrawingPreferences.showFloatingFocusTimer.collectAsStateWithLifecycle()
+
+    // Real foreground active time spent in this note (persisted via NoteTimeTracker)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isScreenResumed by remember { mutableStateOf(true) }
+    var storedNoteSeconds by remember(vmNoteId) {
+        mutableLongStateOf(if (vmNoteId.isNotBlank()) NoteTimeTracker.getTotalSeconds(context, vmNoteId) else 0L)
+    }
+    var pendingSessionSeconds by remember(vmNoteId) { mutableLongStateOf(0L) }
+
+    LaunchedEffect(vmNoteId) {
+        if (vmNoteId.isNotBlank()) {
+            storedNoteSeconds = NoteTimeTracker.getTotalSeconds(context, vmNoteId)
+            pendingSessionSeconds = 0L
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, vmNoteId) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> isScreenResumed = true
+                Lifecycle.Event.ON_PAUSE -> {
+                    isScreenResumed = false
+                    if (vmNoteId.isNotBlank() && pendingSessionSeconds > 0L) {
+                        storedNoteSeconds = NoteTimeTracker.addSeconds(context, vmNoteId, pendingSessionSeconds)
+                        pendingSessionSeconds = 0L
+                    }
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            if (vmNoteId.isNotBlank() && pendingSessionSeconds > 0L) {
+                NoteTimeTracker.addSeconds(context, vmNoteId, pendingSessionSeconds)
+                pendingSessionSeconds = 0L
+            }
+        }
+    }
+
+    LaunchedEffect(vmNoteId, isScreenResumed) {
+        if (vmNoteId.isBlank() || !isScreenResumed) return@LaunchedEffect
+        while (true) {
+            kotlinx.coroutines.delay(1_000L)
+            pendingSessionSeconds++
+            if (pendingSessionSeconds >= 10L) {
+                storedNoteSeconds = NoteTimeTracker.addSeconds(context, vmNoteId, pendingSessionSeconds)
+                pendingSessionSeconds = 0L
+            }
+        }
+    }
+
+    val totalNoteSpentSeconds = storedNoteSeconds + pendingSessionSeconds
 
     var activeColorPanel by remember { mutableStateOf(ActiveColorPanel.NONE) }
     var showCustomColorDialog by remember { mutableStateOf(false) }
@@ -621,6 +726,10 @@ fun NoteDetailScreen(
     LaunchedEffect(drawingController.hasActiveLasso, drawingController.activeTool) {
         if (drawingController.activeTool == DrawingTool.LASSO && drawingController.hasActiveLasso) {
             activePenPanel = ActivePenPanel.LASSO
+        } else if (drawingController.activeTool == DrawingTool.TEXT_BOX) {
+            activePenPanel = ActivePenPanel.TEXT_BOX
+        } else if (activePenPanel == ActivePenPanel.TEXT_BOX) {
+            activePenPanel = ActivePenPanel.NONE
         }
     }
 
@@ -713,18 +822,37 @@ fun NoteDetailScreen(
         viewModel.onContentChanged(fullContent)
     }
 
-    LaunchedEffect(noteFieldValue.selection, safeActivePageIndex) {
+    // Track last text seen by cursor-sync so typing / pressing Enter in bullet lists NEVER resets user-picked color/font/size
+    var lastCursorSyncText by remember { mutableStateOf("") }
+    var lastCursorSyncPage by remember { mutableIntStateOf(-1) }
+    var styleLockedByUserPick by remember { mutableStateOf(false) }
+
+    LaunchedEffect(noteFieldValue.selection, noteFieldValue.text, safeActivePageIndex) {
+        val textChanged = noteFieldValue.text != lastCursorSyncText || safeActivePageIndex != lastCursorSyncPage
+        lastCursorSyncText = noteFieldValue.text
+        lastCursorSyncPage = safeActivePageIndex
+
         if (noteFieldValue.selection.collapsed) {
             val styles = NoteRichTextHelper.getStylesAtCursor(noteFieldValue)
-            isBoldActive = styles.isBold
-            isItalicActive = styles.isItalic
-            isUnderlineActive = styles.isUnderline
+            // Always keep line-level list indicators in sync
             isBulletActive = styles.isBullet
             isNumberedActive = styles.isNumbered
             isCheckboxActive = styles.isCheckbox
             isCheckboxChecked = styles.isCheckboxChecked
-            selectedTextColor = styles.textColor
-            selectedHighlightColor = styles.highlightColor
+
+            // Only update character-level typing styles when user taps/navigates cursor on UNCHANGED text
+            if (!textChanged && !styleLockedByUserPick) {
+                isBoldActive = styles.isBold
+                isItalicActive = styles.isItalic
+                isUnderlineActive = styles.isUnderline
+                selectedTextColor = styles.textColor
+                selectedHighlightColor = styles.highlightColor
+                if (styles.fontSizeSp != null) selectedFontSizeSp = styles.fontSizeSp
+                if (styles.fontOption != null) selectedFontOption = styles.fontOption
+            } else if (!textChanged) {
+                // Next cursor move after explicit pick unlocks normal inspection
+                styleLockedByUserPick = false
+            }
         }
     }
 
@@ -857,7 +985,10 @@ fun NoteDetailScreen(
         }
     }
 
+    val noteListState = rememberLazyListState()
+
     val onBoldToggled: () -> Unit = {
+        styleLockedByUserPick = true
         if (!noteFieldValue.selection.collapsed) {
             updateActivePageFieldValue(
                 NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.BOLD)
@@ -867,6 +998,7 @@ fun NoteDetailScreen(
     }
 
     val onItalicToggled: () -> Unit = {
+        styleLockedByUserPick = true
         if (!noteFieldValue.selection.collapsed) {
             updateActivePageFieldValue(
                 NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.ITALIC)
@@ -876,6 +1008,7 @@ fun NoteDetailScreen(
     }
 
     val onUnderlineToggled: () -> Unit = {
+        styleLockedByUserPick = true
         if (!noteFieldValue.selection.collapsed) {
             updateActivePageFieldValue(
                 NoteRichTextHelper.toggleStyleOnSelection(noteFieldValue, NoteRichTextHelper.StyleType.UNDERLINE)
@@ -885,6 +1018,7 @@ fun NoteDetailScreen(
     }
 
     val handleColorSelected: (Color) -> Unit = { color ->
+        styleLockedByUserPick = true
         selectedTextColor = color
         if (!noteFieldValue.selection.collapsed) {
             updateActivePageFieldValue(NoteRichTextHelper.applyColorToSelection(noteFieldValue, color))
@@ -893,6 +1027,7 @@ fun NoteDetailScreen(
     }
 
     val handleHighlightSelected: (Color?) -> Unit = { highlightColor ->
+        styleLockedByUserPick = true
         val effectiveHighlight = highlightColor?.copy(alpha = highlightIntensity)
         selectedHighlightColor = effectiveHighlight
         if (!noteFieldValue.selection.collapsed) {
@@ -901,6 +1036,7 @@ fun NoteDetailScreen(
     }
 
     val handleHighlightIntensityChanged: (Float) -> Unit = { newIntensity ->
+        styleLockedByUserPick = true
         highlightIntensity = newIntensity
         if (selectedHighlightColor != null) {
             val updated = selectedHighlightColor!!.copy(alpha = newIntensity)
@@ -908,6 +1044,23 @@ fun NoteDetailScreen(
             if (!noteFieldValue.selection.collapsed) {
                 updateActivePageFieldValue(NoteRichTextHelper.applyHighlightToSelection(noteFieldValue, updated))
             }
+        }
+    }
+
+    val handleFontSizeSelected: (Float) -> Unit = { sizeSp ->
+        styleLockedByUserPick = true
+        val clamped = sizeSp.coerceIn(NoteRichTextHelper.MIN_FONT_SIZE_SP, NoteRichTextHelper.MAX_FONT_SIZE_SP)
+        selectedFontSizeSp = clamped
+        if (!noteFieldValue.selection.collapsed) {
+            updateActivePageFieldValue(NoteRichTextHelper.applyFontSizeToSelection(noteFieldValue, clamped))
+        }
+    }
+
+    val handleFontOptionSelected: (NoteFontOption) -> Unit = { fontOpt ->
+        styleLockedByUserPick = true
+        selectedFontOption = fontOpt
+        if (!noteFieldValue.selection.collapsed) {
+            updateActivePageFieldValue(NoteRichTextHelper.applyFontFamilyToSelection(noteFieldValue, fontOpt))
         }
     }
 
@@ -936,11 +1089,73 @@ fun NoteDetailScreen(
         isNumberedActive = false
     }
 
+    // In-note search matches across all pages (case-insensitive)
+    val searchMatches = remember(searchQuery, pageFieldValues.size, pageChangeTick) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) {
+            emptyList()
+        } else {
+            val out = mutableListOf<NoteSearchMatch>()
+            val lowerQ = q.lowercase(Locale.getDefault())
+            pageFieldValues.forEachIndexed { pageIdx, tfv ->
+                val lowerText = tfv.text.lowercase(Locale.getDefault())
+                var from = 0
+                while (from <= lowerText.length - lowerQ.length) {
+                    val found = lowerText.indexOf(lowerQ, from)
+                    if (found == -1) break
+                    out.add(NoteSearchMatch(pageIdx, found, found + q.length))
+                    from = found + lowerQ.length.coerceAtLeast(1)
+                }
+            }
+            out
+        }
+    }
+
+    fun jumpToSearchMatch(matchIndex: Int) {
+        if (searchMatches.isEmpty()) return
+        val safeIdx = ((matchIndex % searchMatches.size) + searchMatches.size) % searchMatches.size
+        currentSearchMatchIndex = safeIdx
+        val match = searchMatches[safeIdx]
+        isNavigationOverviewMode = false
+        activePageIndex = match.pageIndex
+        if (match.pageIndex in pageFieldValues.indices) {
+            val currentTfv = pageFieldValues[match.pageIndex]
+            val start = match.start.coerceIn(0, currentTfv.text.length)
+            val end = match.end.coerceIn(start, currentTfv.text.length)
+            pageFieldValues[match.pageIndex] = currentTfv.copy(selection = TextRange(start, end))
+        }
+        val pageOffset = 1 +
+            (if (localPdfFilePath != null) 1 else 0) +
+            (if (pdfPagePaths.isNotEmpty() || pdfPreviewBitmap != null) 1 else 0)
+        drawingScope.launch {
+            runCatching {
+                noteListState.animateScrollToItem(pageOffset + match.pageIndex)
+            }
+        }
+    }
+
+    LaunchedEffect(searchQuery) {
+        currentSearchMatchIndex = 0
+        if (searchQuery.isNotBlank() && searchMatches.isNotEmpty()) {
+            jumpToSearchMatch(0)
+        }
+    }
+
+    LaunchedEffect(isSearchBarVisible) {
+        if (isSearchBarVisible) {
+            runCatching { searchFocusRequester.requestFocus() }
+        }
+    }
+
     val saveCurrentNote: () -> Unit = {
+        if (vmNoteId.isNotBlank() && pendingSessionSeconds > 0L) {
+            storedNoteSeconds = NoteTimeTracker.addSeconds(context, vmNoteId, pendingSessionSeconds)
+            pendingSessionSeconds = 0L
+        }
         val taggedText = buildJoinedTaggedText()
         val fullContent = composeContentWithPdfPageTags(taggedText, pdfPagePaths, preservedPdfFileTag)
-        val anyStrokes = pageDrawingControllers.values.any { it.strokes.isNotEmpty() }
-        val effectiveTitle = if (vmTitle.isBlank() && fullContent.isBlank() && anyStrokes) {
+        val anyAnnotations = pageDrawingControllers.values.any { it.hasAnyAnnotations }
+        val effectiveTitle = if (vmTitle.isBlank() && fullContent.isBlank() && anyAnnotations) {
             "Çizimli Not"
         } else {
             vmTitle
@@ -956,11 +1171,18 @@ fun NoteDetailScreen(
                 pageIndex = idx,
                 strokes = ctrl.strokes
             )
+            drawingScope.launch(Dispatchers.IO) {
+                DrawingSerializer.saveNotePageTextBoxes(context, vmNoteId, idx, ctrl.textBoxes)
+            }
         }
     }
 
     BackHandler {
         when {
+            isSearchBarVisible -> {
+                isSearchBarVisible = false
+                searchQuery = ""
+            }
             isNavigationOverviewMode -> {
                 isNavigationOverviewMode = false
             }
@@ -986,6 +1208,30 @@ fun NoteDetailScreen(
             .fillMaxSize()
             .background(bgColor)
             .padding(bottom = effectiveBottomPadding)
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when {
+                        keyEvent.isCtrlPressed && keyEvent.key == Key.S -> {
+                            saveCurrentNote()
+                            Toast.makeText(context, "Not kaydedildi", Toast.LENGTH_SHORT).show()
+                            true
+                        }
+                        keyEvent.isCtrlPressed && keyEvent.key == Key.F -> {
+                            isNavigationOverviewMode = false
+                            isSearchBarVisible = true
+                            true
+                        }
+                        keyEvent.key == Key.Escape && isSearchBarVisible -> {
+                            isSearchBarVisible = false
+                            searchQuery = ""
+                            true
+                        }
+                        else -> false
+                    }
+                } else {
+                    false
+                }
+            }
     ) {
         TopAppBar(
             expandedHeight = 50.dp,
@@ -1087,6 +1333,23 @@ fun NoteDetailScreen(
                         onDismissRequest = { showMoreMenu = false }
                     ) {
                         DropdownMenuItem(
+                            text = { Text("Not İçinde Ara") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = null,
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                isNavigationOverviewMode = false
+                                isSearchBarVisible = true
+                            }
+                        )
+
+                        DropdownMenuItem(
                             text = { Text("Notu Kaydet") },
                             leadingIcon = {
                                 Icon(
@@ -1151,6 +1414,60 @@ fun NoteDetailScreen(
                                 showMoreMenu = false
                                 keyboardController?.hide()
                                 isNavigationOverviewMode = !isNavigationOverviewMode
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (showFloatingFocusTimer) "Odak Sayacını Gizle" else "Odak Sayacını Göster"
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Timer,
+                                    contentDescription = null,
+                                    tint = if (showFloatingFocusTimer) primaryColor else onSurfaceColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                NoteDrawingPreferences.setShowFloatingFocusTimer(context, !showFloatingFocusTimer)
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Yakınlaştır (%${(noteZoomScale * 100).roundToInt()})") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.ZoomIn,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                noteZoomScale = (noteZoomScale + 0.15f).coerceAtMost(2.0f)
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text(if (noteZoomScale > 0.78f) "Uzaklaştır" else "Yakınlaştırmayı Sıfırla") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.ZoomOut,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                noteZoomScale = if (noteZoomScale > 0.78f) {
+                                    (noteZoomScale - 0.15f).coerceAtLeast(0.75f)
+                                } else {
+                                    1.0f
+                                }
                             }
                         )
 
@@ -1302,6 +1619,115 @@ fun NoteDetailScreen(
                 actionIconContentColor = onSurfaceColor
             )
         )
+
+        // In-note Search Bar (opened via 3-dot menu or Ctrl+F)
+        AnimatedVisibility(
+            visible = isSearchBarVisible,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Surface(
+                color = surfaceColor,
+                tonalElevation = 4.dp,
+                shadowElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        tint = primaryColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            color = onSurfaceColor,
+                            fontSize = 14.sp
+                        ),
+                        cursorBrush = SolidColor(primaryColor),
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(onSurfaceColor.copy(alpha = 0.06f))
+                            .padding(horizontal = 10.dp, vertical = 7.dp)
+                            .focusRequester(searchFocusRequester),
+                        decorationBox = { inner ->
+                            Box {
+                                if (searchQuery.isEmpty()) {
+                                    Text(
+                                        text = "Not içinde ara...",
+                                        color = textMutedColor,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                                inner()
+                            }
+                        }
+                    )
+                    Text(
+                        text = if (searchMatches.isEmpty()) {
+                            "0/0"
+                        } else {
+                            "${(currentSearchMatchIndex % searchMatches.size) + 1}/${searchMatches.size}"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (searchMatches.isEmpty() && searchQuery.isNotBlank()) {
+                            colorScheme.error
+                        } else {
+                            primaryColor
+                        }
+                    )
+                    IconButton(
+                        onClick = { jumpToSearchMatch(currentSearchMatchIndex - 1) },
+                        enabled = searchMatches.isNotEmpty(),
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowUp,
+                            contentDescription = "Önceki eşleşme",
+                            tint = if (searchMatches.isNotEmpty()) onSurfaceColor else onSurfaceColor.copy(alpha = 0.3f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = { jumpToSearchMatch(currentSearchMatchIndex + 1) },
+                        enabled = searchMatches.isNotEmpty(),
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Sonraki eşleşme",
+                            tint = if (searchMatches.isNotEmpty()) onSurfaceColor else onSurfaceColor.copy(alpha = 0.3f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            isSearchBarVisible = false
+                            searchQuery = ""
+                        },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Aramayı Kapat",
+                            tint = onSurfaceColor.copy(alpha = 0.7f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        }
 
         // Movable Toolbar & Editor Area
         BoxWithConstraints(
@@ -1495,8 +1921,6 @@ fun NoteDetailScreen(
                     }
                 }
             }
-
-            val noteListState = rememberLazyListState()
 
             // Main Editor Area Background
             Box(
@@ -1727,13 +2151,14 @@ fun NoteDetailScreen(
                                             maxLines = 7,
                                             overflow = TextOverflow.Ellipsis
                                         )
-                                        if (strokeCount > 0) {
+                                        val annotationCount = strokeCount + pageCtrl.textBoxes.size
+                                        if (annotationCount > 0) {
                                             Surface(
                                                 shape = RoundedCornerShape(6.dp),
                                                 color = effectivePaperAccent.copy(alpha = 0.12f)
                                             ) {
                                                 Text(
-                                                    text = "$strokeCount çizim",
+                                                    text = "$annotationCount öğe",
                                                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                                                     color = effectivePaperAccent,
                                                     fontWeight = FontWeight.SemiBold,
@@ -1746,7 +2171,7 @@ fun NoteDetailScreen(
                                     if (pageFieldValues.size > 1) {
                                         IconButton(
                                             onClick = {
-                                                val hasContent = pageTfv.text.isNotBlank() || strokeCount > 0
+                                                val hasContent = pageTfv.text.isNotBlank() || pageCtrl.hasAnyAnnotations
                                                 if (hasContent) {
                                                     pendingDeletePageIndex = pageIndex
                                                 } else {
@@ -1855,7 +2280,13 @@ fun NoteDetailScreen(
             } else {
                 LazyColumn(
                     state = noteListState,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = noteZoomScale
+                            scaleY = noteZoomScale
+                            transformOrigin = TransformOrigin(0.5f, 0f)
+                        },
                     userScrollEnabled = !drawingController.isDrawingActive,
                     contentPadding = editorContentPadding
                 ) {
@@ -1888,9 +2319,9 @@ fun NoteDetailScreen(
                                 }
                             )
 
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
                             HorizontalDivider(color = noteTextColor.copy(alpha = 0.12f))
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(2.dp))
                         }
                     }
 
@@ -2147,6 +2578,47 @@ fun NoteDetailScreen(
                             color = noteTextColor
                         )
                         val minBodyHeight = (editorViewportHeightDp - 110.dp).coerceAtLeast(420.dp)
+                        val pageBodyCapacityPx = with(density) { (minBodyHeight - 48.dp).toPx() }
+                        val pageMatches = remember(searchMatches, pageIndex) {
+                            searchMatches.filter { it.pageIndex == pageIndex }
+                        }
+                        val activeMatchOnPage = remember(searchMatches, currentSearchMatchIndex, pageIndex) {
+                            searchMatches.getOrNull(currentSearchMatchIndex)?.takeIf { it.pageIndex == pageIndex }
+                        }
+                        val searchHighlightTransformation = remember(isSearchBarVisible, searchQuery, pageMatches, activeMatchOnPage) {
+                            if (!isSearchBarVisible || searchQuery.isBlank() || pageMatches.isEmpty()) {
+                                androidx.compose.ui.text.input.VisualTransformation.None
+                            } else {
+                                androidx.compose.ui.text.input.VisualTransformation { original ->
+                                    val spans = original.spanStyles.toMutableList()
+                                    val len = original.text.length
+                                    pageMatches.forEach { m ->
+                                        val s = m.start.coerceIn(0, len)
+                                        val e = m.end.coerceIn(s, len)
+                                        if (e > s) {
+                                            val isCurrent = activeMatchOnPage == m
+                                            spans.add(
+                                                AnnotatedString.Range(
+                                                    SpanStyle(
+                                                        background = if (isCurrent) {
+                                                            Color(0xFFFF9800).copy(alpha = 0.72f)
+                                                        } else {
+                                                            Color(0xFFFFD54F).copy(alpha = 0.45f)
+                                                        }
+                                                    ),
+                                                    s,
+                                                    e
+                                                )
+                                            )
+                                        }
+                                    }
+                                    androidx.compose.ui.text.input.TransformedText(
+                                        AnnotatedString(original.text, spans),
+                                        androidx.compose.ui.text.input.OffsetMapping.Identity
+                                    )
+                                }
+                            }
+                        }
 
                         Column(
                             modifier = Modifier.fillMaxWidth()
@@ -2154,64 +2626,39 @@ fun NoteDetailScreen(
                             if (pageIndex > 0) {
                                 HorizontalDivider(
                                     color = noteTextColor.copy(alpha = 0.14f),
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                                 )
                             }
 
-                            if ((isPageActive && isCheckboxActive) || pageFieldValues.size > 1) {
+                            if (isPageActive && isCheckboxActive) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(horizontal = 12.dp, vertical = 2.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    horizontalArrangement = Arrangement.Start,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    if (isPageActive && isCheckboxActive) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = effectivePaperAccent.copy(alpha = 0.12f),
-                                            modifier = Modifier.clickable { handleCheckboxToggled() }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                                                    contentDescription = "Kutucuğu Değiştir",
-                                                    tint = effectivePaperAccent,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                                Text(
-                                                    text = if (isCheckboxChecked) "Tamamlandı" else "İşaretle",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = effectivePaperAccent
-                                                )
-                                            }
-                                        }
-                                    } else {
-                                        Spacer(modifier = Modifier.width(1.dp))
-                                    }
-
-                                    if (pageFieldValues.size > 1) {
-                                        IconButton(
-                                            onClick = {
-                                                val hasContent = pageTfv.text.isNotBlank() || pageCtrl.strokes.isNotEmpty()
-                                                if (hasContent) {
-                                                    pendingDeletePageIndex = pageIndex
-                                                } else {
-                                                    performDeleteNotePage(pageIndex)
-                                                }
-                                            },
-                                            modifier = Modifier.size(26.dp)
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = effectivePaperAccent.copy(alpha = 0.12f),
+                                        modifier = Modifier.clickable { handleCheckboxToggled() }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.Delete,
-                                                contentDescription = "Sayfayı Sil",
-                                                tint = noteMutedTextColor.copy(alpha = 0.75f),
-                                                modifier = Modifier.size(16.dp)
+                                                imageVector = if (isCheckboxChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                                contentDescription = "Kutucuğu Değiştir",
+                                                tint = effectivePaperAccent,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = if (isCheckboxChecked) "Tamamlandı" else "İşaretle",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = effectivePaperAccent
                                             )
                                         }
                                     }
@@ -2310,7 +2757,18 @@ fun NoteDetailScreen(
                                         if (activePageIndex != pageIndex) {
                                             activePageIndex = pageIndex
                                         }
-                                        val enterHandled = NoteRichTextHelper.handleEnterOnListItem(pageTfv, updatedValue)
+                                        val grew = updatedValue.text.length > pageTfv.text.length
+                                        val enterHandled = NoteRichTextHelper.handleEnterOnListItem(
+                                            oldValue = pageTfv,
+                                            newValue = updatedValue,
+                                            isBoldActive = isBoldActive,
+                                            isItalicActive = isItalicActive,
+                                            isUnderlineActive = isUnderlineActive,
+                                            activeTextColor = selectedTextColor,
+                                            activeHighlightColor = selectedHighlightColor,
+                                            activeFontSizeSp = selectedFontSizeSp,
+                                            activeFontOption = selectedFontOption
+                                        )
                                         val nextTfv = if (enterHandled != null) {
                                             enterHandled
                                         } else {
@@ -2321,17 +2779,61 @@ fun NoteDetailScreen(
                                                 isItalicActive = isItalicActive,
                                                 isUnderlineActive = isUnderlineActive,
                                                 activeTextColor = selectedTextColor,
-                                                activeHighlightColor = selectedHighlightColor
+                                                activeHighlightColor = selectedHighlightColor,
+                                                activeFontSizeSp = selectedFontSizeSp,
+                                                activeFontOption = selectedFontOption
                                             )
                                         }
                                         if (pageIndex in pageFieldValues.indices) {
                                             pageFieldValues[pageIndex] = nextTfv
                                             pageChangeTick++
+                                            if (grew) {
+                                                lastTypedGrowthPage = pageIndex
+                                            }
                                         }
                                     },
-                                    onTextLayout = {
+                                    visualTransformation = searchHighlightTransformation,
+                                    onTextLayout = { layout ->
                                         if (isPageActive) {
-                                            textLayoutResult = it
+                                            textLayoutResult = layout
+                                        }
+                                        // Auto-pagination 1 line before reaching bottom of page
+                                        if (isNoteLoaded && isPageActive && lastTypedGrowthPage == pageIndex && layout.lineCount >= 2) {
+                                            val lastLineIdx = layout.lineCount - 1
+                                            val lineH = (layout.getLineBottom(lastLineIdx) - layout.getLineTop(lastLineIdx))
+                                                .coerceAtLeast(with(density) { 20.dp.toPx() })
+                                            val triggerBottomPx = (pageBodyCapacityPx - lineH).coerceAtLeast(lineH * 6f)
+                                            val cursorPos = pageTfv.selection.end.coerceIn(0, pageTfv.text.length)
+                                            val cursorLine = layout.getLineForOffset(cursorPos)
+                                            if (layout.getLineBottom(lastLineIdx) >= triggerBottomPx && cursorLine >= lastLineIdx) {
+                                                lastTypedGrowthPage = -1
+                                                val nextPageIdx = pageIndex + 1
+                                                if (nextPageIdx >= pageFieldValues.size) {
+                                                    pageFieldValues.add(
+                                                        TextFieldValue(
+                                                            annotatedString = AnnotatedString(""),
+                                                            selection = TextRange(0)
+                                                        )
+                                                    )
+                                                    getOrCreatePageDrawingController(nextPageIdx)
+                                                }
+                                                activePageIndex = nextPageIdx
+                                                pageChangeTick++
+                                                val pageStartOffset = 1 +
+                                                    (if (localPdfFilePath != null) 1 else 0) +
+                                                    (if (pdfPagePaths.isNotEmpty() || pdfPreviewBitmap != null) 1 else 0)
+                                                drawingScope.launch {
+                                                    kotlinx.coroutines.delay(45L)
+                                                    runCatching {
+                                                        noteListState.animateScrollToItem(pageStartOffset + nextPageIdx)
+                                                    }
+                                                    if (!drawingController.isDrawingActive) {
+                                                        runCatching {
+                                                            getOrCreatePageFocusRequester(nextPageIdx).requestFocus()
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     },
                                     textStyle = bodyTextStyle,
@@ -2339,7 +2841,7 @@ fun NoteDetailScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .defaultMinSize(minHeight = minBodyHeight)
-                                        .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 42.dp)
+                                        .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 40.dp)
                                         .focusRequester(pageFocusRequester)
                                         .onFocusChanged { focusState ->
                                             if (focusState.isFocused && activePageIndex != pageIndex) {
@@ -2368,6 +2870,7 @@ fun NoteDetailScreen(
                                 DrawingCanvasOverlay(
                                     controller = pageCtrl,
                                     modifier = Modifier.matchParentSize(),
+                                    defaultTextBoxColor = noteTextColor,
                                     onTwoFingerScroll = { dy, _ -> noteListState.dispatchRawDelta(-dy) },
                                     onLassoAskAi = { cropBmp ->
                                         lassoAiCropBitmap?.let { if (!it.isRecycled) runCatching { it.recycle() } }
@@ -2656,6 +3159,8 @@ fun NoteDetailScreen(
                     onHighlightIntensityChanged = handleHighlightIntensityChanged,
                     selectedColor = selectedTextColor,
                     selectedHighlightColor = selectedHighlightColor,
+                    selectedFontSizeSp = selectedFontSizeSp,
+                    selectedFontOption = selectedFontOption,
                     isBoldActive = isBoldActive,
                     isItalicActive = isItalicActive,
                     isUnderlineActive = isUnderlineActive,
@@ -2691,6 +3196,20 @@ fun NoteDetailScreen(
                             }
                         }
                     },
+                    onOpenEraserPackages = {
+                        keyboardController?.hide()
+                        activeColorPanel = ActiveColorPanel.NONE
+                        if (!drawingController.isDrawingActive || !drawingController.activeTool.isEraserTool) {
+                            drawingController.selectActiveOrLastEraser()
+                            activePenPanel = ActivePenPanel.ERASER_PACKAGES
+                        } else {
+                            activePenPanel = if (activePenPanel == ActivePenPanel.ERASER_PACKAGES) {
+                                ActivePenPanel.NONE
+                            } else {
+                                ActivePenPanel.ERASER_PACKAGES
+                            }
+                        }
+                    },
                     onToggleColorPanel = { panel ->
                         activeColorPanel = if (panel == ActiveColorPanel.NONE || activeColorPanel == panel) {
                             ActiveColorPanel.NONE
@@ -2707,6 +3226,8 @@ fun NoteDetailScreen(
                     },
                     onColorSelected = handleColorSelected,
                     onHighlightSelected = handleHighlightSelected,
+                    onFontSizeSelected = handleFontSizeSelected,
+                    onFontOptionSelected = handleFontOptionSelected,
                     onOpenCustomColorPicker = { isHighlight ->
                         customColorIsHighlight = isHighlight
                         showCustomColorDialog = true
@@ -2741,6 +3262,8 @@ fun NoteDetailScreen(
                                     activeColorPanel = activeColorPanel,
                                     selectedColor = selectedTextColor,
                                     selectedHighlightColor = selectedHighlightColor,
+                                    selectedFontSizeSp = selectedFontSizeSp,
+                                    selectedFontOption = selectedFontOption,
                                     highlightIntensity = highlightIntensity,
                                     onHighlightIntensityChanged = handleHighlightIntensityChanged,
                                     customColors = userCustomColors,
@@ -2749,6 +3272,8 @@ fun NoteDetailScreen(
                                     },
                                     onColorSelected = handleColorSelected,
                                     onHighlightSelected = handleHighlightSelected,
+                                    onFontSizeSelected = handleFontSizeSelected,
+                                    onFontOptionSelected = handleFontOptionSelected,
                                     onOpenCustomColorPicker = { isHighlight ->
                                         customColorIsHighlight = isHighlight
                                         showCustomColorDialog = true
@@ -2764,6 +3289,10 @@ fun NoteDetailScreen(
                                         controller = drawingController,
                                         onDismiss = { activePenPanel = ActivePenPanel.NONE }
                                     )
+                                    ActivePenPanel.ERASER_PACKAGES -> EraserPackagePickerPanel(
+                                        controller = drawingController,
+                                        onDismiss = { activePenPanel = ActivePenPanel.NONE }
+                                    )
                                     ActivePenPanel.SETTINGS -> PenStrokeSettingsPanel(
                                         controller = drawingController,
                                         onDismiss = { activePenPanel = ActivePenPanel.NONE }
@@ -2776,6 +3305,9 @@ fun NoteDetailScreen(
                                         controller = drawingController,
                                         onDismiss = { activePenPanel = ActivePenPanel.NONE }
                                     )
+                                    ActivePenPanel.TEXT_BOX -> DrawingTextBoxFormattingPanel(
+                                        controller = drawingController
+                                    )
                                     ActivePenPanel.NONE -> {}
                                 }
                             }
@@ -2783,6 +3315,54 @@ fun NoteDetailScreen(
                     }
                 }
             }
+
+            // Compact floating Zoom pill (visible only when page plane is zoomed)
+            if (kotlin.math.abs(noteZoomScale - 1.0f) > 0.02f) {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = surfaceColor.copy(alpha = 0.92f),
+                    tonalElevation = 4.dp,
+                    shadowElevation = 6.dp,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        IconButton(
+                            onClick = { noteZoomScale = (noteZoomScale - 0.15f).coerceAtLeast(0.75f) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(Icons.Default.Remove, contentDescription = "Uzaklaştır", modifier = Modifier.size(14.dp))
+                        }
+                        Text(
+                            text = "%${(noteZoomScale * 100).roundToInt()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = primaryColor,
+                            modifier = Modifier
+                                .clickable { noteZoomScale = 1.0f }
+                                .padding(horizontal = 4.dp)
+                        )
+                        IconButton(
+                            onClick = { noteZoomScale = (noteZoomScale + 0.15f).coerceAtMost(2.0f) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Yakınlaştır", modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
+            }
+
+            // Live-synced Draggable / Resizable Floating Focus Timer Overlay
+            FloatingFocusTimerOverlay(
+                viewportWidthPx = screenWidthPx,
+                viewportHeightPx = screenHeightPx
+            )
         }
     }
 
@@ -2860,6 +3440,7 @@ fun NoteDetailScreen(
                         viewModel.deleteNote {
                             if (idToDelete.isNotBlank()) {
                                 DrawingSerializer.deleteNoteDrawing(context, idToDelete)
+                                NoteTimeTracker.clearNote(context, idToDelete)
                             }
                             showDeleteConfirmDialog = false
                             onDismiss()
@@ -2900,6 +3481,7 @@ fun NoteDetailScreen(
             words = words,
             chars = chars,
             lines = lineCount,
+            spentSeconds = totalNoteSpentSeconds,
             onDismissRequest = { showStatsDialog = false }
         )
     }
@@ -3327,6 +3909,8 @@ fun RichTextFormattingToolbar(
     drawingController: DrawingController,
     selectedColor: Color?,
     selectedHighlightColor: Color?,
+    selectedFontSizeSp: Float = NoteRichTextHelper.DEFAULT_FONT_SIZE_SP,
+    selectedFontOption: NoteFontOption = NoteFontOption.DEFAULT,
     isBoldActive: Boolean,
     isItalicActive: Boolean,
     isUnderlineActive: Boolean,
@@ -3344,10 +3928,13 @@ fun RichTextFormattingToolbar(
     onSelectTextMode: () -> Unit = {},
     onSelectPenMode: () -> Unit = {},
     onOpenPenPackages: () -> Unit = {},
+    onOpenEraserPackages: () -> Unit = {},
     onToggleColorPanel: (ActiveColorPanel) -> Unit,
     onTogglePenPanel: (ActivePenPanel) -> Unit,
     onColorSelected: (Color) -> Unit,
     onHighlightSelected: (Color?) -> Unit,
+    onFontSizeSelected: (Float) -> Unit = {},
+    onFontOptionSelected: (NoteFontOption) -> Unit = {},
     onOpenCustomColorPicker: (isHighlight: Boolean) -> Unit,
     onBulletToggled: () -> Unit,
     onNumberedToggled: () -> Unit,
@@ -3362,12 +3949,12 @@ fun RichTextFormattingToolbar(
     val onSurfaceColor = colorScheme.onSurface
     val primaryColor = colorScheme.primary
     val surfaceColor = colorScheme.surface
-    val isImeOpen = WindowInsets.isImeVisible
 
     val isVertical = dockState == ToolbarDockState.LEFT || dockState == ToolbarDockState.RIGHT
     val isPenMode = drawingController.isDrawingActive
     val activeDrawTool = drawingController.activeTool
     val currentPenTool = if (activeDrawTool.isPenTool) activeDrawTool else drawingController.lastSelectedPenTool
+    val currentEraserTool = if (activeDrawTool.isEraserTool) activeDrawTool else drawingController.lastSelectedEraserTool
     val haptic = LocalHapticFeedback.current
 
     val shape = when (dockState) {
@@ -3475,26 +4062,71 @@ fun RichTextFormattingToolbar(
 
                 if (!isPenMode) {
                     ToolbarColorSymbolButton(
-                        label = "Yazı",
-                        currentColor = selectedColor ?: onSurfaceColor,
+                        contentDescription = "Yazı Rengi",
+                        currentColor = selectedColor,
                         isPanelOpen = activeColorPanel == ActiveColorPanel.PEN,
                         isHighlight = false,
                         isVertical = true,
                         onClick = { onToggleColorPanel(ActiveColorPanel.PEN) },
                         primaryColor = primaryColor,
-                        onSurfaceColor = onSurfaceColor
+                        onSurfaceColor = onSurfaceColor,
+                        surfaceColor = surfaceColor
                     )
 
                     ToolbarColorSymbolButton(
-                        label = "Vurgu",
+                        contentDescription = "Vurgu Rengi",
                         currentColor = selectedHighlightColor,
                         isPanelOpen = activeColorPanel == ActiveColorPanel.HIGHLIGHT,
                         isHighlight = true,
                         isVertical = true,
                         onClick = { onToggleColorPanel(ActiveColorPanel.HIGHLIGHT) },
                         primaryColor = primaryColor,
-                        onSurfaceColor = onSurfaceColor
+                        onSurfaceColor = onSurfaceColor,
+                        surfaceColor = surfaceColor
                     )
+
+                    // Font selector button (vertical)
+                    Surface(
+                        onClick = { onToggleColorPanel(ActiveColorPanel.FONT) },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (activeColorPanel == ActiveColorPanel.FONT) primaryColor.copy(alpha = 0.16f) else Color.Transparent,
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (activeColorPanel == ActiveColorPanel.FONT) primaryColor else onSurfaceColor.copy(alpha = 0.22f)
+                        ),
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "Aa",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = selectedFontOption.resolveFontFamily(),
+                                color = if (activeColorPanel == ActiveColorPanel.FONT) primaryColor else onSurfaceColor
+                            )
+                        }
+                    }
+
+                    // Punto font size button (vertical)
+                    Surface(
+                        onClick = { onToggleColorPanel(ActiveColorPanel.FONT_SIZE) },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (activeColorPanel == ActiveColorPanel.FONT_SIZE) primaryColor.copy(alpha = 0.16f) else Color.Transparent,
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (activeColorPanel == ActiveColorPanel.FONT_SIZE) primaryColor else onSurfaceColor.copy(alpha = 0.22f)
+                        ),
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "${selectedFontSizeSp.roundToInt()}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (activeColorPanel == ActiveColorPanel.FONT_SIZE) primaryColor else onSurfaceColor
+                            )
+                        }
+                    }
 
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), color = onSurfaceColor.copy(alpha = 0.18f))
 
@@ -3563,12 +4195,7 @@ fun RichTextFormattingToolbar(
                             if (activeDrawTool.isPenTool) {
                                 onTogglePenPanel(ActivePenPanel.PEN_PACKAGES)
                             } else {
-                                if (activePenPanel == ActivePenPanel.SHAPES ||
-                                    activePenPanel == ActivePenPanel.LASSO ||
-                                    activePenPanel == ActivePenPanel.PEN_PACKAGES
-                                ) {
-                                    onTogglePenPanel(ActivePenPanel.NONE)
-                                }
+                                onTogglePenPanel(ActivePenPanel.NONE)
                                 drawingController.selectActiveOrLastPen()
                             }
                         },
@@ -3578,37 +4205,25 @@ fun RichTextFormattingToolbar(
                         }
                     ) { tint -> PenToolGlyph(tool = currentPenTool, tint = tint) }
 
+                    // Unified Eraser (tap selects/toggles; long-press opens Eraser picker)
                     PenVerticalToolButton(
-                        isSelected = activeDrawTool == DrawingTool.STROKE_ERASER,
+                        isSelected = activeDrawTool.isEraserTool || activePenPanel == ActivePenPanel.ERASER_PACKAGES,
                         accentColor = Color(0xFFEF4444),
                         onSurfaceColor = onSurfaceColor,
                         primaryColor = primaryColor,
                         onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES ||
-                                activePenPanel == ActivePenPanel.LASSO ||
-                                activePenPanel == ActivePenPanel.PEN_PACKAGES
-                            ) {
+                            if (activeDrawTool.isEraserTool) {
+                                onTogglePenPanel(ActivePenPanel.ERASER_PACKAGES)
+                            } else {
                                 onTogglePenPanel(ActivePenPanel.NONE)
+                                drawingController.selectActiveOrLastEraser()
                             }
-                            drawingController.selectTool(DrawingTool.STROKE_ERASER)
+                        },
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onOpenEraserPackages()
                         }
-                    ) { tint -> PenToolGlyph(tool = DrawingTool.STROKE_ERASER, tint = tint) }
-
-                    PenVerticalToolButton(
-                        isSelected = activeDrawTool == DrawingTool.AREA_ERASER,
-                        accentColor = Color(0xFFEF4444),
-                        onSurfaceColor = onSurfaceColor,
-                        primaryColor = primaryColor,
-                        onClick = {
-                            if (activePenPanel == ActivePenPanel.SHAPES ||
-                                activePenPanel == ActivePenPanel.LASSO ||
-                                activePenPanel == ActivePenPanel.PEN_PACKAGES
-                            ) {
-                                onTogglePenPanel(ActivePenPanel.NONE)
-                            }
-                            drawingController.selectTool(DrawingTool.AREA_ERASER)
-                        }
-                    ) { tint -> PenToolGlyph(tool = DrawingTool.AREA_ERASER, tint = tint) }
+                    ) { tint -> PenToolGlyph(tool = currentEraserTool, tint = tint) }
 
                     PenVerticalToolButton(
                         isSelected = activeDrawTool.isShapeTool || activePenPanel == ActivePenPanel.SHAPES,
@@ -3630,9 +4245,7 @@ fun RichTextFormattingToolbar(
                         primaryColor = primaryColor,
                         onClick = {
                             if (activeDrawTool != DrawingTool.LASSO) {
-                                if (activePenPanel == ActivePenPanel.PEN_PACKAGES || activePenPanel == ActivePenPanel.SHAPES) {
-                                    onTogglePenPanel(ActivePenPanel.NONE)
-                                }
+                                onTogglePenPanel(ActivePenPanel.NONE)
                                 drawingController.selectTool(DrawingTool.LASSO)
                             } else {
                                 onTogglePenPanel(ActivePenPanel.LASSO)
@@ -3640,13 +4253,21 @@ fun RichTextFormattingToolbar(
                         }
                     ) { tint -> PenToolGlyph(tool = DrawingTool.LASSO, tint = tint) }
 
+                    // Text Box tool button (vertical)
                     PenVerticalToolButton(
-                        isSelected = drawingController.stylusOnlyMode,
-                        accentColor = Color(0xFF10B981),
+                        isSelected = activeDrawTool == DrawingTool.TEXT_BOX,
+                        accentColor = primaryColor,
                         onSurfaceColor = onSurfaceColor,
                         primaryColor = primaryColor,
-                        onClick = { drawingController.toggleStylusOnlyMode() }
-                    ) { tint -> PenPalmRejectionGlyph(tint = tint) }
+                        onClick = {
+                            if (activeDrawTool == DrawingTool.TEXT_BOX) {
+                                drawingController.addTextBox()
+                            } else {
+                                drawingController.selectTool(DrawingTool.TEXT_BOX)
+                                onTogglePenPanel(ActivePenPanel.TEXT_BOX)
+                            }
+                        }
+                    ) { tint -> PenToolGlyph(tool = DrawingTool.TEXT_BOX, tint = tint) }
 
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), color = onSurfaceColor.copy(alpha = 0.18f))
 
@@ -3692,7 +4313,7 @@ fun RichTextFormattingToolbar(
                         )
                     }
 
-                    if (drawingController.strokes.isNotEmpty()) {
+                    if (drawingController.hasAnyAnnotations) {
                         IconButton(
                             onClick = { drawingController.clearAll() },
                             modifier = Modifier.size(32.dp)
@@ -3718,6 +4339,8 @@ fun RichTextFormattingToolbar(
                         activePenPanel = activePenPanel,
                         selectedColor = selectedColor,
                         selectedHighlightColor = selectedHighlightColor,
+                        selectedFontSizeSp = selectedFontSizeSp,
+                        selectedFontOption = selectedFontOption,
                         highlightIntensity = highlightIntensity,
                         onHighlightIntensityChanged = onHighlightIntensityChanged,
                         customColors = customColors,
@@ -3725,6 +4348,8 @@ fun RichTextFormattingToolbar(
                         onTogglePenPanel = onTogglePenPanel,
                         onColorSelected = onColorSelected,
                         onHighlightSelected = onHighlightSelected,
+                        onFontSizeSelected = onFontSizeSelected,
+                        onFontOptionSelected = onFontOptionSelected,
                         onOpenCustomColorPicker = onOpenCustomColorPicker,
                         primaryColor = primaryColor,
                         onSurfaceColor = onSurfaceColor,
@@ -3734,11 +4359,11 @@ fun RichTextFormattingToolbar(
                     )
                 }
 
-                // Main horizontal toolbar row
+                // Main horizontal toolbar row (compact vertical padding — zero excess bottom whitespace)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 5.dp),
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
@@ -3757,7 +4382,7 @@ fun RichTextFormattingToolbar(
                         Surface(
                             shape = CircleShape,
                             color = Color.Transparent,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(26.dp)
                         ) {
                             IconButton(
                                 onClick = onCollapse,
@@ -3805,7 +4430,7 @@ fun RichTextFormattingToolbar(
                         }
                     }
 
-                    VerticalDivider(modifier = Modifier.height(24.dp), color = onSurfaceColor.copy(alpha = 0.18f))
+                    VerticalDivider(modifier = Modifier.height(22.dp), color = onSurfaceColor.copy(alpha = 0.18f))
 
                     // Scrollable Tools Area
                     Row(
@@ -3813,30 +4438,83 @@ fun RichTextFormattingToolbar(
                             .weight(1f)
                             .horizontalScroll(rememberScrollState()),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(if (isPenMode) 5.dp else 6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         if (!isPenMode) {
+                            // Universal "T" Text Color symbol (no "Yazı" text, no color circle — symbol itself syncs to selected color)
                             ToolbarColorSymbolButton(
-                                label = "Yazı",
-                                currentColor = selectedColor ?: onSurfaceColor,
+                                contentDescription = "Yazı Rengi",
+                                currentColor = selectedColor,
                                 isPanelOpen = activeColorPanel == ActiveColorPanel.PEN,
                                 isHighlight = false,
                                 onClick = { onToggleColorPanel(ActiveColorPanel.PEN) },
                                 primaryColor = primaryColor,
-                                onSurfaceColor = onSurfaceColor
+                                onSurfaceColor = onSurfaceColor,
+                                surfaceColor = surfaceColor
                             )
 
+                            // Highlight icon (symbol untouched, no "Vurgu" text, synced color tint)
                             ToolbarColorSymbolButton(
-                                label = "Vurgu",
+                                contentDescription = "Vurgu Rengi",
                                 currentColor = selectedHighlightColor,
                                 isPanelOpen = activeColorPanel == ActiveColorPanel.HIGHLIGHT,
                                 isHighlight = true,
                                 onClick = { onToggleColorPanel(ActiveColorPanel.HIGHLIGHT) },
                                 primaryColor = primaryColor,
-                                onSurfaceColor = onSurfaceColor
+                                onSurfaceColor = onSurfaceColor,
+                                surfaceColor = surfaceColor
                             )
 
-                            VerticalDivider(modifier = Modifier.height(22.dp), color = onSurfaceColor.copy(alpha = 0.16f))
+                            // Font Family Selector chip
+                            Surface(
+                                onClick = { onToggleColorPanel(ActiveColorPanel.FONT) },
+                                shape = RoundedCornerShape(9.dp),
+                                color = if (activeColorPanel == ActiveColorPanel.FONT) primaryColor.copy(alpha = 0.14f) else Color.Transparent,
+                                border = androidx.compose.foundation.BorderStroke(
+                                    width = if (activeColorPanel == ActiveColorPanel.FONT) 1.5.dp else 1.dp,
+                                    color = if (activeColorPanel == ActiveColorPanel.FONT) primaryColor else onSurfaceColor.copy(alpha = 0.22f)
+                                ),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                ) {
+                                    Text(
+                                        text = selectedFontOption.shortLabel,
+                                        fontSize = 11.5.sp,
+                                        fontFamily = selectedFontOption.resolveFontFamily(),
+                                        fontWeight = if (activeColorPanel == ActiveColorPanel.FONT) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = if (activeColorPanel == ActiveColorPanel.FONT) primaryColor else onSurfaceColor
+                                    )
+                                }
+                            }
+
+                            // Punto Font Size Selector chip
+                            Surface(
+                                onClick = { onToggleColorPanel(ActiveColorPanel.FONT_SIZE) },
+                                shape = RoundedCornerShape(9.dp),
+                                color = if (activeColorPanel == ActiveColorPanel.FONT_SIZE) primaryColor.copy(alpha = 0.14f) else Color.Transparent,
+                                border = androidx.compose.foundation.BorderStroke(
+                                    width = if (activeColorPanel == ActiveColorPanel.FONT_SIZE) 1.5.dp else 1.dp,
+                                    color = if (activeColorPanel == ActiveColorPanel.FONT_SIZE) primaryColor else onSurfaceColor.copy(alpha = 0.22f)
+                                ),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                ) {
+                                    Text(
+                                        text = "${selectedFontSizeSp.roundToInt()}pt",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (activeColorPanel == ActiveColorPanel.FONT_SIZE) primaryColor else onSurfaceColor
+                                    )
+                                }
+                            }
+
+                            VerticalDivider(modifier = Modifier.height(20.dp), color = onSurfaceColor.copy(alpha = 0.16f))
 
                             ToolbarToggleButton(
                                 icon = Icons.AutoMirrored.Filled.FormatListBulleted,
@@ -3865,7 +4543,7 @@ fun RichTextFormattingToolbar(
                                 onSurfaceColor = onSurfaceColor
                             )
 
-                            VerticalDivider(modifier = Modifier.height(22.dp), color = onSurfaceColor.copy(alpha = 0.16f))
+                            VerticalDivider(modifier = Modifier.height(20.dp), color = onSurfaceColor.copy(alpha = 0.16f))
 
                             ToolbarToggleButton(
                                 icon = Icons.Default.FormatBold,
@@ -3894,20 +4572,16 @@ fun RichTextFormattingToolbar(
                                 onSurfaceColor = onSurfaceColor
                             )
                         } else {
+                            // Icon-only dynamic Pen button (no redundant text label; long-press opens Pen Packages)
                             StudioToolButton(
-                                label = currentPenTool.shortLabel,
+                                label = null,
                                 isSelected = activeDrawTool.isPenTool || activePenPanel == ActivePenPanel.PEN_PACKAGES,
                                 accentColor = if (currentPenTool == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else drawingController.penColor,
                                 onClick = {
                                     if (activeDrawTool.isPenTool) {
                                         onTogglePenPanel(ActivePenPanel.PEN_PACKAGES)
                                     } else {
-                                        if (activePenPanel == ActivePenPanel.SHAPES ||
-                                            activePenPanel == ActivePenPanel.LASSO ||
-                                            activePenPanel == ActivePenPanel.PEN_PACKAGES
-                                        ) {
-                                            onTogglePenPanel(ActivePenPanel.NONE)
-                                        }
+                                        onTogglePenPanel(ActivePenPanel.NONE)
                                         drawingController.selectActiveOrLastPen()
                                     }
                                 },
@@ -3917,35 +4591,24 @@ fun RichTextFormattingToolbar(
                                 }
                             ) { tint -> PenToolGlyph(tool = currentPenTool, tint = tint) }
 
+                            // Unified Icon-only Eraser button (tap selects/toggles; long-press opens Stroke/Area Eraser picker)
                             StudioToolButton(
-                                label = "Çizgi Sil",
-                                isSelected = activeDrawTool == DrawingTool.STROKE_ERASER,
+                                label = null,
+                                isSelected = activeDrawTool.isEraserTool || activePenPanel == ActivePenPanel.ERASER_PACKAGES,
                                 accentColor = Color(0xFFEF4444),
                                 onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES ||
-                                        activePenPanel == ActivePenPanel.LASSO ||
-                                        activePenPanel == ActivePenPanel.PEN_PACKAGES
-                                    ) {
+                                    if (activeDrawTool.isEraserTool) {
+                                        onTogglePenPanel(ActivePenPanel.ERASER_PACKAGES)
+                                    } else {
                                         onTogglePenPanel(ActivePenPanel.NONE)
+                                        drawingController.selectActiveOrLastEraser()
                                     }
-                                    drawingController.selectTool(DrawingTool.STROKE_ERASER)
+                                },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onOpenEraserPackages()
                                 }
-                            ) { tint -> PenToolGlyph(tool = DrawingTool.STROKE_ERASER, tint = tint) }
-
-                            StudioToolButton(
-                                label = "Alan Sil",
-                                isSelected = activeDrawTool == DrawingTool.AREA_ERASER,
-                                accentColor = Color(0xFFEF4444),
-                                onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES ||
-                                        activePenPanel == ActivePenPanel.LASSO ||
-                                        activePenPanel == ActivePenPanel.PEN_PACKAGES
-                                    ) {
-                                        onTogglePenPanel(ActivePenPanel.NONE)
-                                    }
-                                    drawingController.selectTool(DrawingTool.AREA_ERASER)
-                                }
-                            ) { tint -> PenToolGlyph(tool = DrawingTool.AREA_ERASER, tint = tint) }
+                            ) { tint -> PenToolGlyph(tool = currentEraserTool, tint = tint) }
 
                             StudioToolButton(
                                 label = "Şekil",
@@ -3964,21 +4627,27 @@ fun RichTextFormattingToolbar(
                                 isSelected = activeDrawTool == DrawingTool.LASSO,
                                 accentColor = Color(0xFF0288D1),
                                 onClick = {
-                                    if (activePenPanel == ActivePenPanel.SHAPES || activePenPanel == ActivePenPanel.PEN_PACKAGES) {
-                                        onTogglePenPanel(ActivePenPanel.NONE)
-                                    }
+                                    onTogglePenPanel(ActivePenPanel.NONE)
                                     drawingController.selectTool(DrawingTool.LASSO)
                                 }
                             ) { tint -> PenToolGlyph(tool = DrawingTool.LASSO, tint = tint) }
 
+                            // Text Box tool button (rich-text boxes inside drawing mode)
                             StudioToolButton(
-                                label = "Yalnızca Kalem",
-                                isSelected = drawingController.stylusOnlyMode,
-                                accentColor = Color(0xFF10B981),
-                                onClick = { drawingController.toggleStylusOnlyMode() }
-                            ) { tint -> PenPalmRejectionGlyph(tint = tint) }
+                                label = null,
+                                isSelected = activeDrawTool == DrawingTool.TEXT_BOX,
+                                accentColor = primaryColor,
+                                onClick = {
+                                    if (activeDrawTool == DrawingTool.TEXT_BOX) {
+                                        drawingController.addTextBox()
+                                    } else {
+                                        drawingController.selectTool(DrawingTool.TEXT_BOX)
+                                        onTogglePenPanel(ActivePenPanel.TEXT_BOX)
+                                    }
+                                }
+                            ) { tint -> PenToolGlyph(tool = DrawingTool.TEXT_BOX, tint = tint) }
 
-                            VerticalDivider(modifier = Modifier.height(22.dp), color = onSurfaceColor.copy(alpha = 0.16f))
+                            VerticalDivider(modifier = Modifier.height(20.dp), color = onSurfaceColor.copy(alpha = 0.16f))
 
                             IconButton(
                                 onClick = { onTogglePenPanel(ActivePenPanel.SETTINGS) },
@@ -4022,7 +4691,7 @@ fun RichTextFormattingToolbar(
                                 )
                             }
 
-                            if (drawingController.strokes.isNotEmpty()) {
+                            if (drawingController.hasAnyAnnotations) {
                                 IconButton(
                                     onClick = { drawingController.clearAll() },
                                     modifier = Modifier.size(30.dp)
@@ -4047,6 +4716,8 @@ fun RichTextFormattingToolbar(
                         activePenPanel = activePenPanel,
                         selectedColor = selectedColor,
                         selectedHighlightColor = selectedHighlightColor,
+                        selectedFontSizeSp = selectedFontSizeSp,
+                        selectedFontOption = selectedFontOption,
                         highlightIntensity = highlightIntensity,
                         onHighlightIntensityChanged = onHighlightIntensityChanged,
                         customColors = customColors,
@@ -4054,6 +4725,8 @@ fun RichTextFormattingToolbar(
                         onTogglePenPanel = onTogglePenPanel,
                         onColorSelected = onColorSelected,
                         onHighlightSelected = onHighlightSelected,
+                        onFontSizeSelected = onFontSizeSelected,
+                        onFontOptionSelected = onFontOptionSelected,
                         onOpenCustomColorPicker = onOpenCustomColorPicker,
                         primaryColor = primaryColor,
                         onSurfaceColor = onSurfaceColor,
@@ -4061,10 +4734,6 @@ fun RichTextFormattingToolbar(
                         colorScheme = colorScheme,
                         expandFromTop = true
                     )
-                }
-
-                if (dockState == ToolbarDockState.BOTTOM && !isImeOpen) {
-                    Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
                 }
             }
         }
@@ -4079,6 +4748,8 @@ private fun HorizontalToolbarSubPanels(
     activePenPanel: ActivePenPanel,
     selectedColor: Color?,
     selectedHighlightColor: Color?,
+    selectedFontSizeSp: Float,
+    selectedFontOption: NoteFontOption,
     highlightIntensity: Float,
     onHighlightIntensityChanged: (Float) -> Unit,
     customColors: List<Color>,
@@ -4086,6 +4757,8 @@ private fun HorizontalToolbarSubPanels(
     onTogglePenPanel: (ActivePenPanel) -> Unit,
     onColorSelected: (Color) -> Unit,
     onHighlightSelected: (Color?) -> Unit,
+    onFontSizeSelected: (Float) -> Unit,
+    onFontOptionSelected: (NoteFontOption) -> Unit,
     onOpenCustomColorPicker: (isHighlight: Boolean) -> Unit,
     primaryColor: Color,
     onSurfaceColor: Color,
@@ -4107,12 +4780,16 @@ private fun HorizontalToolbarSubPanels(
                 activeColorPanel = activeColorPanel,
                 selectedColor = selectedColor,
                 selectedHighlightColor = selectedHighlightColor,
+                selectedFontSizeSp = selectedFontSizeSp,
+                selectedFontOption = selectedFontOption,
                 highlightIntensity = highlightIntensity,
                 onHighlightIntensityChanged = onHighlightIntensityChanged,
                 customColors = customColors,
                 onToggleColorPanel = onToggleColorPanel,
                 onColorSelected = onColorSelected,
                 onHighlightSelected = onHighlightSelected,
+                onFontSizeSelected = onFontSizeSelected,
+                onFontOptionSelected = onFontOptionSelected,
                 onOpenCustomColorPicker = onOpenCustomColorPicker,
                 primaryColor = primaryColor,
                 onSurfaceColor = onSurfaceColor,
@@ -4125,8 +4802,10 @@ private fun HorizontalToolbarSubPanels(
         }
     } else {
         val showPenPackages = activePenPanel == ActivePenPanel.PEN_PACKAGES
+        val showEraserPackages = activePenPanel == ActivePenPanel.ERASER_PACKAGES
         val showShapes = activePenPanel == ActivePenPanel.SHAPES || drawingController.activeTool.isShapeTool
         val showLasso = drawingController.activeTool == DrawingTool.LASSO
+        val showTextBoxPanel = drawingController.activeTool == DrawingTool.TEXT_BOX || activePenPanel == ActivePenPanel.TEXT_BOX
         val showSettings = activePenPanel == ActivePenPanel.SETTINGS
 
         AnimatedVisibility(
@@ -4137,6 +4816,21 @@ private fun HorizontalToolbarSubPanels(
             Column(modifier = Modifier.fillMaxWidth()) {
                 if (expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
                 PenPackagePickerPanel(
+                    controller = drawingController,
+                    onDismiss = { onTogglePenPanel(ActivePenPanel.NONE) }
+                )
+                if (!expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showEraserPackages,
+            enter = expandVertically(expandFrom = expandOrigin) + fadeIn(),
+            exit = shrinkVertically(shrinkTowards = expandOrigin) + fadeOut()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                EraserPackagePickerPanel(
                     controller = drawingController,
                     onDismiss = { onTogglePenPanel(ActivePenPanel.NONE) }
                 )
@@ -4164,6 +4858,18 @@ private fun HorizontalToolbarSubPanels(
             Column(modifier = Modifier.fillMaxWidth()) {
                 if (expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
                 PenLassoActionsPanel(controller = drawingController)
+                if (!expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showTextBoxPanel,
+            enter = expandVertically(expandFrom = expandOrigin) + fadeIn(),
+            exit = shrinkVertically(shrinkTowards = expandOrigin) + fadeOut()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                DrawingTextBoxFormattingPanel(controller = drawingController)
                 if (!expandFromTop) HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
             }
         }
@@ -4269,12 +4975,16 @@ private fun FormattingColorPanel(
     activeColorPanel: ActiveColorPanel,
     selectedColor: Color?,
     selectedHighlightColor: Color?,
+    selectedFontSizeSp: Float = NoteRichTextHelper.DEFAULT_FONT_SIZE_SP,
+    selectedFontOption: NoteFontOption = NoteFontOption.DEFAULT,
     highlightIntensity: Float,
     onHighlightIntensityChanged: (Float) -> Unit,
     customColors: List<Color>,
     onToggleColorPanel: (ActiveColorPanel) -> Unit,
     onColorSelected: (Color) -> Unit,
     onHighlightSelected: (Color?) -> Unit,
+    onFontSizeSelected: (Float) -> Unit = {},
+    onFontOptionSelected: (NoteFontOption) -> Unit = {},
     onOpenCustomColorPicker: (isHighlight: Boolean) -> Unit,
     primaryColor: Color,
     onSurfaceColor: Color,
@@ -4297,7 +5007,13 @@ private fun FormattingColorPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = if (activeColorPanel == ActiveColorPanel.PEN) "Kalem / Yazı Rengi" else "Fosforlu Kalem / Vurgu Rengi",
+                    text = when (activeColorPanel) {
+                        ActiveColorPanel.PEN -> "Yazı Rengi"
+                        ActiveColorPanel.HIGHLIGHT -> "Vurgu Rengi"
+                        ActiveColorPanel.FONT -> "Yazı Tipi"
+                        ActiveColorPanel.FONT_SIZE -> "Punto Boyutu"
+                        ActiveColorPanel.NONE -> ""
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = onSurfaceColor
@@ -4356,7 +5072,7 @@ private fun FormattingColorPanel(
 
                     VerticalDivider(modifier = Modifier.height(20.dp), color = onSurfaceColor.copy(alpha = 0.2f))
 
-                    // 2. Ana Kalem Renkleri (Siyah, Beyaz, Standart renkler)
+                    // 2. Ana Yazı Renkleri
                     val isDefaultSelected = selectedColor == null || selectedColor == onSurfaceColor
                     ColorCircleSwatch(
                         color = onSurfaceColor,
@@ -4554,6 +5270,77 @@ private fun FormattingColorPanel(
                             color = primaryColor
                         )
                     }
+                } else if (activeColorPanel == ActiveColorPanel.FONT) {
+                    NoteFontOption.entries.forEach { fontOpt ->
+                        val isSelected = selectedFontOption == fontOpt
+                        Surface(
+                            onClick = { onFontOptionSelected(fontOpt) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) primaryColor.copy(alpha = 0.16f) else surfaceColor,
+                            border = androidx.compose.foundation.BorderStroke(
+                                width = if (isSelected) 1.5.dp else 1.dp,
+                                color = if (isSelected) primaryColor else onSurfaceColor.copy(alpha = 0.2f)
+                            )
+                        ) {
+                            Text(
+                                text = fontOpt.displayName,
+                                fontSize = 12.5.sp,
+                                fontFamily = fontOpt.resolveFontFamily(),
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) primaryColor else onSurfaceColor,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                } else if (activeColorPanel == ActiveColorPanel.FONT_SIZE) {
+                    Surface(
+                        onClick = { onFontSizeSelected((selectedFontSizeSp - 2f).coerceAtLeast(NoteRichTextHelper.MIN_FONT_SIZE_SP)) },
+                        shape = RoundedCornerShape(8.dp),
+                        color = surfaceColor,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.2f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Remove,
+                            contentDescription = "Küçült",
+                            tint = onSurfaceColor,
+                            modifier = Modifier.padding(6.dp).size(15.dp)
+                        )
+                    }
+
+                    NoteRichTextHelper.FontSizePresets.forEach { pt ->
+                        val isSelected = selectedFontSizeSp.roundToInt() == pt
+                        Surface(
+                            onClick = { onFontSizeSelected(pt.toFloat()) },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) primaryColor.copy(alpha = 0.16f) else surfaceColor,
+                            border = androidx.compose.foundation.BorderStroke(
+                                width = if (isSelected) 1.5.dp else 1.dp,
+                                color = if (isSelected) primaryColor else onSurfaceColor.copy(alpha = 0.2f)
+                            )
+                        ) {
+                            Text(
+                                text = "$pt",
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) primaryColor else onSurfaceColor,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        onClick = { onFontSizeSelected((selectedFontSizeSp + 2f).coerceAtMost(NoteRichTextHelper.MAX_FONT_SIZE_SP)) },
+                        shape = RoundedCornerShape(8.dp),
+                        color = surfaceColor,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.2f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Büyüt",
+                            tint = onSurfaceColor,
+                            modifier = Modifier.padding(6.dp).size(15.dp)
+                        )
+                    }
                 }
             }
 
@@ -4626,117 +5413,57 @@ private fun FormattingColorPanel(
 
 @Composable
 private fun ToolbarColorSymbolButton(
-    label: String,
+    contentDescription: String,
     currentColor: Color?,
     isHighlight: Boolean = false,
     isPanelOpen: Boolean,
     isVertical: Boolean = false,
     onClick: () -> Unit,
     primaryColor: Color,
-    onSurfaceColor: Color
+    onSurfaceColor: Color,
+    surfaceColor: Color = MaterialTheme.colorScheme.surface
 ) {
-    val activeBorder = if (isPanelOpen) primaryColor else onSurfaceColor.copy(alpha = 0.25f)
-    val activeBg = if (isPanelOpen) primaryColor.copy(alpha = 0.14f) else Color.Transparent
+    val activeColorSolid = currentColor?.takeIf { it != Color.Transparent }?.copy(alpha = 1f)
+    val lowContrast = activeColorSolid != null &&
+        kotlin.math.abs(activeColorSolid.luminance() - surfaceColor.luminance()) < 0.18f
+
+    val activeBorder = when {
+        isPanelOpen -> primaryColor
+        activeColorSolid != null -> activeColorSolid.copy(alpha = 0.65f)
+        else -> onSurfaceColor.copy(alpha = 0.22f)
+    }
+    val activeBg = when {
+        isPanelOpen -> primaryColor.copy(alpha = 0.14f)
+        lowContrast -> onSurfaceColor.copy(alpha = 0.14f)
+        isHighlight && activeColorSolid != null -> activeColorSolid.copy(alpha = 0.16f)
+        else -> Color.Transparent
+    }
 
     Surface(
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(9.dp),
         color = activeBg,
         border = androidx.compose.foundation.BorderStroke(if (isPanelOpen) 1.5.dp else 1.dp, activeBorder),
-        modifier = (if (isVertical) Modifier.size(36.dp) else Modifier.height(34.dp))
+        modifier = (if (isVertical) Modifier.size(34.dp) else Modifier.size(width = 34.dp, height = 32.dp))
             .clickable(onClick = onClick)
     ) {
-        if (!isVertical) {
-            Row(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.BorderColor,
-                    contentDescription = label,
-                    tint = if (isPanelOpen) primaryColor else onSurfaceColor.copy(alpha = 0.85f),
-                    modifier = Modifier.size(15.dp)
-                )
-
-                if (isHighlight) {
-                    if (currentColor != null && currentColor != Color.Transparent) {
-                        Box(
-                            modifier = Modifier
-                                .size(13.dp)
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(currentColor)
-                                .border(0.5.dp, onSurfaceColor.copy(alpha = 0.4f), RoundedCornerShape(3.dp))
-                        )
-                    } else {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(13.dp)
-                                .clip(RoundedCornerShape(3.dp))
-                                .border(0.8.dp, onSurfaceColor.copy(alpha = 0.4f), RoundedCornerShape(3.dp))
-                        ) {
-                            Text("/", fontSize = 9.sp, color = onSurfaceColor.copy(alpha = 0.5f))
-                        }
-                    }
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(13.dp)
-                            .clip(CircleShape)
-                            .background(currentColor ?: onSurfaceColor)
-                            .border(0.5.dp, onSurfaceColor.copy(alpha = 0.4f), CircleShape)
-                    )
-                }
-
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            if (!isHighlight) {
+                // Universal typographic "T" symbol synchronized directly to selected text color
                 Text(
-                    text = label,
-                    fontSize = 11.sp,
-                    fontWeight = if (isPanelOpen) FontWeight.Bold else FontWeight.Medium,
-                    color = if (isPanelOpen) primaryColor else onSurfaceColor
+                    text = "T",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontFamily = FontFamily.Serif,
+                    color = activeColorSolid ?: onSurfaceColor
                 )
-            }
-        } else {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(2.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            } else {
+                // Highlight icon kept untouched, synchronized directly to selected highlight color
                 Icon(
                     imageVector = Icons.Default.BorderColor,
-                    contentDescription = label,
-                    tint = if (isPanelOpen) primaryColor else onSurfaceColor.copy(alpha = 0.85f),
-                    modifier = Modifier.size(15.dp)
+                    contentDescription = contentDescription,
+                    tint = activeColorSolid ?: onSurfaceColor.copy(alpha = 0.85f),
+                    modifier = Modifier.size(17.dp)
                 )
-                Spacer(modifier = Modifier.height(2.dp))
-                if (isHighlight) {
-                    if (currentColor != null && currentColor != Color.Transparent) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(currentColor)
-                                .border(0.5.dp, onSurfaceColor.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
-                        )
-                    } else {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .border(0.8.dp, onSurfaceColor.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
-                        ) {
-                            Text("/", fontSize = 6.sp, color = onSurfaceColor.copy(alpha = 0.5f))
-                        }
-                    }
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(currentColor ?: onSurfaceColor)
-                            .border(0.5.dp, onSurfaceColor.copy(alpha = 0.4f), CircleShape)
-                    )
-                }
             }
         }
     }
@@ -4997,9 +5724,10 @@ fun NoteStatsDialog(
     words: Int,
     chars: Int,
     lines: Int,
+    spentSeconds: Long = 0L,
     onDismissRequest: () -> Unit
 ) {
-    val readMinutes = (words / 200).coerceAtLeast(1)
+    val readMinutes = if (words == 0) 0 else (words / 200).coerceAtLeast(1)
     AlertDialog(
         onDismissRequest = onDismissRequest,
         title = {
@@ -5018,7 +5746,14 @@ fun NoteStatsDialog(
                 StatRow(label = "Karakter Sayısı", value = "$chars")
                 StatRow(label = "Satır Sayısı", value = "$lines")
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-                StatRow(label = "Tahmini Okuma Süresi", value = "~$readMinutes dakika")
+                StatRow(
+                    label = "Notta Geçirilen Süre",
+                    value = NoteTimeTracker.formatDuration(spentSeconds)
+                )
+                StatRow(
+                    label = "Tahmini Okuma Süresi",
+                    value = if (readMinutes == 0) "< 1 dk" else "~$readMinutes dk"
+                )
             }
         },
         confirmButton = {

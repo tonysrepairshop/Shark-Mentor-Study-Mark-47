@@ -138,13 +138,35 @@ fun SharkLeagueScreen(
         viewModel.loadLeague(preserveTab = true)
     }
 
+    var openedDirectlyToDm by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        if (com.example.sharkmentor.ui.components.PendingLeagueNavigationBus.openDmInboxDirectly.value) {
+            com.example.sharkmentor.ui.components.PendingLeagueNavigationBus.openDmInboxDirectly.value = false
+            com.example.sharkmentor.core.notification.SocialNotificationMonitor.clearUnreadDmIndicator()
+            openedDirectlyToDm = true
+            activeChatDestination = LeagueChatDestination.DmInbox
+        }
+    }
+
     if (activeChatDestination != null) {
+        if (activeChatDestination is LeagueChatDestination.DmInbox || activeChatDestination is LeagueChatDestination.DirectMessage) {
+            LaunchedEffect(activeChatDestination) {
+                com.example.sharkmentor.core.notification.SocialNotificationMonitor.clearUnreadDmIndicator()
+            }
+        }
         LeagueChatScreen(
             destination = activeChatDestination!!,
             myDisplayNameHint = uiState.myEntry?.rawName.orEmpty(),
             onBackClick = {
-                activeChatDestination = null
-                viewModel.loadLeague(preserveTab = true)
+                if (openedDirectlyToDm && activeChatDestination is LeagueChatDestination.DmInbox) {
+                    openedDirectlyToDm = false
+                    activeChatDestination = null
+                    onBackClick()
+                } else {
+                    activeChatDestination = null
+                    viewModel.loadLeague(preserveTab = true)
+                }
             },
             onOpenQuestionSolveScreen = onOpenQuestionSolve
         )

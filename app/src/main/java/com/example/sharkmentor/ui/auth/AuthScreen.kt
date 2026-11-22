@@ -359,10 +359,12 @@ fun AuthScreen(
                                 )
                                 dbObj.collection("students").document(uid).set(profile, SetOptions.merge())
                                     .addOnSuccessListener {
+                                        com.example.sharkmentor.ui.components.FirstTimeTutorialPrefs.markEligibleForNewUserOrGuest(context)
                                         isLoading = false
                                         onAuthSuccess()
                                     }
                                     .addOnFailureListener {
+                                        com.example.sharkmentor.ui.components.FirstTimeTutorialPrefs.markEligibleForNewUserOrGuest(context)
                                         isLoading = false
                                         onAuthSuccess()
                                     }

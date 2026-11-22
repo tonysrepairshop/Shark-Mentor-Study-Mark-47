@@ -183,35 +183,118 @@ class TopBarPreferences private constructor(context: Context) {
             return@withContext Result.failure(IllegalArgumentException("Konu boş olamaz."))
         }
 
-        var apiKey = ApiKeyRotator.getActiveKey(appContext)
-              val maxKeyAttempts = ApiKeyRotator.getKeyCount(appContext).coerceAtLeast(1)  
+        com.example.sharkmentor.core.ai.UserAiPreferences.initialize(appContext)
+        val (candidateKeys, isBuiltInMode) = GeminiAiFactory.resolveKeyCandidates(
+            overrideKey = null,
+            context = appContext
+        )
 
         val prompt = buildString {
-            append("\"$cleanTopic\" filmine, dizisine veya kişisine ait en bilinen 10 motivasyon cümlesini ")
-            append("Türkçe olarak ve üst barda gösterilebilecek kısa satırlar halinde yaz. ")
+            append("İnternet araması kullanarak \"$cleanTopic\" filmine, dizisine veya karakterine/kişisine ait ")
+            append("en bilinen, gerçek ve ilham verici 8 ila 10 motivasyon sözünü bul. ")
+            append("Türkçe olarak ve üst barda tek satırda okunabilecek kısalıkta yaz. ")
             append("Numaralandırma, madde işareti, tırnak işareti veya açıklama ekleme; ")
-            append("her satırda yalnızca 1 cümle olacak şekilde toplam 10 satır döndür.")
+            append("yalnızca her satırda 1 söz olacak şekilde en az 5, en fazla 10 satır döndür.")
         }
 
-val models = listOf("gemini-3.6-flash", "gemini-3.5-flash-lite")
-        var lastError: Throwable? = null
-        var fallbackQuotes: List<String> = emptyList()
-        for (model in models) {
-            for (attempt in 0 until maxKeyAttempts) { var rotated = false
-                for (useSearch in listOf(true, false)) {
-                    val res = requestQuotesFromGemini(apiKey, model, prompt, useGoogleSearch = useSearch)
-                    if (res.isSuccess) {
-                        ApiKeyRotator.reportKeySuccess(apiKey)
-                        val quotes = res.getOrThrow().take(10)
-                        if (quotes.size >= 5) { saveQuotesAndActivate(cleanTopic, quotes); return@withContext Result.success(quotes) }
-                        if (quotes.size > fallbackQuotes.size) fallbackQuotes = quotes
-                        } else {lastError = res.exceptionOrNull(); val msg = lastError?.message.orEmpty()
-                    if (msg.contains("HTTP 401") || msg.contains("HTTP 403") || msg.contains("HTTP 429")) { ApiKeyRotator.reportKeyFailure(apiKey); apiKey = ApiKeyRotator.rotateToNextKey(appContext); rotated = true; break }
-                    } } if (!rotated) break } } if (fallbackQuotes.isNotEmpty()) { saveQuotesAndActivate(cleanTopic, fallbackQuotes); return@withContext Result.success(fallbackQuotes) }
-                        
-                
+        val models = if (isBuiltInMode) {
+            listOf(
+                GeminiAiFactory.SOLE_GEMINI_MODEL,
+                GeminiAiFactory.CONTROLLED_404_FALLBACK_MODEL
+            ).distinct()
+        } else {
+            val preferred = GeminiAiFactory.resolveModelName(appContext)
+            listOf(
+                preferred,
+                GeminiAiFactory.SOLE_GEMINI_MODEL,
+                GeminiAiFactory.CONTROLLED_404_FALLBACK_MODEL
+            ).filter { it.isNotBlank() }.distinct()
+        }
 
-        Result.failure(lastError ?: IllegalStateException("Motivasyon sözleri alınamadı."))
+        var lastError: Throwable? = null
+        var bestPartialQuotes: List<String> = emptyList()
+
+        // 1. Direct grounded search call using resolved endpoint per key (Vertex AI Express for AQ., AI Studio for AIza)
+        for (model in models) {
+            for (rawKey in candidateKeys) {
+                val cleanKey = com.example.sharkmentor.core.ai.GeminiRestClient.sanitizeApiKey(rawKey)
+                if (cleanKey.isBlank()) continue
+                val endpoints = com.example.sharkmentor.core.ai.GeminiRestClient.resolveEndpointsForKey(cleanKey)
+                var keyFailedHard = false
+
+                for (endpoint in endpoints) {
+                    for (useSearch in listOf(true, false)) {
+                        val res = requestQuotesFromGemini(
+                            apiKey = cleanKey,
+                            endpoint = endpoint,
+                            model = model,
+                            prompt = prompt,
+                            useGoogleSearch = useSearch
+                        )
+                        if (res.isSuccess) {
+                            ApiKeyRotator.reportKeySuccess(cleanKey)
+                            val quotes = res.getOrThrow().take(MAX_AI_QUOTES)
+                            if (quotes.size >= MIN_AI_QUOTES) {
+                                saveQuotesAndActivate(cleanTopic, quotes)
+                                return@withContext Result.success(quotes)
+                            }
+                            if (quotes.size > bestPartialQuotes.size) {
+                                bestPartialQuotes = quotes
+                            }
+                        } else {
+                            lastError = res.exceptionOrNull()
+                            val msg = lastError?.message.orEmpty()
+                            if (msg.contains("HTTP 401") || msg.contains("HTTP 403") || msg.contains("HTTP 429")) {
+                                ApiKeyRotator.reportKeyFailure(cleanKey)
+                                keyFailedHard = true
+                                break
+                            }
+                        }
+                    }
+                    if (keyFailedHard) break
+                }
+            }
+        }
+
+        // 2. Fallback via GeminiAiFactory (supports Firebase Gemini Proxy + full model/key failover)
+        val proxyFallback = runCatching {
+            val response = GeminiAiFactory.generateContent(
+                contents = listOf(com.example.sharkmentor.core.ai.GeminiContent.userText(prompt)),
+                systemPrompt = "Yalnızca istenen film, dizi veya karaktere ait 5 ile 10 arasında kısa Türkçe motivasyon sözünü her satırda tek cümle olacak şekilde döndür.",
+                taskType = com.example.sharkmentor.core.ai.AiTaskType.LIGHT_INTERACTION,
+                generationConfig = com.example.sharkmentor.core.ai.GeminiGenerationConfig(
+                    temperature = 0.7f,
+                    maxOutputTokens = 1024
+                )
+            )
+            parsePlainLinesToQuotes(response.text)
+        }
+        if (proxyFallback.isSuccess) {
+            val quotes = proxyFallback.getOrThrow().take(MAX_AI_QUOTES)
+            if (quotes.size >= MIN_AI_QUOTES) {
+                saveQuotesAndActivate(cleanTopic, quotes)
+                return@withContext Result.success(quotes)
+            }
+            if (quotes.size > bestPartialQuotes.size) {
+                bestPartialQuotes = quotes
+            }
+        } else {
+            lastError = proxyFallback.exceptionOrNull() ?: lastError
+        }
+
+        if (bestPartialQuotes.isNotEmpty()) {
+            saveQuotesAndActivate(cleanTopic, bestPartialQuotes)
+            return@withContext Result.success(bestPartialQuotes)
+        }
+
+        val friendlyMessage = when {
+            lastError?.message?.contains("Unable to resolve host", ignoreCase = true) == true ||
+                lastError?.message?.contains("Failed to connect", ignoreCase = true) == true ||
+                lastError?.message?.contains("timeout", ignoreCase = true) == true ->
+                "İnternet bağlantısı sağlanamadığı için motivasyon sözleri alınamadı."
+            else -> "Motivasyon sözleri alınamadı. Bağlantınızı kontrol edip tekrar deneyin."
+        }
+        Result.failure(IllegalStateException(friendlyMessage, lastError))
     }
 
     private fun saveQuotesAndActivate(topic: String, quotes: List<String>) {
@@ -228,17 +311,19 @@ val models = listOf("gemini-3.6-flash", "gemini-3.5-flash-lite")
         )
     }
 
-    private fun resolveGeminiApiKey(): String {
-        return ApiKeyRotator.getActiveKey(appContext)
-    }
-
     private fun requestQuotesFromGemini(
         apiKey: String,
+        endpoint: com.example.sharkmentor.core.ai.GeminiEndpointType,
         model: String,
         prompt: String,
         useGoogleSearch: Boolean
     ): Result<List<String>> = runCatching {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
+        val url = when (endpoint) {
+            com.example.sharkmentor.core.ai.GeminiEndpointType.VERTEX_AI_EXPRESS ->
+                "https://aiplatform.googleapis.com/v1/publishers/google/models/$model:generateContent?key=$apiKey"
+            else ->
+                "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
+        }
         val bodyJson = JSONObject().apply {
             put(
                 "contents",
@@ -253,9 +338,14 @@ val models = listOf("gemini-3.6-flash", "gemini-3.5-flash-lite")
                 )
             )
             if (useGoogleSearch) {
+                val searchKey = if (endpoint == com.example.sharkmentor.core.ai.GeminiEndpointType.VERTEX_AI_EXPRESS) {
+                    "googleSearch"
+                } else {
+                    "google_search"
+                }
                 put(
                     "tools",
-                    JSONArray().put(JSONObject().put("google_search", JSONObject()))
+                    JSONArray().put(JSONObject().put(searchKey, JSONObject()))
                 )
             }
             put(
@@ -275,7 +365,7 @@ val models = listOf("gemini-3.6-flash", "gemini-3.5-flash-lite")
         httpClient.newCall(request).execute().use { response ->
             val responseText = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code}: $responseText")
+                throw IllegalStateException("HTTP ${response.code}: ${responseText.take(240)}")
             }
             val parsed = parseQuotesFromResponse(responseText)
             if (parsed.isEmpty()) {
@@ -283,6 +373,20 @@ val models = listOf("gemini-3.6-flash", "gemini-3.5-flash-lite")
             }
             parsed
         }
+    }
+
+    private fun parsePlainLinesToQuotes(combined: String): List<String> {
+        return combined
+            .lines()
+            .map { line ->
+                line.trim()
+                    .replace(Regex("^\\d+[.)\\-:\\s]+"), "")
+                    .replace(Regex("^[-•*]\\s*"), "")
+                    .trim('"', '“', '”', '\'', ' ')
+            }
+            .filter { it.isNotBlank() && it.length >= 4 }
+            .distinct()
+            .take(MAX_AI_QUOTES)
     }
 
     private fun parseQuotesFromResponse(responseText: String): List<String> {
@@ -303,17 +407,7 @@ val models = listOf("gemini-3.6-flash", "gemini-3.5-flash-lite")
             }
         }
 
-        return combined
-            .lines()
-            .map { line ->
-                line.trim()
-                    .replace(Regex("^\\d+[.)\\-:\\s]+"), "")
-                    .replace(Regex("^[-•*]\\s*"), "")
-                    .trim('"', '“', '”', '\'', ' ')
-            }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .take(MAX_AI_QUOTES)
+        return parsePlainLinesToQuotes(combined)
     }
 
     companion object {
@@ -330,6 +424,7 @@ val models = listOf("gemini-3.6-flash", "gemini-3.5-flash-lite")
         private const val KEY_HIDE_DURING_FOCUS = "hide_during_focus"
 
         const val MAX_CUSTOM_TEXTS = 10
+        const val MIN_AI_QUOTES = 5
         const val MAX_AI_QUOTES = 10
 
         @Volatile

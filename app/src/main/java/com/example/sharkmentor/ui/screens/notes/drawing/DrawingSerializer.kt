@@ -113,6 +113,89 @@ object DrawingSerializer {
         }
     }
 
+    data class PageAnnotations(
+        val strokes: List<DrawingStroke> = emptyList(),
+        val textBoxes: List<DrawingTextBox> = emptyList()
+    )
+
+    private fun textBoxesToJsonArray(textBoxes: List<DrawingTextBox>): JSONArray {
+        val arr = JSONArray()
+        for (box in textBoxes) {
+            val obj = JSONObject().apply {
+                put("id", box.id)
+                put("x", box.xFraction.toDouble())
+                put("y", box.yFraction.toDouble())
+                put("w", box.widthFraction.toDouble())
+                put("content", box.taggedContent)
+                put("font", box.baseFontName)
+                put("sizeSp", box.baseFontSizeSp.toDouble())
+                if (box.baseTextColorArgb != null) {
+                    put("colorArgb", box.baseTextColorArgb)
+                }
+            }
+            arr.put(obj)
+        }
+        return arr
+    }
+
+    private fun textBoxesFromJsonArray(arr: JSONArray?): List<DrawingTextBox> {
+        if (arr == null) return emptyList()
+        val out = ArrayList<DrawingTextBox>(arr.length())
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val x = obj.optDouble("x", 0.12).toFloat().coerceIn(0.01f, 0.90f)
+            val y = obj.optDouble("y", 0.14).toFloat().coerceIn(0.01f, 0.92f)
+            val w = obj.optDouble("w", 0.48).toFloat().coerceIn(0.20f, 0.95f)
+            val colorArgb = if (obj.has("colorArgb") && !obj.isNull("colorArgb")) {
+                obj.optInt("colorArgb")
+            } else {
+                null
+            }
+            out.add(
+                DrawingTextBox(
+                    id = obj.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    xFraction = x,
+                    yFraction = y,
+                    widthFraction = w,
+                    taggedContent = obj.optString("content", ""),
+                    baseFontName = obj.optString("font", "DEFAULT").ifBlank { "DEFAULT" },
+                    baseFontSizeSp = obj.optDouble("sizeSp", 16.0).toFloat().coerceIn(10f, 40f),
+                    baseTextColorArgb = colorArgb
+                )
+            )
+        }
+        return out
+    }
+
+    fun annotationsToJson(
+        strokes: List<DrawingStroke>,
+        textBoxes: List<DrawingTextBox> = emptyList()
+    ): String {
+        return runCatching {
+            val root = JSONObject(strokesToJson(strokes))
+            if (textBoxes.isNotEmpty()) {
+                root.put("textBoxes", textBoxesToJsonArray(textBoxes))
+            }
+            root.toString()
+        }.getOrElse { e ->
+            Log.e(TAG, "Failed to serialize page annotations to JSON", e)
+            "{\"version\":1,\"strokes\":[],\"textBoxes\":[]}"
+        }
+    }
+
+    fun annotationsFromJson(jsonStr: String): PageAnnotations {
+        if (jsonStr.isBlank()) return PageAnnotations()
+        return runCatching {
+            val strokes = strokesFromJson(jsonStr)
+            val root = JSONObject(jsonStr)
+            val boxes = textBoxesFromJsonArray(root.optJSONArray("textBoxes"))
+            PageAnnotations(strokes = strokes, textBoxes = boxes)
+        }.getOrElse { e ->
+            Log.e(TAG, "Failed to parse page annotations from JSON", e)
+            PageAnnotations()
+        }
+    }
+
     // ── Note Sidecar Storage (files/note_drawings/note_<id>.json & note_<id>_p<page>.json) ──
 
     private fun sanitizeNoteId(noteId: String): String =
@@ -144,6 +227,43 @@ object DrawingSerializer {
         return loadNotePageDrawing(context, noteId, pageIndex = 0)
     }
 
+    fun saveNotePageAnnotations(
+        context: Context,
+        noteId: String,
+        pageIndex: Int,
+        strokes: List<DrawingStroke>,
+        textBoxes: List<DrawingTextBox>
+    ) {
+        if (noteId.isBlank() || pageIndex < 0) return
+        runCatching {
+            val file = getNotePageDrawingFile(context, noteId, pageIndex)
+            if (strokes.isEmpty() && textBoxes.isEmpty()) {
+                if (file.exists()) file.delete()
+                return
+            }
+            val json = annotationsToJson(strokes, textBoxes)
+            writeTextAtomically(file, json)
+        }.onFailure { e ->
+            Log.e(TAG, "Failed saving note annotations for $noteId page $pageIndex", e)
+        }
+    }
+
+    fun loadNotePageAnnotations(
+        context: Context,
+        noteId: String,
+        pageIndex: Int
+    ): PageAnnotations {
+        if (noteId.isBlank() || pageIndex < 0) return PageAnnotations()
+        return runCatching {
+            val file = getNotePageDrawingFile(context, noteId, pageIndex)
+            if (!file.exists()) return PageAnnotations()
+            annotationsFromJson(file.readText(Charsets.UTF_8))
+        }.getOrElse { e ->
+            Log.e(TAG, "Failed loading note annotations for $noteId page $pageIndex", e)
+            PageAnnotations()
+        }
+    }
+
     fun saveNotePageDrawing(
         context: Context,
         noteId: String,
@@ -151,17 +271,19 @@ object DrawingSerializer {
         strokes: List<DrawingStroke>
     ) {
         if (noteId.isBlank() || pageIndex < 0) return
-        runCatching {
-            val file = getNotePageDrawingFile(context, noteId, pageIndex)
-            if (strokes.isEmpty()) {
-                if (file.exists()) file.delete()
-                return
-            }
-            val json = strokesToJson(strokes)
-            file.writeText(json, Charsets.UTF_8)
-        }.onFailure { e ->
-            Log.e(TAG, "Failed saving note drawing for $noteId page $pageIndex", e)
-        }
+        val existingBoxes = loadNotePageAnnotations(context, noteId, pageIndex).textBoxes
+        saveNotePageAnnotations(context, noteId, pageIndex, strokes, existingBoxes)
+    }
+
+    fun saveNotePageTextBoxes(
+        context: Context,
+        noteId: String,
+        pageIndex: Int,
+        textBoxes: List<DrawingTextBox>
+    ) {
+        if (noteId.isBlank() || pageIndex < 0) return
+        val existingStrokes = loadNotePageAnnotations(context, noteId, pageIndex).strokes
+        saveNotePageAnnotations(context, noteId, pageIndex, existingStrokes, textBoxes)
     }
 
     fun loadNotePageDrawing(
@@ -169,15 +291,15 @@ object DrawingSerializer {
         noteId: String,
         pageIndex: Int
     ): List<DrawingStroke> {
-        if (noteId.isBlank() || pageIndex < 0) return emptyList()
-        return runCatching {
-            val file = getNotePageDrawingFile(context, noteId, pageIndex)
-            if (!file.exists()) return emptyList()
-            strokesFromJson(file.readText(Charsets.UTF_8))
-        }.getOrElse { e ->
-            Log.e(TAG, "Failed loading note drawing for $noteId page $pageIndex", e)
-            emptyList()
-        }
+        return loadNotePageAnnotations(context, noteId, pageIndex).strokes
+    }
+
+    fun loadNotePageTextBoxes(
+        context: Context,
+        noteId: String,
+        pageIndex: Int
+    ): List<DrawingTextBox> {
+        return loadNotePageAnnotations(context, noteId, pageIndex).textBoxes
     }
 
     fun deleteNotePageDrawingAndShift(
@@ -189,8 +311,8 @@ object DrawingSerializer {
         if (noteId.isBlank() || deletedPageIndex < 0 || totalPagesBeforeDelete <= 1) return
         runCatching {
             for (idx in deletedPageIndex until (totalPagesBeforeDelete - 1)) {
-                val nextStrokes = loadNotePageDrawing(context, noteId, idx + 1)
-                saveNotePageDrawing(context, noteId, idx, nextStrokes)
+                val nextAnn = loadNotePageAnnotations(context, noteId, idx + 1)
+                saveNotePageAnnotations(context, noteId, idx, nextAnn.strokes, nextAnn.textBoxes)
             }
             val lastFile = getNotePageDrawingFile(context, noteId, totalPagesBeforeDelete - 1)
             if (lastFile.exists()) lastFile.delete()
@@ -378,23 +500,106 @@ object DrawingSerializer {
     }
 
     @Synchronized
+    fun savePdfPageTextBoxes(
+        context: Context,
+        pdfIdentifier: String,
+        pageIndex: Int,
+        textBoxes: List<DrawingTextBox>
+    ) {
+        if (pdfIdentifier.isBlank() || pageIndex < 0) return
+        runCatching {
+            val file = getPdfDocFile(context, pdfIdentifier)
+            val root = if (file.exists()) {
+                runCatching { JSONObject(file.readText(Charsets.UTF_8)) }.getOrDefault(JSONObject())
+            } else {
+                JSONObject()
+            }
+            root.put("version", FORMAT_VERSION)
+            root.put("pdfIdentifier", pdfIdentifier)
+            root.put("updatedAt", System.currentTimeMillis())
+
+            val boxesObj = root.optJSONObject("pageTextBoxes") ?: JSONObject()
+            if (textBoxes.isEmpty()) {
+                boxesObj.remove(pageIndex.toString())
+            } else {
+                boxesObj.put(pageIndex.toString(), textBoxesToJsonArray(textBoxes))
+            }
+            root.put("pageTextBoxes", boxesObj)
+            writeTextAtomically(file, root.toString())
+        }.onFailure { e ->
+            Log.e(TAG, "Failed saving PDF text boxes for page $pageIndex", e)
+        }
+    }
+
+    @Synchronized
+    fun loadPdfPageTextBoxes(
+        context: Context,
+        pdfIdentifier: String,
+        pageIndex: Int
+    ): List<DrawingTextBox> {
+        if (pdfIdentifier.isBlank() || pageIndex < 0) return emptyList()
+        return runCatching {
+            val file = getPdfDocFile(context, pdfIdentifier)
+            if (!file.exists()) return emptyList()
+            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val boxesObj = root.optJSONObject("pageTextBoxes") ?: return emptyList()
+            textBoxesFromJsonArray(boxesObj.optJSONArray(pageIndex.toString()))
+        }.getOrElse { e ->
+            Log.e(TAG, "Failed loading PDF text boxes for page $pageIndex", e)
+            emptyList()
+        }
+    }
+
+    @Synchronized
+    fun loadAllPdfTextBoxes(
+        context: Context,
+        pdfIdentifier: String
+    ): Map<Int, List<DrawingTextBox>> {
+        if (pdfIdentifier.isBlank()) return emptyMap()
+        return runCatching {
+            val file = getPdfDocFile(context, pdfIdentifier)
+            if (!file.exists()) return emptyMap()
+            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val boxesObj = root.optJSONObject("pageTextBoxes") ?: return emptyMap()
+            val map = mutableMapOf<Int, List<DrawingTextBox>>()
+            val keys = boxesObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val pageIdx = key.toIntOrNull() ?: continue
+                val parsed = textBoxesFromJsonArray(boxesObj.optJSONArray(key))
+                if (parsed.isNotEmpty()) {
+                    map[pageIdx] = parsed
+                }
+            }
+            map
+        }.getOrDefault(emptyMap())
+    }
+
+    @Synchronized
     fun getPdfAnnotatedPageCount(context: Context, pdfIdentifier: String): Int {
         if (pdfIdentifier.isBlank()) return 0
         return runCatching {
             val file = getPdfDocFile(context, pdfIdentifier)
             if (!file.exists()) return 0
             val root = JSONObject(file.readText(Charsets.UTF_8))
-            val pagesObj = root.optJSONObject("pages") ?: return 0
-            var count = 0
-            val keys = pagesObj.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                val arr = pagesObj.optJSONArray(key)
-                if (arr != null && arr.length() > 0) {
-                    count++
+            val annotatedPages = mutableSetOf<String>()
+            root.optJSONObject("pages")?.let { pagesObj ->
+                val keys = pagesObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val arr = pagesObj.optJSONArray(key)
+                    if (arr != null && arr.length() > 0) annotatedPages.add(key)
                 }
             }
-            count
+            root.optJSONObject("pageTextBoxes")?.let { boxesObj ->
+                val keys = boxesObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val arr = boxesObj.optJSONArray(key)
+                    if (arr != null && arr.length() > 0) annotatedPages.add(key)
+                }
+            }
+            annotatedPages.size
         }.getOrDefault(0)
     }
 

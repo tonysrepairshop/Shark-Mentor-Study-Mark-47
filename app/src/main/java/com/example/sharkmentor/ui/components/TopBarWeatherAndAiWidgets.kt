@@ -1,7 +1,8 @@
 package com.example.sharkmentor.ui.components
 
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -9,17 +10,11 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.text.font.FontFamily
-import com.example.sharkmentor.data.topbar.TopBarAnimationType
-import com.example.sharkmentor.data.topbar.TopBarFontOption
-import com.example.sharkmentor.data.topbar.TopBarSettings
-import com.example.sharkmentor.data.topbar.TopBarTextSource
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,15 +25,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.filled.Email
-import java.util.Calendar
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AcUnit
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Thunderstorm
@@ -56,22 +48,32 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateOf
-import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.sharkmentor.data.topbar.TopBarAnimationType
+import com.example.sharkmentor.data.topbar.TopBarFontOption
+import com.example.sharkmentor.data.topbar.TopBarSettings
+import com.example.sharkmentor.data.topbar.TopBarTextSource
+import com.example.sharkmentor.data.weather.HourlyForecastItem
 import com.example.sharkmentor.data.weather.WeatherSettings
 import com.example.sharkmentor.data.weather.WeatherUiState
 import com.example.sharkmentor.data.weather.formatTemp
 import com.example.sharkmentor.data.weather.weatherConditionLabel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.time.LocalDateTime
+import java.time.temporal.ChronoUnit
 
 fun weatherIconForCode(code: Int): ImageVector {
     return when (code) {
@@ -83,6 +85,38 @@ fun weatherIconForCode(code: Int): ImageVector {
         95, 96, 99 -> Icons.Default.Thunderstorm
         else -> Icons.Default.Cloud
     }
+}
+
+/**
+ * Slices hourly items to strictly show 2 hours before [now] through 10 hours after [now]
+ * in chronological order (13 hourly slots max), supporting midnight rollover seamlessly.
+ */
+internal fun filterWeatherHourlyWindow(
+    hourly: List<HourlyForecastItem>,
+    now: LocalDateTime = LocalDateTime.now()
+): List<HourlyForecastItem> {
+    if (hourly.isEmpty()) return emptyList()
+    val currentHourStart = now.truncatedTo(ChronoUnit.HOURS)
+    val startWindow = currentHourStart.minusHours(2)
+    val endWindow = currentHourStart.plusHours(10)
+
+    val byIso = hourly.mapNotNull { item ->
+        val parsed = runCatching {
+            if (item.isoTime.isNotBlank()) LocalDateTime.parse(item.isoTime.take(16)) else null
+        }.getOrNull()
+        if (parsed != null && !parsed.isBefore(startWindow) && !parsed.isAfter(endWindow)) {
+            parsed to item
+        } else null
+    }.sortedBy { it.first }.map { it.second }
+
+    if (byIso.isNotEmpty()) return byIso
+
+    // Legacy cache fallback (hourLabel only, 00:00..23:00): order chronologically -2..+10
+    val nowHour = now.hour
+    val orderedHours = (-2..10).map { offset -> (nowHour + offset + 24) % 24 }
+    val byHour = hourly.associateBy { it.hourLabel.substringBefore(":").trim().toIntOrNull() }
+    val legacyResult = orderedHours.mapNotNull { h -> byHour[h] }
+    return legacyResult.ifEmpty { hourly.take(13) }
 }
 
 @Composable
@@ -105,9 +139,9 @@ fun TopBarWeatherPill(
         border = if (showBubble) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant) else null
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = if (showBubble) 10.dp else 4.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Icon(
                 imageVector = weatherIconForCode(weatherState.currentWeatherCode),
@@ -207,26 +241,25 @@ fun WeatherHourlyDialog(
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
-                    val currentHour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
-                    val filteredHourly = remember(weatherState.hourly, currentHour) {
-                        weatherState.hourly.filter { item ->
-                            val itemHour = item.hourLabel.substringBefore(":").trim().toIntOrNull()
-                            if (itemHour == null) {
-                                true
-                            } else {
-                                val diff = (itemHour - currentHour + 24) % 24
-                                diff in 0..10 || diff >= 22
-                            }
-                        }.ifEmpty { weatherState.hourly }
+                    val nowSnapshot = remember { LocalDateTime.now() }
+                    val currentHourLabel = remember(nowSnapshot) {
+                        "%02d:00".format(nowSnapshot.hour)
+                    }
+                    val filteredHourly = remember(weatherState.hourly, nowSnapshot) {
+                        filterWeatherHourlyWindow(weatherState.hourly, nowSnapshot)
                     }
                     LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(filteredHourly) { item ->
+                            val isNow = item.hourLabel == currentHourLabel
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                color = if (isNow) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f) else MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(
+                                    width = if (isNow) 1.5.dp else 1.dp,
+                                    color = if (isNow) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                                )
                             ) {
                                 Column(
                                     modifier = Modifier
@@ -238,7 +271,8 @@ fun WeatherHourlyDialog(
                                     Text(
                                         text = item.hourLabel,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        fontWeight = if (isNow) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isNow) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Icon(
                                         imageVector = weatherIconForCode(item.weatherCode),
@@ -275,11 +309,15 @@ object PendingAiPromptBus {
     val pendingPrompt = MutableStateFlow<String?>(null)
 }
 
+object PendingLeagueNavigationBus {
+    val openDmInboxDirectly = MutableStateFlow(false)
+}
+
 @Composable
 fun TopBarAiShortcutBox(
     onClick: (String) -> Unit,
     modifier: Modifier = Modifier,
-topBarSettings: TopBarSettings = TopBarSettings(),
+    topBarSettings: TopBarSettings = TopBarSettings(),
     showBubble: Boolean = true
 ) {
     val prompts = remember {
@@ -303,208 +341,244 @@ topBarSettings: TopBarSettings = TopBarSettings(),
         )
     }
 
-val activeTexts = remember(
-topBarSettings.textSource,
-topBarSettings.customTexts,
-topBarSettings.aiQuotes,
-prompts
-) {
-when (topBarSettings.textSource) {
-TopBarTextSource.AI_SUGGESTIONS -> prompts
-TopBarTextSource.CUSTOM_TEXTS ->
-topBarSettings.customTexts.map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { prompts }
-TopBarTextSource.AI_QUOTES ->
-topBarSettings.aiQuotes.map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { prompts }
-}
-}
+    val activeTexts = remember(
+        topBarSettings.textSource,
+        topBarSettings.customTexts,
+        topBarSettings.aiQuotes,
+        prompts
+    ) {
+        when (topBarSettings.textSource) {
+            TopBarTextSource.AI_SUGGESTIONS -> prompts
+            TopBarTextSource.CUSTOM_TEXTS ->
+                topBarSettings.customTexts.map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { prompts }
+            TopBarTextSource.AI_QUOTES ->
+                topBarSettings.aiQuotes.map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { prompts }
+        }
+    }
 
-val fontFamily = when (topBarSettings.fontOption) {
-TopBarFontOption.DEFAULT -> null
-TopBarFontOption.SANS_SERIF -> FontFamily.SansSerif
-TopBarFontOption.SERIF -> FontFamily.Serif
-TopBarFontOption.MONOSPACE -> FontFamily.Monospace
-}
+    val fontFamily = when (topBarSettings.fontOption) {
+        TopBarFontOption.DEFAULT -> null
+        TopBarFontOption.SANS_SERIF -> FontFamily.SansSerif
+        TopBarFontOption.SERIF -> FontFamily.Serif
+        TopBarFontOption.MONOSPACE -> FontFamily.Monospace
+    }
 
-val textColor = topBarSettings.customTextColorArgb?.let { Color(it.toInt()) }
-?: MaterialTheme.colorScheme.onSurfaceVariant
+    val textColor = topBarSettings.customTextColorArgb?.let { Color(it.toInt()) }
+        ?: MaterialTheme.colorScheme.onSurfaceVariant
 
-var currentIndex by remember(activeTexts, topBarSettings.textSource) { mutableIntStateOf(0) }
-var visibleText by remember { mutableStateOf("") }
-var showCursor by remember { mutableStateOf(true) }
-val flipRotation = remember { Animatable(0f) }
+    var currentIndex by remember(activeTexts, topBarSettings.textSource) { mutableIntStateOf(0) }
+    var visibleText by remember { mutableStateOf("") }
+    var showCursor by remember { mutableStateOf(true) }
+    val flipRotation = remember { Animatable(0f) }
 
-LaunchedEffect(topBarSettings.animationType, activeTexts) {
-if (activeTexts.isEmpty()) return@LaunchedEffect
-currentIndex = currentIndex.coerceIn(0, activeTexts.lastIndex)
-when (topBarSettings.animationType) {
-TopBarAnimationType.NONE -> {
-visibleText = activeTexts[currentIndex]
-showCursor = false
-}
-TopBarAnimationType.TYPEWRITER -> {
-while (true) {
-val fullText = activeTexts[currentIndex]
-showCursor = true
-for (i in 1..fullText.length) {
-visibleText = fullText.substring(0, i)
-delay(48L)
-}
-repeat(9) {
-showCursor = !showCursor
-delay(500L)
-}
-showCursor = true
-for (i in fullText.length - 1 downTo 0) {
-visibleText = fullText.substring(0, i)
-delay(24L)
-}
-delay(350L)
-currentIndex = (currentIndex + 1) % activeTexts.size
-}
-}
-TopBarAnimationType.FLIP_BOX -> {
-flipRotation.snapTo(0f)
-while (true) {
-delay(6000L)
-flipRotation.animateTo(90f, animationSpec = tween(220))
-currentIndex = (currentIndex + 1) % activeTexts.size
-flipRotation.snapTo(-90f)
-flipRotation.animateTo(0f, animationSpec = tween(220))
-}
-}
-TopBarAnimationType.FADE,
-TopBarAnimationType.SLIDE_VERTICAL,
-TopBarAnimationType.SCALE_FADE -> {
-while (true) {
-delay(5000L)
-currentIndex = (currentIndex + 1) % activeTexts.size
-}
-}
-}
-}
+    LaunchedEffect(topBarSettings.animationType, activeTexts) {
+        if (activeTexts.isEmpty()) return@LaunchedEffect
+        currentIndex = currentIndex.coerceIn(0, activeTexts.lastIndex)
+        when (topBarSettings.animationType) {
+            TopBarAnimationType.NONE -> {
+                visibleText = activeTexts[currentIndex]
+                showCursor = false
+            }
+            TopBarAnimationType.TYPEWRITER -> {
+                while (true) {
+                    val fullText = activeTexts[currentIndex.coerceIn(0, activeTexts.lastIndex)]
+                    showCursor = true
+                    for (i in 1..fullText.length) {
+                        visibleText = fullText.substring(0, i)
+                        delay(46L)
+                    }
+                    repeat(8) {
+                        showCursor = !showCursor
+                        delay(450L)
+                    }
+                    showCursor = true
+                    for (i in fullText.length - 1 downTo 0) {
+                        visibleText = fullText.substring(0, i)
+                        delay(22L)
+                    }
+                    delay(280L)
+                    currentIndex = (currentIndex + 1) % activeTexts.size
+                }
+            }
+            TopBarAnimationType.FLIP_BOX -> {
+                flipRotation.snapTo(0f)
+                while (true) {
+                    delay(4800L)
+                    flipRotation.animateTo(90f, animationSpec = tween(220))
+                    currentIndex = (currentIndex + 1) % activeTexts.size
+                    flipRotation.snapTo(-90f)
+                    flipRotation.animateTo(0f, animationSpec = tween(220))
+                }
+            }
+            TopBarAnimationType.FADE,
+            TopBarAnimationType.SLIDE_VERTICAL,
+            TopBarAnimationType.SCALE_FADE -> {
+                while (true) {
+                    delay(4200L)
+                    if (activeTexts.size > 1) {
+                        currentIndex = (currentIndex + 1) % activeTexts.size
+                    }
+                }
+            }
+        }
+    }
 
-val safeIndex = currentIndex.coerceIn(0, activeTexts.lastIndex)
-val currentText = activeTexts[safeIndex]
-val cursor = if (showCursor) "|" else ""
-val textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = fontFamily)
-val displayText = if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) "\"$currentText\"" else currentText
+    val safeIndex = currentIndex.coerceIn(0, activeTexts.lastIndex)
+    val currentText = activeTexts[safeIndex]
+    val cursor = if (showCursor) "|" else ""
+    val textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = fontFamily)
+    fun formatForSource(raw: String): String =
+        if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) "\"$raw\"" else raw
 
-Surface(
-modifier = modifier
-.let { baseModifier ->
-if (topBarSettings.animationType == TopBarAnimationType.FLIP_BOX) {
-baseModifier.graphicsLayer {
-rotationX = flipRotation.value
-cameraDistance = 12f * density
-}
-} else {
-baseModifier
-}
-}
-.clickable {
-if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) {
-onClick(currentText)
-} else if (activeTexts.isNotEmpty()) {
-currentIndex = (safeIndex + 1) % activeTexts.size
-}
-},
-shape = RoundedCornerShape(12.dp),
-color = if (showBubble) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f) else Color.Transparent,
-contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-border = if (showBubble) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)) else null
-) {
-when (topBarSettings.animationType) {
-TopBarAnimationType.NONE -> {
-Text(
-text = displayText,
-style = textStyle,
-color = textColor,
-maxLines = 1,
-overflow = TextOverflow.Ellipsis,
-modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-)
-}
-TopBarAnimationType.TYPEWRITER -> {
-val typewriterText = if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) {
-"\"$visibleText\"$cursor"
-} else {
-"$visibleText$cursor"
-}
-Text(
-text = typewriterText,
-style = textStyle,
-color = textColor,
-maxLines = 1,
-overflow = TextOverflow.Ellipsis,
-modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-)
-}
-TopBarAnimationType.FLIP_BOX -> {
-Text(
-text = displayText,
-style = textStyle,
-color = textColor,
-maxLines = 1,
-overflow = TextOverflow.Ellipsis,
-modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-)
-}
-TopBarAnimationType.FADE -> {
-AnimatedContent(
-targetState = currentIndex,
-transitionSpec = { fadeIn(tween(550)) togetherWith fadeOut(tween(450)) },
-label = "top_bar_fade"
-) { target ->
-Text(
-text = displayText,
-style = textStyle,
-color = textColor,
-maxLines = 1,
-overflow = TextOverflow.Ellipsis,
-modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-)
-}
-}
-TopBarAnimationType.SLIDE_VERTICAL -> {
-AnimatedContent(
-targetState = currentIndex,
-transitionSpec = {
-(slideInVertically(tween(500)) { it } + fadeIn(tween(400))) togetherWith
-(slideOutVertically(tween(500)) { -it } + fadeOut(tween(400)))
-},
-label = "top_bar_slide_vertical"
-) { target ->
-Text(
-text = displayText,
-style = textStyle,
-color = textColor,
-maxLines = 1,
-overflow = TextOverflow.Ellipsis,
-modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-)
-}
-}
-TopBarAnimationType.SCALE_FADE -> {
-AnimatedContent(
-targetState = currentIndex,
-transitionSpec = {
-(scaleIn(initialScale = 0.8f, animationSpec = tween(450)) + fadeIn(tween(400))) togetherWith
-(scaleOut(targetScale = 1.12f, tween(350)) + fadeOut(tween(400)))
-},
-label = "top_bar_scale_fade"
-) { target ->
-Text(
-text = displayText,
-style = textStyle,
-color = textColor,
-maxLines = 1,
-overflow = TextOverflow.Ellipsis,
-modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-)
-}
-}
-}
-}
+    val displayText = formatForSource(currentText)
+    val horizontalPad = if (showBubble) 10.dp else 4.dp
+
+    Surface(
+        modifier = modifier
+            .let { baseModifier ->
+                if (topBarSettings.animationType == TopBarAnimationType.FLIP_BOX) {
+                    baseModifier.graphicsLayer {
+                        rotationX = flipRotation.value
+                        cameraDistance = 12f * density
+                    }
+                } else {
+                    baseModifier
+                }
+            }
+            .clickable {
+                if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) {
+                    onClick(currentText)
+                } else if (activeTexts.isNotEmpty()) {
+                    currentIndex = (safeIndex + 1) % activeTexts.size
+                }
+            },
+        shape = RoundedCornerShape(12.dp),
+        color = if (showBubble) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f) else Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        border = if (showBubble) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)) else null
+    ) {
+        when (topBarSettings.animationType) {
+            TopBarAnimationType.NONE -> {
+                Text(
+                    text = displayText,
+                    style = textStyle,
+                    color = textColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = horizontalPad, vertical = 6.dp)
+                )
+            }
+            TopBarAnimationType.TYPEWRITER -> {
+                val typewriterText = if (topBarSettings.textSource == TopBarTextSource.AI_SUGGESTIONS) {
+                    "\"$visibleText\"$cursor"
+                } else {
+                    "$visibleText$cursor"
+                }
+                Text(
+                    text = typewriterText,
+                    style = textStyle,
+                    color = textColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = horizontalPad, vertical = 6.dp)
+                )
+            }
+            TopBarAnimationType.FLIP_BOX -> {
+                Text(
+                    text = displayText,
+                    style = textStyle,
+                    color = textColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = horizontalPad, vertical = 6.dp)
+                )
+            }
+            TopBarAnimationType.FADE -> {
+                AnimatedContent(
+                    targetState = safeIndex,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(550)) togetherWith fadeOut(animationSpec = tween(400))
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clipToBounds(),
+                    label = "top_bar_fade"
+                ) { targetIdx ->
+                    val itemText = formatForSource(activeTexts[targetIdx.coerceIn(0, activeTexts.lastIndex)])
+                    Text(
+                        text = itemText,
+                        style = textStyle,
+                        color = textColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = horizontalPad, vertical = 6.dp)
+                    )
+                }
+            }
+            TopBarAnimationType.SLIDE_VERTICAL -> {
+                AnimatedContent(
+                    targetState = safeIndex,
+                    transitionSpec = {
+                        (slideInVertically(animationSpec = tween(480)) { fullHeight -> fullHeight } +
+                            fadeIn(animationSpec = tween(360))) togetherWith
+                            (slideOutVertically(animationSpec = tween(480)) { fullHeight -> -fullHeight } +
+                                fadeOut(animationSpec = tween(320)))
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clipToBounds(),
+                    label = "top_bar_slide_vertical"
+                ) { targetIdx ->
+                    val itemText = formatForSource(activeTexts[targetIdx.coerceIn(0, activeTexts.lastIndex)])
+                    Text(
+                        text = itemText,
+                        style = textStyle,
+                        color = textColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = horizontalPad, vertical = 6.dp)
+                    )
+                }
+            }
+            TopBarAnimationType.SCALE_FADE -> {
+                AnimatedContent(
+                    targetState = safeIndex,
+                    transitionSpec = {
+                        (scaleIn(initialScale = 0.78f, animationSpec = tween(450)) +
+                            fadeIn(animationSpec = tween(380))) togetherWith
+                            (scaleOut(targetScale = 1.14f, animationSpec = tween(350)) +
+                                fadeOut(animationSpec = tween(320)))
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clipToBounds(),
+                    label = "top_bar_scale_fade"
+                ) { targetIdx ->
+                    val itemText = formatForSource(activeTexts[targetIdx.coerceIn(0, activeTexts.lastIndex)])
+                    Text(
+                        text = itemText,
+                        style = textStyle,
+                        color = textColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = horizontalPad, vertical = 6.dp)
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -516,18 +590,18 @@ fun TopBarDmShortcutButton(
 ) {
     Surface(
         onClick = onClick,
-        shape = CircleShape,
+        shape = RoundedCornerShape(12.dp),
         color = if (showBubble) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f) else Color.Transparent,
         border = if (showBubble) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)) else null,
         modifier = modifier
     ) {
         Box(
-            modifier = Modifier.padding(7.dp),
+            modifier = Modifier.padding(horizontal = if (showBubble) 8.dp else 4.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Default.Email,
-                contentDescription = "Mesajlar",
+                contentDescription = "DM Kutusu",
                 tint = if (hasUnread) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp)
             )

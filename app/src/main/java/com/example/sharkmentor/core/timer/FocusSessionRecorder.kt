@@ -2,6 +2,8 @@ package com.example.sharkmentor.core.timer
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import com.example.sharkmentor.core.util.GoogleServicesHelper
 import com.example.sharkmentor.core.widget.WidgetUpdateManager
@@ -12,6 +14,7 @@ import com.example.sharkmentor.service.sync.SyncWorker
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.SetOptions
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,21 +23,23 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Single-row checkpoint & cloud recording engine for active focus sessions (especially `STOPWATCH`)
  * and external study tools (e.g., PACE, KEEP).
  *
  * Guarantees:
- * 1. Generates a unique [activeSessionId] (UUID) at session start and checkpoints state in SharedPreferences.
+ * 1. Generates a unique [activeSessionId] (UUID) synchronously at session start and checkpoints state in SharedPreferences.
  * 2. Every **20 minutes** ([LOCAL_CHECKPOINT_INTERVAL_MS] = 1,200,000 ms), upserts the accumulated duration
  *    into Room via `SessionDao.upsertSession` on the **exact same row** (`isSynced = false`), never opening
- *    duplicate rows for the same session.
- * 3. Every **60 minutes** ([CLOUD_SYNC_INTERVAL_MS] = 3,600,000 ms), attempts to sync the session to
- *    Firestore (`students/{uid}/sessions/{uuid}` & `users/{uid}/sessions/{uuid}` & `students/{uid}/focus_sessions/{uuid}`).
- *    If offline, leaves `isSynced = false` locally so [SyncWorker] pushes automatically when connected.
- * 4. On service stop, reset, or crash recovery on restart, finalizes the same session row without
- *    double-counting (`lastCloudSyncedSeconds` tracks incremental `totalFocusSeconds` deltas).
+ *    duplicate rows for the same session. Local persistence NEVER blocks on network I/O.
+ * 3. Every **60 minutes** ([CLOUD_SYNC_INTERVAL_MS] = 3,600,000 ms), if internet is available, asynchronously
+ *    attempts to sync the session to Firestore (`students/{uid}/sessions/{uuid}`) with a strict timeout.
+ *    If offline or timed out, leaves `isSynced = false` locally so [SyncWorker] pushes automatically when connected,
+ *    while 20-minute local saves continue completely uninterrupted.
+ * 4. On service pause, stop, reset, or crash recovery on restart, finalizes the exact same session row without
+ *    double-counting (`cloudSyncedSecondsByUuid` tracks incremental `totalFocusSeconds` deltas).
  */
 object FocusSessionRecorder {
 
@@ -53,6 +58,9 @@ object FocusSessionRecorder {
     /** Lightweight SharedPreferences checkpoint flush interval (15 seconds) for crash resilience. */
     private const val PREFS_HEARTBEAT_INTERVAL_MS: Long = 15_000L
 
+    /** Hard timeout for Firestore writes so offline/flaky networks can NEVER stall recording. */
+    private const val CLOUD_SYNC_TIMEOUT_MS: Long = 12_000L
+
     private const val KEY_ACTIVE_SESSION_UUID = "active_session_uuid"
     private const val KEY_ACTIVE_ROW_ID = "active_row_id"
     private const val KEY_MODE_NAME = "mode_name"
@@ -67,7 +75,16 @@ object FocusSessionRecorder {
     private const val KEY_IS_FINALIZED = "is_finalized"
 
     private val recorderScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val mutex = Mutex()
+    private val cloudSyncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Protects ONLY fast local SharedPreferences + Room operations. Never held across network calls. */
+    private val localMutex = Mutex()
+
+    /** Serializes cloud Firestore delta pushes independently from local checkpoints. */
+    private val cloudMutex = Mutex()
+
+    /** Tracks how many seconds of a given session UUID have already been incremented on Firestore. */
+    private val cloudSyncedSecondsByUuid = ConcurrentHashMap<String, Long>()
 
     @Volatile
     private var activeSessionId: String? = null
@@ -93,21 +110,131 @@ object FocusSessionRecorder {
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    fun getActiveSessionId(): String? = activeSessionId
+    fun getActiveSessionId(): String? = if (isFinalized) null else activeSessionId
+
+    /**
+     * Fast, non-blocking check for active validated internet connectivity.
+     * Prevents Firestore SDK `.set().await()` from suspending indefinitely when offline.
+     */
+    internal fun isNetworkConnected(context: Context): Boolean {
+        return runCatching {
+            val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return false
+            val network = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Pure helper for computing whether local 20-min or cloud 60-min checkpoints are due.
+     */
+    internal fun computeCheckpointTriggers(
+        elapsedMillis: Long,
+        lastHeartbeatMs: Long,
+        lastLocalSaveMs: Long,
+        lastCloudSyncMs: Long
+    ): Triple<Boolean, Boolean, Boolean> {
+        val shouldHeartbeat = (elapsedMillis - lastHeartbeatMs) >= PREFS_HEARTBEAT_INTERVAL_MS
+        val shouldLocal20Min = (elapsedMillis - lastLocalSaveMs) >= LOCAL_CHECKPOINT_INTERVAL_MS
+        val shouldCloud60Min = (elapsedMillis - lastCloudSyncMs) >= CLOUD_SYNC_INTERVAL_MS
+        return Triple(shouldHeartbeat, shouldLocal20Min, shouldCloud60Min)
+    }
+
+    /**
+     * Dispatches Firestore sync on an independent scope without ever holding [localMutex].
+     */
+    private fun dispatchCloudSyncAsync(
+        appContext: Context,
+        sessionEntity: FocusSessionEntity,
+        sessionUuid: String,
+        subjectName: String,
+        fallbackPreviouslySyncedSeconds: Long,
+        isFinal: Boolean
+    ) {
+        if (!isNetworkConnected(appContext)) {
+            SyncWorker.enqueueImmediateSync(appContext)
+            Log.i(
+                TAG,
+                "Offline during cloud sync (uuid=$sessionUuid, final=$isFinal, sec=${sessionEntity.durationSeconds}); kept local isSynced=false & queued SyncWorker"
+            )
+            return
+        }
+
+        cloudSyncScope.launch {
+            cloudMutex.withLock {
+                val alreadySyncedSec = maxOf(
+                    cloudSyncedSecondsByUuid[sessionUuid] ?: 0L,
+                    fallbackPreviouslySyncedSeconds
+                )
+                val syncedOk = runCatching {
+                    withTimeoutOrNull(CLOUD_SYNC_TIMEOUT_MS) {
+                        syncSessionToFirestoreInternal(
+                            context = appContext,
+                            sessionEntity = sessionEntity,
+                            sessionUuid = sessionUuid,
+                            subjectName = subjectName,
+                            previouslySyncedSeconds = alreadySyncedSec,
+                            isFinal = isFinal
+                        )
+                    } ?: false
+                }.onFailure {
+                    Log.w(TAG, "Cloud sync failed (uuid=$sessionUuid, final=$isFinal): ${it.message}")
+                }.getOrDefault(false)
+
+                if (syncedOk) {
+                    val syncedSec = maxOf(alreadySyncedSec, sessionEntity.durationSeconds)
+                    cloudSyncedSecondsByUuid[sessionUuid] = syncedSec
+                    if (activeSessionId == sessionUuid) {
+                        lastCloudSyncedSeconds = syncedSec
+                        prefs(appContext).edit()
+                            .putLong(KEY_LAST_CLOUD_SYNCED_SECONDS, syncedSec)
+                            .apply()
+                    }
+                    if (isFinal) {
+                        runCatching {
+                            SharkMentorDatabase.getDatabase(appContext)
+                                .syncDao()
+                                .markSessionSynced(sessionEntity.id, sessionUuid)
+                        }
+                        cloudSyncedSecondsByUuid.remove(sessionUuid)
+                    }
+                    Log.i(
+                        TAG,
+                        "Cloud sync succeeded: uuid=$sessionUuid, final=$isFinal, durationSec=${sessionEntity.durationSeconds}"
+                    )
+                } else {
+                    SyncWorker.enqueueImmediateSync(appContext)
+                    Log.w(
+                        TAG,
+                        "Cloud sync deferred (timeout/error): uuid=$sessionUuid, final=$isFinal; 20-min local loop unaffected"
+                    )
+                }
+            }
+        }
+    }
 
     /**
      * Recovers and finalizes any orphaned session left in SharedPreferences after an unexpected
      * process death or crash, ensuring the same Room row is updated without double-counting.
      */
     fun recoverOrphanedSessionIfNeeded(context: Context, isTimerCurrentlyActive: Boolean) {
-        if (isTimerCurrentlyActive) return
+        if (isTimerCurrentlyActive || !isFinalized) return
         val appContext = context.applicationContext
         recorderScope.launch {
-            mutex.withLock {
+            var recoveredEntity: FocusSessionEntity? = null
+            var recoveredUuid = ""
+            var recoveredSubject = "Genel"
+            var recoveredSyncedSec = 0L
+
+            localMutex.withLock {
+                if (!isFinalized) return@withLock
                 val sp = prefs(appContext)
                 val wasFinalized = sp.getBoolean(KEY_IS_FINALIZED, true)
                 val orphanUuid = sp.getString(KEY_ACTIVE_SESSION_UUID, null)
                 if (wasFinalized || orphanUuid.isNullOrBlank()) return@withLock
+                if (orphanUuid == activeSessionId) return@withLock
 
                 val orphanRowId = sp.getLong(KEY_ACTIVE_ROW_ID, 0L)
                 val orphanElapsedMs = sp.getLong(KEY_LAST_KNOWN_ELAPSED_MS, 0L)
@@ -134,31 +261,32 @@ object FocusSessionRecorder {
                         screenOnMillis = orphanScreenOnMs,
                         markSynced = false
                     )
-                    val syncedOk = syncSessionToFirestoreInternal(
-                        context = appContext,
-                        sessionEntity = savedRow,
-                        sessionUuid = orphanUuid,
-                        subjectName = orphanSubject,
-                        previouslySyncedSeconds = orphanSyncedSec,
-                        isFinal = true
-                    )
-                    if (syncedOk) {
-                        SharkMentorDatabase.getDatabase(appContext)
-                            .syncDao()
-                            .markSessionSynced(savedRow.id, orphanUuid)
-                    } else {
-                        SyncWorker.enqueueImmediateSync(appContext)
-                    }
+                    evaluateWaterStreakAndRefreshWidgets(appContext)
+                    recoveredEntity = savedRow
+                    recoveredUuid = orphanUuid
+                    recoveredSubject = orphanSubject
+                    recoveredSyncedSec = orphanSyncedSec
                 }
 
                 clearCheckpointPrefs(sp)
+            }
+
+            recoveredEntity?.let { entity ->
+                dispatchCloudSyncAsync(
+                    appContext = appContext,
+                    sessionEntity = entity,
+                    sessionUuid = recoveredUuid,
+                    subjectName = recoveredSubject,
+                    fallbackPreviouslySyncedSeconds = recoveredSyncedSec,
+                    isFinal = true
+                )
             }
         }
     }
 
     /**
-     * Starts a new focus session, generating a unique UUID and initializing the checkpoint.
-     * If a previous session was still open, finalizes it first without double-counting.
+     * Starts a new focus session, generating a unique UUID and initializing in-memory state synchronously
+     * so early ticks are never lost. If a previous session was still open, finalizes it locally first.
      */
     fun startSession(
         context: Context,
@@ -169,15 +297,29 @@ object FocusSessionRecorder {
         val newUuid = UUID.randomUUID().toString()
         val nowWall = System.currentTimeMillis()
 
+        // Synchronously activate the new session before async I/O so no early ticks are dropped
+        activeSessionId = newUuid
+        activeRowId = 0L
+        lastPrefsHeartbeatElapsedMs = 0L
+        lastLocalSaveElapsedMs = 0L
+        lastCloudSyncElapsedMs = 0L
+        lastCloudSyncedSeconds = 0L
+        isFinalized = false
+
         recorderScope.launch {
-            mutex.withLock {
+            var prevEntityToSync: FocusSessionEntity? = null
+            var prevUuidToSync = ""
+            var prevSubjectToSync = subjectName
+            var prevSyncedSecToSync = 0L
+
+            localMutex.withLock {
                 val sp = prefs(appContext)
-                // If an unfinalized session was left open, finalize it cleanly first
+                // If an unfinalized session was left open, finalize it cleanly in Room first
                 val prevFinalized = sp.getBoolean(KEY_IS_FINALIZED, true)
                 val prevUuid = sp.getString(KEY_ACTIVE_SESSION_UUID, null)
                 val prevElapsed = sp.getLong(KEY_LAST_KNOWN_ELAPSED_MS, 0L)
                 val prevRowId = sp.getLong(KEY_ACTIVE_ROW_ID, 0L)
-                if (!prevFinalized && !prevUuid.isNullOrBlank() &&
+                if (!prevFinalized && !prevUuid.isNullOrBlank() && prevUuid != newUuid &&
                     (prevElapsed >= MIN_RECORDABLE_DURATION_MS || prevRowId > 0L)
                 ) {
                     val prevMode = sp.getString(KEY_MODE_NAME, modeName) ?: modeName
@@ -196,47 +338,43 @@ object FocusSessionRecorder {
                         screenOnMillis = prevScreenOn,
                         markSynced = false
                     )
-                    val syncedOk = syncSessionToFirestoreInternal(
-                        context = appContext,
-                        sessionEntity = savedPrev,
-                        sessionUuid = prevUuid,
-                        subjectName = prevSubject,
-                        previouslySyncedSeconds = prevSyncedSec,
-                        isFinal = true
-                    )
-                    if (syncedOk) {
-                        SharkMentorDatabase.getDatabase(appContext)
-                            .syncDao()
-                            .markSessionSynced(savedPrev.id, prevUuid)
-                    } else {
-                        SyncWorker.enqueueImmediateSync(appContext)
-                    }
+                    evaluateWaterStreakAndRefreshWidgets(appContext)
+                    prevEntityToSync = savedPrev
+                    prevUuidToSync = prevUuid
+                    prevSubjectToSync = prevSubject
+                    prevSyncedSecToSync = prevSyncedSec
                 }
 
-                activeSessionId = newUuid
-                activeRowId = 0L
-                lastPrefsHeartbeatElapsedMs = 0L
-                lastLocalSaveElapsedMs = 0L
-                lastCloudSyncElapsedMs = 0L
-                lastCloudSyncedSeconds = 0L
-                isFinalized = false
+                // Only write new session prefs if this session is still the active one
+                if (activeSessionId == newUuid && !isFinalized) {
+                    sp.edit()
+                        .putString(KEY_ACTIVE_SESSION_UUID, newUuid)
+                        .putLong(KEY_ACTIVE_ROW_ID, 0L)
+                        .putString(KEY_MODE_NAME, modeName)
+                        .putString(KEY_SUBJECT_NAME, subjectName)
+                        .putLong(KEY_STARTED_AT_MILLIS, nowWall)
+                        .putLong(KEY_LAST_KNOWN_ELAPSED_MS, 0L)
+                        .putLong(KEY_LAST_LOCAL_SAVE_ELAPSED_MS, 0L)
+                        .putLong(KEY_LAST_CLOUD_SYNC_ELAPSED_MS, 0L)
+                        .putLong(KEY_LAST_CLOUD_SYNCED_SECONDS, 0L)
+                        .putInt(KEY_PHONE_LIFT_COUNT, 0)
+                        .putLong(KEY_SCREEN_ON_MILLIS, 0L)
+                        .putBoolean(KEY_IS_FINALIZED, false)
+                        .apply()
 
-                sp.edit()
-                    .putString(KEY_ACTIVE_SESSION_UUID, newUuid)
-                    .putLong(KEY_ACTIVE_ROW_ID, 0L)
-                    .putString(KEY_MODE_NAME, modeName)
-                    .putString(KEY_SUBJECT_NAME, subjectName)
-                    .putLong(KEY_STARTED_AT_MILLIS, nowWall)
-                    .putLong(KEY_LAST_KNOWN_ELAPSED_MS, 0L)
-                    .putLong(KEY_LAST_LOCAL_SAVE_ELAPSED_MS, 0L)
-                    .putLong(KEY_LAST_CLOUD_SYNC_ELAPSED_MS, 0L)
-                    .putLong(KEY_LAST_CLOUD_SYNCED_SECONDS, 0L)
-                    .putInt(KEY_PHONE_LIFT_COUNT, 0)
-                    .putLong(KEY_SCREEN_ON_MILLIS, 0L)
-                    .putBoolean(KEY_IS_FINALIZED, false)
-                    .apply()
+                    Log.d(TAG, "Started new focus session uuid=$newUuid, mode=$modeName, subject=$subjectName")
+                }
+            }
 
-                Log.d(TAG, "Started new focus session uuid=$newUuid, mode=$modeName, subject=$subjectName")
+            prevEntityToSync?.let { entity ->
+                dispatchCloudSyncAsync(
+                    appContext = appContext,
+                    sessionEntity = entity,
+                    sessionUuid = prevUuidToSync,
+                    subjectName = prevSubjectToSync,
+                    fallbackPreviouslySyncedSeconds = prevSyncedSecToSync,
+                    isFinal = true
+                )
             }
         }
         return newUuid
@@ -245,8 +383,9 @@ object FocusSessionRecorder {
     /**
      * Called on each timer tick while focusing.
      * - Flushes lightweight crash-recovery checkpoint every 15 seconds.
-     * - Upserts the single Room row every **20 minutes** (`1_200_000 ms`) with `isSynced = false`.
-     * - Syncs to Firestore (`students/{uid}/sessions` & `users/{uid}/sessions`) every **60 minutes** (`3_600_000 ms`).
+     * - Upserts the single Room row every **20 minutes** (`1_200_000 ms`) with `isSynced = false` (never blocked by network).
+     * - Asynchronously attempts Firestore sync every **60 minutes** (`3_600_000 ms`) when online;
+     *   if offline, leaves `isSynced = false` for [SyncWorker] while 20-min local saves continue undisturbed.
      */
     fun onTick(
         context: Context,
@@ -258,39 +397,53 @@ object FocusSessionRecorder {
     ) {
         if (elapsedMillis <= 0L || isFinalized) return
 
-        val shouldFlushHeartbeat =
-            (elapsedMillis - lastPrefsHeartbeatElapsedMs) >= PREFS_HEARTBEAT_INTERVAL_MS
-        val shouldSaveLocal20Min =
-            (elapsedMillis - lastLocalSaveElapsedMs) >= LOCAL_CHECKPOINT_INTERVAL_MS
-        val shouldSyncCloud60Min =
-            (elapsedMillis - lastCloudSyncElapsedMs) >= CLOUD_SYNC_INTERVAL_MS
+        val (shouldFlushHeartbeat, shouldSaveLocal20Min, shouldSyncCloud60Min) = computeCheckpointTriggers(
+            elapsedMillis = elapsedMillis,
+            lastHeartbeatMs = lastPrefsHeartbeatElapsedMs,
+            lastLocalSaveMs = lastLocalSaveElapsedMs,
+            lastCloudSyncMs = lastCloudSyncElapsedMs
+        )
 
         if (!shouldFlushHeartbeat && !shouldSaveLocal20Min && !shouldSyncCloud60Min) {
             return
         }
 
         val appContext = context.applicationContext
+        val capturedSessionUuid = activeSessionId
         if (shouldFlushHeartbeat) {
             lastPrefsHeartbeatElapsedMs = elapsedMillis
         }
-        if (shouldSaveLocal20Min) {
-            lastLocalSaveElapsedMs =
-                (elapsedMillis / LOCAL_CHECKPOINT_INTERVAL_MS) * LOCAL_CHECKPOINT_INTERVAL_MS
+        val nextLocalBucketMs = if (shouldSaveLocal20Min) {
+            ((elapsedMillis / LOCAL_CHECKPOINT_INTERVAL_MS) * LOCAL_CHECKPOINT_INTERVAL_MS).also {
+                lastLocalSaveElapsedMs = it
+            }
+        } else {
+            lastLocalSaveElapsedMs
         }
-        if (shouldSyncCloud60Min) {
-            lastCloudSyncElapsedMs =
-                (elapsedMillis / CLOUD_SYNC_INTERVAL_MS) * CLOUD_SYNC_INTERVAL_MS
+        val nextCloudBucketMs = if (shouldSyncCloud60Min) {
+            ((elapsedMillis / CLOUD_SYNC_INTERVAL_MS) * CLOUD_SYNC_INTERVAL_MS).also {
+                lastCloudSyncElapsedMs = it
+            }
+        } else {
+            lastCloudSyncElapsedMs
         }
 
         recorderScope.launch {
-            mutex.withLock {
+            var entityForCloudSync: FocusSessionEntity? = null
+            var uuidForCloudSync = ""
+            var prevSyncedSecForCloud = 0L
+
+            localMutex.withLock {
                 if (isFinalized) return@withLock
+                if (capturedSessionUuid != null && activeSessionId != null && capturedSessionUuid != activeSessionId) {
+                    return@withLock
+                }
                 val sp = prefs(appContext)
                 val uuid = activeSessionId
                     ?: sp.getString(KEY_ACTIVE_SESSION_UUID, null)
                     ?: UUID.randomUUID().toString().also { activeSessionId = it }
 
-                // 1. Always update SharedPreferences checkpoint
+                // 1. Always update SharedPreferences checkpoint (fast local write)
                 sp.edit()
                     .putString(KEY_ACTIVE_SESSION_UUID, uuid)
                     .putString(KEY_MODE_NAME, modeName)
@@ -298,9 +451,10 @@ object FocusSessionRecorder {
                     .putLong(KEY_LAST_KNOWN_ELAPSED_MS, elapsedMillis)
                     .putInt(KEY_PHONE_LIFT_COUNT, phoneLiftCount)
                     .putLong(KEY_SCREEN_ON_MILLIS, screenOnMillis)
+                    .putBoolean(KEY_IS_FINALIZED, false)
                     .apply()
 
-                // 2. Every 20 minutes (or when 60-minute cloud sync triggers): Upsert the SAME Room row
+                // 2. Every 20 minutes (or at 60-minute boundary): Upsert the SAME Room row locally
                 if (shouldSaveLocal20Min || shouldSyncCloud60Min) {
                     val savedEntity = upsertSingleSessionRowInternal(
                         context = appContext,
@@ -315,7 +469,8 @@ object FocusSessionRecorder {
                     activeRowId = savedEntity.id
                     sp.edit()
                         .putLong(KEY_ACTIVE_ROW_ID, savedEntity.id)
-                        .putLong(KEY_LAST_LOCAL_SAVE_ELAPSED_MS, lastLocalSaveElapsedMs)
+                        .putLong(KEY_LAST_LOCAL_SAVE_ELAPSED_MS, nextLocalBucketMs)
+                        .putLong(KEY_LAST_CLOUD_SYNC_ELAPSED_MS, nextCloudBucketMs)
                         .apply()
 
                     Log.i(
@@ -324,46 +479,34 @@ object FocusSessionRecorder {
                     )
                     evaluateWaterStreakAndRefreshWidgets(appContext)
 
-                    // 3. Every 60 minutes: Attempt Firestore sync; if offline, keep isSynced=false for SyncWorker
                     if (shouldSyncCloud60Min) {
-                        val prevSyncedSec = lastCloudSyncedSeconds.takeIf { it > 0L }
-                            ?: sp.getLong(KEY_LAST_CLOUD_SYNCED_SECONDS, 0L)
-                        val syncedOk = runCatching { syncSessionToFirestoreInternal(
-                            context = appContext,
-                            sessionEntity = savedEntity,
-                            sessionUuid = uuid,
-                            subjectName = subjectName,
-                            previouslySyncedSeconds = prevSyncedSec,
-                            isFinal = false
-                         }.onFailure { Log.w(TAG, "60-min cloud sync failed; 20-min local loop continues", it) }.getOrDefault(false))
-                        if (syncedOk) {
-                            lastCloudSyncedSeconds = savedEntity.durationSeconds
-                            sp.edit()
-                                .putLong(KEY_LAST_CLOUD_SYNC_ELAPSED_MS, lastCloudSyncElapsedMs)
-                                .putLong(KEY_LAST_CLOUD_SYNCED_SECONDS, savedEntity.durationSeconds)
-                                .apply()
-                            Log.i(
-                                TAG,
-                                "60-min cloud sync succeeded: uuid=$uuid, durationSec=${savedEntity.durationSeconds}"
-                            )
-                        } else {
-                            sp.edit()
-                                .putLong(KEY_LAST_CLOUD_SYNC_ELAPSED_MS, lastCloudSyncElapsedMs)
-                                .apply()
-                            SyncWorker.enqueueImmediateSync(appContext)
-                            Log.w(
-                                TAG,
-                                "60-min cloud sync deferred (offline/error); left isSynced=false for SyncWorker (uuid=$uuid)"
-                            )
-                        }
+                        entityForCloudSync = savedEntity
+                        uuidForCloudSync = uuid
+                        prevSyncedSecForCloud = maxOf(
+                            lastCloudSyncedSeconds,
+                            sp.getLong(KEY_LAST_CLOUD_SYNCED_SECONDS, 0L)
+                        )
                     }
                 }
+            }
+
+            // 3. Every 60 minutes: Dispatch cloud sync OUTSIDE localMutex so local checkpoints NEVER stall
+            entityForCloudSync?.let { savedEntity ->
+                dispatchCloudSyncAsync(
+                    appContext = appContext,
+                    sessionEntity = savedEntity,
+                    sessionUuid = uuidForCloudSync,
+                    subjectName = subjectName,
+                    fallbackPreviouslySyncedSeconds = prevSyncedSecForCloud,
+                    isFinal = false
+                )
             }
         }
     }
 
     /**
-     * Called when the user pauses the timer so the exact paused elapsed time is persisted in the checkpoint.
+     * Called when the user pauses the timer so the exact paused elapsed time is persisted in both
+     * SharedPreferences and Room without finalizing the session.
      */
     fun onPauseCheckpoint(
         context: Context,
@@ -375,27 +518,55 @@ object FocusSessionRecorder {
     ) {
         val appContext = context.applicationContext
         recorderScope.launch {
-            mutex.withLock {
+            localMutex.withLock {
                 if (isFinalized) return@withLock
                 val sp = prefs(appContext)
+                val effectiveElapsed = maxOf(elapsedMillis, sp.getLong(KEY_LAST_KNOWN_ELAPSED_MS, 0L))
+                val uuid = activeSessionId
+                    ?: sp.getString(KEY_ACTIVE_SESSION_UUID, null)
+                    ?: if (effectiveElapsed >= MIN_RECORDABLE_DURATION_MS) {
+                        UUID.randomUUID().toString().also { activeSessionId = it }
+                    } else null
+
                 sp.edit()
-                    .putLong(KEY_LAST_KNOWN_ELAPSED_MS, elapsedMillis)
+                    .apply {
+                        if (uuid != null) putString(KEY_ACTIVE_SESSION_UUID, uuid)
+                    }
+                    .putLong(KEY_LAST_KNOWN_ELAPSED_MS, effectiveElapsed)
                     .putString(KEY_MODE_NAME, modeName)
                     .putString(KEY_SUBJECT_NAME, subjectName)
                     .putInt(KEY_PHONE_LIFT_COUNT, phoneLiftCount)
                     .putLong(KEY_SCREEN_ON_MILLIS, screenOnMillis)
+                    .putBoolean(KEY_IS_FINALIZED, false)
                     .apply()
-                val uuid = activeSessionId ?: sp.getString(KEY_ACTIVE_SESSION_UUID, null) ?: if (elapsedMillis >= MIN_RECORDABLE_DURATION_MS) UUID.randomUUID().toString().also { activeSessionId = it; sp.edit().putString(KEY_ACTIVE_SESSION_UUID, it).apply() } else null
-                if (uuid != null && elapsedMillis >= 1_000L) { runCatching { val rowId = activeRowId.takeIf { it > 0L } ?: sp.getLong(KEY_ACTIVE_ROW_ID, 0L); val saved = upsertSingleSessionRowInternal(context = appContext, sessionUuid = uuid, existingRowId = rowId, modeName = modeName, durationMillis = elapsedMillis, phoneLiftCount = phoneLiftCount, screenOnMillis = screenOnMillis, markSynced = false); activeRowId = saved.id; sp.edit().putLong(KEY_ACTIVE_ROW_ID, saved.id).apply() }.onFailure { Log.e(TAG, "Pause checkpoint Room upsert failed", it) } }
+
+                if (uuid != null && effectiveElapsed >= MIN_RECORDABLE_DURATION_MS) {
+                    runCatching {
+                        val rowId = activeRowId.takeIf { it > 0L } ?: sp.getLong(KEY_ACTIVE_ROW_ID, 0L)
+                        val saved = upsertSingleSessionRowInternal(
+                            context = appContext,
+                            sessionUuid = uuid,
+                            existingRowId = rowId,
+                            modeName = modeName,
+                            durationMillis = effectiveElapsed,
+                            phoneLiftCount = phoneLiftCount,
+                            screenOnMillis = screenOnMillis,
+                            markSynced = false
+                        )
+                        activeRowId = saved.id
+                        sp.edit().putLong(KEY_ACTIVE_ROW_ID, saved.id).apply()
+                        evaluateWaterStreakAndRefreshWidgets(appContext)
+                    }.onFailure { Log.e(TAG, "Pause checkpoint Room upsert failed", it) }
+                }
             }
-            
         }
     }
 
     /**
      * Finalizes the active session upon Stop, Reset, Pomodoro/Block completion, or Service destroy.
-     * Updates the exact same Room row (`activeRowId` / `cloudId = activeSessionId`) and syncs only
-     * the remaining delta seconds to Firestore so double-counting never occurs.
+     * Updates the exact same Room row (`activeRowId` / `cloudId = activeSessionId`) quickly inside
+     * [localMutex], invokes [onComplete] as soon as Room persistence succeeds, and dispatches cloud sync
+     * asynchronously so offline state can NEVER prevent saving the full study duration.
      */
     fun finalizeSession(
         context: Context,
@@ -403,83 +574,89 @@ object FocusSessionRecorder {
         modeName: String,
         subjectName: String = "Genel",
         phoneLiftCount: Int = 0,
-        screenOnMillis: Long = 0L, onComplete: (() -> Unit)? = null
+        screenOnMillis: Long = 0L,
+        onComplete: (() -> Unit)? = null
     ) {
         val appContext = context.applicationContext
         recorderScope.launch {
+            var finalEntityToSync: FocusSessionEntity? = null
+            var finalUuidToSync = ""
+            var finalPrevSyncedSec = 0L
+
             try {
-            mutex.withLock {
-                val sp = prefs(appContext)
-                val alreadyFinalized = isFinalized && sp.getBoolean(KEY_IS_FINALIZED, true)
-                if (alreadyFinalized) {
-                    return@withLock
-                }
+                localMutex.withLock {
+                    val sp = prefs(appContext)
+                    val alreadyFinalized = isFinalized && sp.getBoolean(KEY_IS_FINALIZED, true)
+                    if (alreadyFinalized) {
+                        return@withLock
+                    }
 
-                val uuid = activeSessionId
-                    ?: sp.getString(KEY_ACTIVE_SESSION_UUID, null)
-                    ?: UUID.randomUUID().toString()
-                val existingRowId = activeRowId.takeIf { it > 0L } ?: sp.getLong(KEY_ACTIVE_ROW_ID, 0L)
-                val effectiveElapsedMs = maxOf(elapsedMillis, sp.getLong(KEY_LAST_KNOWN_ELAPSED_MS, 0L))
-                val prevSyncedSec = maxOf(
-                    lastCloudSyncedSeconds,
-                    sp.getLong(KEY_LAST_CLOUD_SYNCED_SECONDS, 0L)
-                )
-
-                // Mark finalized immediately before async I/O to prevent any concurrent duplicate finalize
-                isFinalized = true
-                activeSessionId = null
-                activeRowId = 0L
-                lastPrefsHeartbeatElapsedMs = 0L
-                lastLocalSaveElapsedMs = 0L
-                lastCloudSyncElapsedMs = 0L
-                lastCloudSyncedSeconds = 0L
-                clearCheckpointPrefs(sp)
-
-                if (effectiveElapsedMs < MIN_RECORDABLE_DURATION_MS && existingRowId <= 0L) {
-                    Log.d(
-                        TAG,
-                        "Session shorter than 60s (${effectiveElapsedMs}ms) with no checkpoint row; skipping save."
+                    val uuid = activeSessionId
+                        ?: sp.getString(KEY_ACTIVE_SESSION_UUID, null)
+                        ?: UUID.randomUUID().toString()
+                    val existingRowId = activeRowId.takeIf { it > 0L } ?: sp.getLong(KEY_ACTIVE_ROW_ID, 0L)
+                    val effectiveElapsedMs = maxOf(elapsedMillis, sp.getLong(KEY_LAST_KNOWN_ELAPSED_MS, 0L))
+                    val prevSyncedSec = maxOf(
+                        lastCloudSyncedSeconds,
+                        sp.getLong(KEY_LAST_CLOUD_SYNCED_SECONDS, 0L),
+                        cloudSyncedSecondsByUuid[uuid] ?: 0L
                     )
-                    return@withLock
+
+                    // Mark finalized immediately inside localMutex to prevent concurrent duplicate finalizes
+                    isFinalized = true
+                    activeSessionId = null
+                    activeRowId = 0L
+                    lastPrefsHeartbeatElapsedMs = 0L
+                    lastLocalSaveElapsedMs = 0L
+                    lastCloudSyncElapsedMs = 0L
+                    lastCloudSyncedSeconds = 0L
+                    clearCheckpointPrefs(sp)
+
+                    if (effectiveElapsedMs < MIN_RECORDABLE_DURATION_MS && existingRowId <= 0L) {
+                        Log.d(
+                            TAG,
+                            "Session shorter than 60s (${effectiveElapsedMs}ms) with no checkpoint row; skipping save."
+                        )
+                        return@withLock
+                    }
+
+                    val finalEntity = upsertSingleSessionRowInternal(
+                        context = appContext,
+                        sessionUuid = uuid,
+                        existingRowId = existingRowId,
+                        modeName = modeName,
+                        durationMillis = effectiveElapsedMs,
+                        phoneLiftCount = phoneLiftCount,
+                        screenOnMillis = screenOnMillis,
+                        markSynced = false
+                    )
+
+                    Log.i(
+                        TAG,
+                        "Finalized session in Room (single-row upsert): rowId=${finalEntity.id}, uuid=$uuid, totalSec=${finalEntity.durationSeconds}"
+                    )
+                    evaluateWaterStreakAndRefreshWidgets(appContext)
+
+                    finalEntityToSync = finalEntity
+                    finalUuidToSync = uuid
+                    finalPrevSyncedSec = prevSyncedSec
                 }
+            } catch (t: Throwable) {
+                Log.e(TAG, "Error during finalizeSession local persistence", t)
+            } finally {
+                // Local Room write is complete — let FocusTimerService finish cleanup cleanly without waiting on network
+                onComplete?.invoke()
+            }
 
-                val finalEntity = upsertSingleSessionRowInternal(
-                    context = appContext,
-                    sessionUuid = uuid,
-                    existingRowId = existingRowId,
-                    modeName = modeName,
-                    durationMillis = effectiveElapsedMs,
-                    phoneLiftCount = phoneLiftCount,
-                    screenOnMillis = screenOnMillis,
-                    markSynced = false
-                )
-
-                Log.i(
-                    TAG,
-                    "Finalized session in Room (single-row upsert): rowId=${finalEntity.id}, uuid=$uuid, totalSec=${finalEntity.durationSeconds}"
-                )
-                evaluateWaterStreakAndRefreshWidgets(appContext)
-
-                val syncedOk = runCatching { syncSessionToFirestoreInternal(
-                    context = appContext,
-                    sessionEntity = finalEntity,
-                    sessionUuid = uuid,
+            finalEntityToSync?.let { entity ->
+                dispatchCloudSyncAsync(
+                    appContext = appContext,
+                    sessionEntity = entity,
+                    sessionUuid = finalUuidToSync,
                     subjectName = subjectName,
-                    previouslySyncedSeconds = prevSyncedSec,
+                    fallbackPreviouslySyncedSeconds = finalPrevSyncedSec,
                     isFinal = true
                 )
-                }.onFailure { Log.w(TAG, "Final cloud sync failed", it) }.getOrDefault(false)
-
-                if (syncedOk) {
-                    SharkMentorDatabase.getDatabase(appContext)
-                        .syncDao()
-                        .markSessionSynced(finalEntity.id, uuid)
-                } else {
-                    SyncWorker.enqueueImmediateSync(appContext)
-                }
-            }
-            } finally {
-                onComplete?.invoke()
             }
         }
     }
@@ -500,11 +677,11 @@ object FocusSessionRecorder {
     ): Long = withContext(Dispatchers.IO) {
         if (durationSeconds <= 0L) return@withContext 0L
         val appContext = context.applicationContext
-        mutex.withLock {
+        val savedEntity = localMutex.withLock {
             val sessionDao = SharkMentorDatabase.getDatabase(appContext).sessionDao()
             val existing = sessionDao.getSessionByCloudId(sessionUuid)
             val normalizedModeName = if (toolName.isBlank()) "Harici Araç" else toolName.trim()
-            val savedEntity = upsertSingleSessionRowInternal(
+            upsertSingleSessionRowInternal(
                 context = appContext,
                 sessionUuid = sessionUuid,
                 existingRowId = existing?.id ?: 0L,
@@ -513,25 +690,19 @@ object FocusSessionRecorder {
                 phoneLiftCount = existing?.phoneLiftCount ?: 0,
                 screenOnMillis = ((existing?.screenOnMinutes ?: 0) * 60_000L),
                 markSynced = false
-            )
-            evaluateWaterStreakAndRefreshWidgets(appContext)
-            val syncedOk = syncSessionToFirestoreInternal(
-                context = appContext,
-                sessionEntity = savedEntity,
-                sessionUuid = sessionUuid,
-                subjectName = subjectName,
-                previouslySyncedSeconds = previouslySyncedSeconds,
-                isFinal = isFinal
-            )
-            if (syncedOk) {
-                SharkMentorDatabase.getDatabase(appContext)
-                    .syncDao()
-                    .markSessionSynced(savedEntity.id, sessionUuid)
-            } else {
-                SyncWorker.enqueueImmediateSync(appContext)
+            ).also {
+                evaluateWaterStreakAndRefreshWidgets(appContext)
             }
-            savedEntity.id
         }
+        dispatchCloudSyncAsync(
+            appContext = appContext,
+            sessionEntity = savedEntity,
+            sessionUuid = sessionUuid,
+            subjectName = subjectName,
+            fallbackPreviouslySyncedSeconds = previouslySyncedSeconds,
+            isFinal = isFinal
+        )
+        savedEntity.id
     }
 
     /**
@@ -573,7 +744,7 @@ object FocusSessionRecorder {
         }.onFailure {
             Log.w(TAG, "Water streak evaluation warning: ${it.message}")
         }
-        WidgetUpdateManager.updateAllWidgets(appContext)
+        runCatching { WidgetUpdateManager.updateAllWidgets(appContext) }
     }
 
     // ── Internal Single-Row Room Upsert & Firestore Sync ─────────────────────

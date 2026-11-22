@@ -10,6 +10,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import com.example.sharkmentor.ui.screens.notes.NoteFontOption
+import com.example.sharkmentor.ui.screens.notes.NoteRichTextHelper
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,6 +37,13 @@ object NoteDrawingPreferences {
     private const val KEY_PRESSURE_STRENGTH = "pressure_sensitivity_strength"
     private const val KEY_SCRIBBLE_TO_ERASE = "scribble_to_erase_enabled"
     private const val KEY_AUTO_SHAPE_RECOGNITION = "auto_shape_recognition_enabled"
+    private const val KEY_STYLUS_ONLY_MODE = "stylus_only_mode_enabled"
+    private const val KEY_LAST_ERASER_TOOL = "last_selected_eraser_tool"
+    private const val KEY_SHOW_FLOATING_TIMER = "show_floating_focus_timer"
+    private const val KEY_FLOATING_TIMER_COMPACT = "floating_focus_timer_compact"
+    private const val KEY_FLOATING_TIMER_SCALE = "floating_focus_timer_scale"
+    private const val KEY_FLOATING_TIMER_X_RATIO = "floating_focus_timer_x_ratio"
+    private const val KEY_FLOATING_TIMER_Y_RATIO = "floating_focus_timer_y_ratio"
 
     @Volatile
     private var loaded = false
@@ -49,6 +60,27 @@ object NoteDrawingPreferences {
     private val _autoShapeRecognitionEnabled = MutableStateFlow(true)
     val autoShapeRecognitionEnabled: StateFlow<Boolean> = _autoShapeRecognitionEnabled.asStateFlow()
 
+    private val _stylusOnlyModeEnabled = MutableStateFlow(false)
+    val stylusOnlyModeEnabled: StateFlow<Boolean> = _stylusOnlyModeEnabled.asStateFlow()
+
+    private val _lastSelectedEraserTool = MutableStateFlow(DrawingTool.STROKE_ERASER)
+    val lastSelectedEraserTool: StateFlow<DrawingTool> = _lastSelectedEraserTool.asStateFlow()
+
+    private val _showFloatingFocusTimer = MutableStateFlow(false)
+    val showFloatingFocusTimer: StateFlow<Boolean> = _showFloatingFocusTimer.asStateFlow()
+
+    private val _floatingFocusTimerCompact = MutableStateFlow(true)
+    val floatingFocusTimerCompact: StateFlow<Boolean> = _floatingFocusTimerCompact.asStateFlow()
+
+    private val _floatingFocusTimerScale = MutableStateFlow(1.0f)
+    val floatingFocusTimerScale: StateFlow<Float> = _floatingFocusTimerScale.asStateFlow()
+
+    private val _floatingFocusTimerXRatio = MutableStateFlow(0.68f)
+    val floatingFocusTimerXRatio: StateFlow<Float> = _floatingFocusTimerXRatio.asStateFlow()
+
+    private val _floatingFocusTimerYRatio = MutableStateFlow(0.06f)
+    val floatingFocusTimerYRatio: StateFlow<Float> = _floatingFocusTimerYRatio.asStateFlow()
+
     fun ensureLoaded(context: Context) {
         if (loaded) return
         synchronized(this) {
@@ -59,6 +91,17 @@ object NoteDrawingPreferences {
                 _pressureSensitivityStrength.value = prefs.getFloat(KEY_PRESSURE_STRENGTH, 1.15f).coerceIn(0.5f, 1.8f)
                 _scribbleToEraseEnabled.value = prefs.getBoolean(KEY_SCRIBBLE_TO_ERASE, true)
                 _autoShapeRecognitionEnabled.value = prefs.getBoolean(KEY_AUTO_SHAPE_RECOGNITION, true)
+                _stylusOnlyModeEnabled.value = prefs.getBoolean(KEY_STYLUS_ONLY_MODE, false)
+                val savedEraserName = prefs.getString(KEY_LAST_ERASER_TOOL, DrawingTool.STROKE_ERASER.name)
+                val parsedEraser = runCatching { DrawingTool.valueOf(savedEraserName ?: "") }
+                    .getOrDefault(DrawingTool.STROKE_ERASER)
+                    .takeIf { it.isEraserTool } ?: DrawingTool.STROKE_ERASER
+                _lastSelectedEraserTool.value = parsedEraser
+                _showFloatingFocusTimer.value = prefs.getBoolean(KEY_SHOW_FLOATING_TIMER, false)
+                _floatingFocusTimerCompact.value = prefs.getBoolean(KEY_FLOATING_TIMER_COMPACT, true)
+                _floatingFocusTimerScale.value = prefs.getFloat(KEY_FLOATING_TIMER_SCALE, 1.0f).coerceIn(0.8f, 1.4f)
+                _floatingFocusTimerXRatio.value = prefs.getFloat(KEY_FLOATING_TIMER_X_RATIO, 0.68f).coerceIn(0.02f, 0.95f)
+                _floatingFocusTimerYRatio.value = prefs.getFloat(KEY_FLOATING_TIMER_Y_RATIO, 0.06f).coerceIn(0.02f, 0.90f)
             }
             loaded = true
         }
@@ -108,6 +151,78 @@ object NoteDrawingPreferences {
                 .apply()
         }
     }
+
+    fun setStylusOnlyModeEnabled(context: Context, enabled: Boolean) {
+        ensureLoaded(context)
+        _stylusOnlyModeEnabled.value = enabled
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_STYLUS_ONLY_MODE, enabled)
+                .apply()
+        }
+    }
+
+    fun setLastSelectedEraserTool(context: Context, tool: DrawingTool) {
+        if (!tool.isEraserTool) return
+        ensureLoaded(context)
+        _lastSelectedEraserTool.value = tool
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_LAST_ERASER_TOOL, tool.name)
+                .apply()
+        }
+    }
+
+    fun setShowFloatingFocusTimer(context: Context, show: Boolean) {
+        ensureLoaded(context)
+        _showFloatingFocusTimer.value = show
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_SHOW_FLOATING_TIMER, show)
+                .apply()
+        }
+    }
+
+    fun setFloatingFocusTimerCompact(context: Context, compact: Boolean) {
+        ensureLoaded(context)
+        _floatingFocusTimerCompact.value = compact
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_FLOATING_TIMER_COMPACT, compact)
+                .apply()
+        }
+    }
+
+    fun setFloatingFocusTimerScale(context: Context, scale: Float) {
+        ensureLoaded(context)
+        val clamped = scale.coerceIn(0.8f, 1.4f)
+        _floatingFocusTimerScale.value = clamped
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putFloat(KEY_FLOATING_TIMER_SCALE, clamped)
+                .apply()
+        }
+    }
+
+    fun setFloatingFocusTimerPosition(context: Context, xRatio: Float, yRatio: Float) {
+        ensureLoaded(context)
+        val cx = xRatio.coerceIn(0.02f, 0.95f)
+        val cy = yRatio.coerceIn(0.02f, 0.90f)
+        _floatingFocusTimerXRatio.value = cx
+        _floatingFocusTimerYRatio.value = cy
+        runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putFloat(KEY_FLOATING_TIMER_X_RATIO, cx)
+                .putFloat(KEY_FLOATING_TIMER_Y_RATIO, cy)
+                .apply()
+        }
+    }
 }
 
 /**
@@ -131,7 +246,7 @@ enum class DrawingTool(
     TECHNICAL_PEN("İnce Teknik Kalem", 1.8f, 1.0f),
     UNDERLINE_MARKER("Alt Çizgi", 3.5f, 0.90f),
 
-    // Silgiler
+    // Silgiler (Silgi simgesine uzun basınca seçilir)
     STROKE_ERASER("Çizgi Silgisi", 22f, 1.0f),
     AREA_ERASER("Alan Silgisi", 20f, 1.0f),
 
@@ -143,7 +258,10 @@ enum class DrawingTool(
     SHAPE_TRIANGLE("Üçgen", 4.0f, 1.0f),
 
     // Kement (Lasso)
-    LASSO("Kement Seçim", 2.5f, 1.0f);
+    LASSO("Kement Seçim", 2.5f, 1.0f),
+
+    // Metin Kutusu (Çizimli notlar & PDF üstü zengin metin kutuları)
+    TEXT_BOX("Metin Kutusu", 2.0f, 1.0f);
 
     val shortLabel: String
         get() = when (this) {
@@ -154,6 +272,9 @@ enum class DrawingTool(
             HIGHLIGHTER -> "Fosforlu"
             TECHNICAL_PEN -> "Teknik"
             UNDERLINE_MARKER -> "Alt Çizgi"
+            STROKE_ERASER -> "Çizgi Sil"
+            AREA_ERASER -> "Alan Sil"
+            TEXT_BOX -> "Metin Kutusu"
             else -> displayName
         }
 
@@ -164,6 +285,8 @@ enum class DrawingTool(
             PENCIL -> "Mat grafit dokulu çizim ucu"
             BRUSH_PEN -> "Geniş aralıklı vurgulu fırça"
             HIGHLIGHTER -> "Yarı saydam vurgu kalemi"
+            STROKE_ERASER -> "Dokunulan çizgiyi tek hamlede siler"
+            AREA_ERASER -> "Yalnızca sürüklenen bölümü hassasça siler"
             else -> displayName
         }
 
@@ -204,8 +327,25 @@ enum class DrawingTool(
             BRUSH_PEN,
             HIGHLIGHTER
         )
+
+        val ERASER_PACKAGES: List<DrawingTool> = listOf(
+            STROKE_ERASER,
+            AREA_ERASER
+        )
     }
 }
+
+@Immutable
+data class DrawingTextBox(
+    val id: String = UUID.randomUUID().toString(),
+    val xFraction: Float = 0.12f,
+    val yFraction: Float = 0.14f,
+    val widthFraction: Float = 0.48f,
+    val taggedContent: String = "",
+    val baseFontName: String = "DEFAULT",
+    val baseFontSizeSp: Float = 16f,
+    val baseTextColorArgb: Int? = null
+)
 
 enum class ShapeKind {
     NONE,
@@ -438,12 +578,32 @@ data class DrawingStroke(
 class DrawingController(
     val maxHistorySteps: Int = 60,
     context: Context? = null,
-    private val onStrokesChanged: (List<DrawingStroke>) -> Unit = {}
+    private val onStrokesChanged: (List<DrawingStroke>) -> Unit = {},
+    private val onTextBoxesChanged: (List<DrawingTextBox>) -> Unit = {}
 ) {
     private var appContext: Context? = context?.applicationContext
 
     var strokes by mutableStateOf<List<DrawingStroke>>(emptyList())
         private set
+
+    var textBoxes by mutableStateOf<List<DrawingTextBox>>(emptyList())
+        private set
+
+    var activeTextBoxId by mutableStateOf<String?>(null)
+        private set
+
+    var activeTextBoxFieldValue by mutableStateOf(TextFieldValue(""))
+        private set
+
+    // Rich-text formatting state for the active DrawingTextBox (1:1 parity with Notes text editor)
+    var textBoxBold by mutableStateOf(false)
+    var textBoxItalic by mutableStateOf(false)
+    var textBoxUnderline by mutableStateOf(false)
+    var textBoxTextColor by mutableStateOf<Color?>(null)
+    var textBoxHighlightColor by mutableStateOf<Color?>(null)
+    var textBoxHighlightIntensity by mutableFloatStateOf(0.55f)
+    var textBoxFontOption by mutableStateOf(NoteFontOption.DEFAULT)
+    var textBoxFontSizeSp by mutableFloatStateOf(NoteRichTextHelper.DEFAULT_FONT_SIZE_SP)
 
     var activeTool by mutableStateOf(DrawingTool.NONE)
         private set
@@ -451,11 +611,14 @@ class DrawingController(
     var lastSelectedPenTool by mutableStateOf(DrawingTool.FOUNTAIN_PEN)
         private set
 
+    var lastSelectedEraserTool by mutableStateOf(NoteDrawingPreferences.lastSelectedEraserTool.value)
+        private set
+
     var penColor by mutableStateOf(Color(0xFF1E88E5))
     var strokeWidth by mutableFloatStateOf(DrawingTool.FOUNTAIN_PEN.defaultWidth)
     var alpha by mutableFloatStateOf(DrawingTool.FOUNTAIN_PEN.defaultAlpha)
     var eraserRadius by mutableFloatStateOf(22f)
-    var stylusOnlyMode by mutableStateOf(false)
+    var stylusOnlyMode by mutableStateOf(NoteDrawingPreferences.stylusOnlyModeEnabled.value)
         private set
     var smartPalmRejectionEnabled by mutableStateOf(true)
     var pressureSensitivityEnabled by mutableStateOf(NoteDrawingPreferences.pressureSensitivityEnabled.value)
@@ -494,6 +657,11 @@ class DrawingController(
         pressureSensitivityStrength = NoteDrawingPreferences.pressureSensitivityStrength.value
         scribbleToEraseEnabled = NoteDrawingPreferences.scribbleToEraseEnabled.value
         autoShapeRecognitionEnabled = NoteDrawingPreferences.autoShapeRecognitionEnabled.value
+        stylusOnlyMode = NoteDrawingPreferences.stylusOnlyModeEnabled.value
+        val savedEraser = NoteDrawingPreferences.lastSelectedEraserTool.value
+        if (savedEraser.isEraserTool) {
+            lastSelectedEraserTool = savedEraser
+        }
     }
 
     fun addCustomPenColor(color: Color, context: Context? = null) {
@@ -589,6 +757,9 @@ class DrawingController(
     val isDrawingActive: Boolean
         get() = activeTool != DrawingTool.NONE
 
+    val hasAnyAnnotations: Boolean
+        get() = strokes.isNotEmpty() || textBoxes.isNotEmpty()
+
     val hasSelection: Boolean
         get() = selectedStrokeIds.isNotEmpty()
 
@@ -602,16 +773,28 @@ class DrawingController(
         get() = clipboardStrokes.isNotEmpty()
 
     fun toggleStylusOnlyMode() {
-        stylusOnlyMode = !stylusOnlyMode
+        updateStylusOnlyMode(!stylusOnlyMode)
     }
 
     fun updateStylusOnlyMode(enabled: Boolean) {
         stylusOnlyMode = enabled
+        appContext?.let { NoteDrawingPreferences.setStylusOnlyModeEnabled(it, enabled) }
     }
 
     fun updateLastSelectedPenTool(tool: DrawingTool) {
         if (tool.isPrimaryPenPackage) {
             lastSelectedPenTool = tool
+        }
+    }
+
+    fun updateLastSelectedEraserTool(tool: DrawingTool, context: Context? = null) {
+        if (tool.isEraserTool) {
+            lastSelectedEraserTool = tool
+            val ctx = context?.applicationContext ?: appContext
+            if (ctx != null) {
+                appContext = ctx
+                NoteDrawingPreferences.setLastSelectedEraserTool(ctx, tool)
+            }
         }
     }
 
@@ -638,8 +821,15 @@ class DrawingController(
         if (tool.isPrimaryPenPackage) {
             lastSelectedPenTool = tool
         }
+        if (tool.isEraserTool) {
+            lastSelectedEraserTool = tool
+            appContext?.let { NoteDrawingPreferences.setLastSelectedEraserTool(it, tool) }
+        }
         if (tool != DrawingTool.LASSO) {
             clearSelection()
+        }
+        if (tool != DrawingTool.TEXT_BOX) {
+            activeTextBoxId = null
         }
         when {
             tool.isPenTool -> {
@@ -666,6 +856,10 @@ class DrawingController(
         selectTool(lastSelectedPenTool)
     }
 
+    fun selectActiveOrLastEraser() {
+        selectTool(lastSelectedEraserTool)
+    }
+
     fun updatePenColor(color: Color) {
         penColor = color
         if (activeTool.isPenTool) {
@@ -689,6 +883,237 @@ class DrawingController(
         if (activeTool.isPenTool) {
             toolAlphas[activeTool] = clamped
         }
+    }
+
+    // ── Text Box Operations (Rich-Text Parity with Notes) ────────────────────
+
+    fun setInitialTextBoxes(loaded: List<DrawingTextBox>) {
+        textBoxes = loaded
+        if (activeTextBoxId != null && loaded.none { it.id == activeTextBoxId }) {
+            activeTextBoxId = null
+            activeTextBoxFieldValue = TextFieldValue("")
+        }
+    }
+
+    fun selectTextBox(id: String?) {
+        if (id == null) {
+            activeTextBoxId = null
+            return
+        }
+        val target = textBoxes.firstOrNull { it.id == id } ?: return
+        activeTextBoxId = target.id
+        val parsed = NoteRichTextHelper.parseTaggedText(target.taggedContent)
+        activeTextBoxFieldValue = TextFieldValue(
+            annotatedString = parsed,
+            selection = TextRange(parsed.text.length)
+        )
+        textBoxFontOption = NoteFontOption.fromName(target.baseFontName)
+        textBoxFontSizeSp = target.baseFontSizeSp.coerceIn(
+            NoteRichTextHelper.MIN_FONT_SIZE_SP,
+            NoteRichTextHelper.MAX_FONT_SIZE_SP
+        )
+        textBoxTextColor = target.baseTextColorArgb?.let { Color(it) }
+        val cursorStyles = NoteRichTextHelper.getStylesAtCursor(activeTextBoxFieldValue)
+        textBoxBold = cursorStyles.isBold
+        textBoxItalic = cursorStyles.isItalic
+        textBoxUnderline = cursorStyles.isUnderline
+        if (cursorStyles.textColor != null) textBoxTextColor = cursorStyles.textColor
+        textBoxHighlightColor = cursorStyles.highlightColor
+        if (cursorStyles.fontSizeSp != null) textBoxFontSizeSp = cursorStyles.fontSizeSp
+        if (cursorStyles.fontOption != null) textBoxFontOption = cursorStyles.fontOption
+    }
+
+    fun addTextBox(
+        xFraction: Float = 0.14f,
+        yFraction: Float = 0.18f,
+        widthFraction: Float = 0.56f,
+        defaultColorArgb: Int? = null
+    ): DrawingTextBox {
+        val box = DrawingTextBox(
+            xFraction = xFraction.coerceIn(0.02f, 0.72f),
+            yFraction = yFraction.coerceIn(0.02f, 0.84f),
+            widthFraction = widthFraction.coerceIn(0.24f, 0.92f),
+            taggedContent = "",
+            baseFontName = textBoxFontOption.name,
+            baseFontSizeSp = textBoxFontSizeSp,
+            baseTextColorArgb = defaultColorArgb ?: textBoxTextColor?.toArgb()
+        )
+        val updated = textBoxes + box
+        textBoxes = updated
+        onTextBoxesChanged(updated)
+        activeTool = DrawingTool.TEXT_BOX
+        selectTextBox(box.id)
+        return box
+    }
+
+    private fun commitActiveTextBoxValue(newValue: TextFieldValue) {
+        activeTextBoxFieldValue = newValue
+        val id = activeTextBoxId ?: return
+        val tagged = NoteRichTextHelper.toTaggedString(newValue.annotatedString)
+        val updated = textBoxes.map { box ->
+            if (box.id == id) box.copy(taggedContent = tagged) else box
+        }
+        textBoxes = updated
+        onTextBoxesChanged(updated)
+    }
+
+    fun onActiveTextBoxValueChange(newValue: TextFieldValue) {
+        val oldValue = activeTextBoxFieldValue
+        val oldLen = oldValue.text.length
+        val newLen = newValue.text.length
+
+        val effectiveHighlight = textBoxHighlightColor?.let { c ->
+            if (c.alpha >= 0.99f) c.copy(alpha = textBoxHighlightIntensity) else c
+        }
+
+        val listContinuation = NoteRichTextHelper.handleEnterOnListItem(
+            oldValue = oldValue,
+            newValue = newValue,
+            isBoldActive = textBoxBold,
+            isItalicActive = textBoxItalic,
+            isUnderlineActive = textBoxUnderline,
+            activeTextColor = textBoxTextColor,
+            activeHighlightColor = effectiveHighlight,
+            activeFontSizeSp = textBoxFontSizeSp,
+            activeFontOption = textBoxFontOption
+        )
+
+        val processed = listContinuation ?: NoteRichTextHelper.handleTextChange(
+            oldValue = oldValue,
+            newValue = newValue,
+            isBoldActive = textBoxBold,
+            isItalicActive = textBoxItalic,
+            isUnderlineActive = textBoxUnderline,
+            activeTextColor = textBoxTextColor,
+            activeHighlightColor = effectiveHighlight,
+            activeFontSizeSp = textBoxFontSizeSp,
+            activeFontOption = textBoxFontOption
+        )
+
+        commitActiveTextBoxValue(processed)
+
+        // Only inspect cursor styles if user tapped/moved cursor without editing text
+        if (oldLen == newLen && oldValue.text == newValue.text && oldValue.selection != newValue.selection) {
+            val styles = NoteRichTextHelper.getStylesAtCursor(processed)
+            textBoxBold = styles.isBold
+            textBoxItalic = styles.isItalic
+            textBoxUnderline = styles.isUnderline
+            if (styles.textColor != null) textBoxTextColor = styles.textColor
+            textBoxHighlightColor = styles.highlightColor
+            if (styles.fontSizeSp != null) textBoxFontSizeSp = styles.fontSizeSp
+            if (styles.fontOption != null) textBoxFontOption = styles.fontOption
+        }
+    }
+
+    fun toggleTextBoxStyle(type: NoteRichTextHelper.StyleType) {
+        when (type) {
+            NoteRichTextHelper.StyleType.BOLD -> textBoxBold = !textBoxBold
+            NoteRichTextHelper.StyleType.ITALIC -> textBoxItalic = !textBoxItalic
+            NoteRichTextHelper.StyleType.UNDERLINE -> textBoxUnderline = !textBoxUnderline
+        }
+        if (activeTextBoxId != null && !activeTextBoxFieldValue.selection.collapsed) {
+            commitActiveTextBoxValue(NoteRichTextHelper.toggleStyleOnSelection(activeTextBoxFieldValue, type))
+        }
+    }
+
+    fun applyTextBoxColor(color: Color?) {
+        textBoxTextColor = color
+        val id = activeTextBoxId ?: return
+        if (!activeTextBoxFieldValue.selection.collapsed && color != null) {
+            commitActiveTextBoxValue(NoteRichTextHelper.applyColorToSelection(activeTextBoxFieldValue, color))
+        } else if (activeTextBoxFieldValue.text.isEmpty()) {
+            val updated = textBoxes.map { box ->
+                if (box.id == id) box.copy(baseTextColorArgb = color?.toArgb()) else box
+            }
+            textBoxes = updated
+            onTextBoxesChanged(updated)
+        }
+    }
+
+    fun applyTextBoxHighlight(color: Color?) {
+        textBoxHighlightColor = color
+        if (activeTextBoxId != null && !activeTextBoxFieldValue.selection.collapsed) {
+            val bg = color?.let { if (it.alpha >= 0.99f) it.copy(alpha = textBoxHighlightIntensity) else it }
+            commitActiveTextBoxValue(NoteRichTextHelper.applyHighlightToSelection(activeTextBoxFieldValue, bg))
+        }
+    }
+
+    fun applyTextBoxFont(font: NoteFontOption) {
+        textBoxFontOption = font
+        val id = activeTextBoxId ?: return
+        if (!activeTextBoxFieldValue.selection.collapsed) {
+            commitActiveTextBoxValue(NoteRichTextHelper.applyFontFamilyToSelection(activeTextBoxFieldValue, font))
+        } else if (activeTextBoxFieldValue.text.isEmpty()) {
+            val updated = textBoxes.map { box ->
+                if (box.id == id) box.copy(baseFontName = font.name) else box
+            }
+            textBoxes = updated
+            onTextBoxesChanged(updated)
+        }
+    }
+
+    fun applyTextBoxFontSize(sizeSp: Float) {
+        val clamped = sizeSp.coerceIn(NoteRichTextHelper.MIN_FONT_SIZE_SP, NoteRichTextHelper.MAX_FONT_SIZE_SP)
+        textBoxFontSizeSp = clamped
+        val id = activeTextBoxId ?: return
+        if (!activeTextBoxFieldValue.selection.collapsed) {
+            commitActiveTextBoxValue(NoteRichTextHelper.applyFontSizeToSelection(activeTextBoxFieldValue, clamped))
+        } else if (activeTextBoxFieldValue.text.isEmpty()) {
+            val updated = textBoxes.map { box ->
+                if (box.id == id) box.copy(baseFontSizeSp = clamped) else box
+            }
+            textBoxes = updated
+            onTextBoxesChanged(updated)
+        }
+    }
+
+    fun toggleTextBoxListPrefix(prefix: String) {
+        if (activeTextBoxId == null) return
+        commitActiveTextBoxValue(NoteRichTextHelper.toggleLinePrefix(activeTextBoxFieldValue, prefix))
+    }
+
+    fun toggleTextBoxCheckbox() {
+        if (activeTextBoxId == null) return
+        val cursor = activeTextBoxFieldValue.selection.start
+        commitActiveTextBoxValue(NoteRichTextHelper.toggleCheckboxAtOffset(activeTextBoxFieldValue, cursor))
+    }
+
+    fun moveTextBox(id: String, xFraction: Float, yFraction: Float) {
+        val updated = textBoxes.map { box ->
+            if (box.id == id) {
+                box.copy(
+                    xFraction = xFraction.coerceIn(0.01f, (1f - box.widthFraction).coerceAtLeast(0.05f)),
+                    yFraction = yFraction.coerceIn(0.01f, 0.90f)
+                )
+            } else {
+                box
+            }
+        }
+        textBoxes = updated
+        onTextBoxesChanged(updated)
+    }
+
+    fun resizeTextBox(id: String, widthFraction: Float) {
+        val updated = textBoxes.map { box ->
+            if (box.id == id) {
+                val maxW = (0.98f - box.xFraction).coerceAtLeast(0.22f)
+                box.copy(widthFraction = widthFraction.coerceIn(0.22f, maxW))
+            } else {
+                box
+            }
+        }
+        textBoxes = updated
+        onTextBoxesChanged(updated)
+    }
+
+    fun deleteTextBox(id: String) {
+        val updated = textBoxes.filterNot { it.id == id }
+        if (activeTextBoxId == id) {
+            activeTextBoxId = null
+            activeTextBoxFieldValue = TextFieldValue("")
+        }
+        textBoxes = updated
+        onTextBoxesChanged(updated)
     }
 
     /**
@@ -752,10 +1177,18 @@ class DrawingController(
     }
 
     fun clearAll() {
-        if (strokes.isEmpty()) return
-        pushUndoSnapshot()
-        clearSelection()
-        updateStrokesAndNotify(emptyList())
+        if (strokes.isEmpty() && textBoxes.isEmpty()) return
+        if (strokes.isNotEmpty()) {
+            pushUndoSnapshot()
+            clearSelection()
+            updateStrokesAndNotify(emptyList())
+        }
+        if (textBoxes.isNotEmpty()) {
+            activeTextBoxId = null
+            activeTextBoxFieldValue = TextFieldValue("")
+            textBoxes = emptyList()
+            onTextBoxesChanged(emptyList())
+        }
     }
 
     // ── Eraser Operations ────────────────────────────────────────────────────

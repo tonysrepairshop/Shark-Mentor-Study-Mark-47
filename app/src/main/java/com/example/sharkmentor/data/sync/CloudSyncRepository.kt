@@ -179,8 +179,12 @@ class CloudSyncRepository(private val context: Context) {
         val userPrefs = com.example.sharkmentor.data.local.preferences.UserPreferences.getInstance(context)
         val defaultInstId = userPrefs.institutionId.takeIf { !it.isNullOrBlank() } ?: "INDIVIDUAL"
 
+        val activeSessionUuid = com.example.sharkmentor.core.timer.FocusSessionRecorder.getActiveSessionId()
         var synced = 0
         for (session in pending) {
+            if (!activeSessionUuid.isNullOrBlank() && session.cloudId == activeSessionUuid) {
+                continue
+            }
             try {
                 val resolvedInstId = session.institutionId.takeIf { !it.isNullOrBlank() } ?: defaultInstId
                 val docId = session.cloudId?.takeIf { it.isNotBlank() } ?: session.id.toString()

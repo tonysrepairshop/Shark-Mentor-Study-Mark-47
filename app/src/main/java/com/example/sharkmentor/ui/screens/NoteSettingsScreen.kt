@@ -22,7 +22,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Gesture
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -70,6 +72,8 @@ fun NoteSettingsScreen(
     val pressureStrength by NoteDrawingPreferences.pressureSensitivityStrength.collectAsStateWithLifecycle()
     val scribbleEnabled by NoteDrawingPreferences.scribbleToEraseEnabled.collectAsStateWithLifecycle()
     val autoShapeEnabled by NoteDrawingPreferences.autoShapeRecognitionEnabled.collectAsStateWithLifecycle()
+    val stylusOnlyEnabled by NoteDrawingPreferences.stylusOnlyModeEnabled.collectAsStateWithLifecycle()
+    val showFloatingTimer by NoteDrawingPreferences.showFloatingFocusTimer.collectAsStateWithLifecycle()
 
     val colorScheme = MaterialTheme.colorScheme
     val primaryColor = colorScheme.primary
@@ -125,7 +129,7 @@ fun NoteSettingsScreen(
                     NoteFeatureSwitchHeader(
                         icon = Icons.Default.Brush,
                         title = "Basınç Hassasiyeti",
-                        subtitle = "Kalem baskısına ve çizim hızına göre çizgi kalınlığını dinamik olarak ayarlar.",
+                        subtitle = "Kalem baskısına göre çizgi kalınlığını dinamik ayarlar.",
                         checked = pressureEnabled,
                         onCheckedChange = { enabled ->
                             NoteDrawingPreferences.setPressureSensitivityEnabled(context, enabled)
@@ -220,7 +224,27 @@ fun NoteSettingsScreen(
                 }
             }
 
-            // 2. Karalayarak Silme
+            // 2. Yalnızca Kalem Modu
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(modifier = Modifier.padding(14.dp)) {
+                    NoteFeatureSwitchHeader(
+                        icon = Icons.Default.Edit,
+                        title = "Yalnızca Kalem",
+                        subtitle = "Çizim modunda parmak dokunuşlarını yoksayar, yalnızca stylus kalemi algılar.",
+                        checked = stylusOnlyEnabled,
+                        onCheckedChange = { enabled ->
+                            NoteDrawingPreferences.setStylusOnlyModeEnabled(context, enabled)
+                        }
+                    )
+                }
+            }
+
+            // 3. Karalayarak Silme
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = colorScheme.surfaceVariant.copy(alpha = 0.35f),
@@ -231,7 +255,7 @@ fun NoteSettingsScreen(
                     NoteFeatureSwitchHeader(
                         icon = Icons.Default.Gesture,
                         title = "Karalayarak Silme",
-                        subtitle = "Çizim üzerinde hızlı zikzak karalayarak temas eden çizgileri silgiye geçmeden siler.",
+                        subtitle = "Hızlı zikzak karalama ile temas eden çizgileri siler.",
                         checked = scribbleEnabled,
                         onCheckedChange = { enabled ->
                             NoteDrawingPreferences.setScribbleToEraseEnabled(context, enabled)
@@ -240,7 +264,7 @@ fun NoteSettingsScreen(
                 }
             }
 
-            // 3. Otomatik Şekil Algılama
+            // 4. Otomatik Şekil Algılama
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = colorScheme.surfaceVariant.copy(alpha = 0.35f),
@@ -251,7 +275,7 @@ fun NoteSettingsScreen(
                     NoteFeatureSwitchHeader(
                         icon = Icons.Default.AutoFixHigh,
                         title = "Otomatik Şekil Algılama",
-                        subtitle = "Serbest elle çizilen eğri çizgi, üçgen, dikdörtgen ve daireleri otomatik olarak düzgünleştirir.",
+                        subtitle = "Çizilen çizgi, üçgen, dikdörtgen ve daireleri düzgünleştirir.",
                         checked = autoShapeEnabled,
                         onCheckedChange = { enabled ->
                             NoteDrawingPreferences.setAutoShapeRecognitionEnabled(context, enabled)
@@ -263,7 +287,35 @@ fun NoteSettingsScreen(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "Bu ayarlar hem Notlar hem de PDF okuyucu çizim araçlarında anlık olarak geçerlidir. Kalem paketlerini (Dolma, Tükenmez, Kurşun, Fırça, Fosforlu) değiştirmek için araç çubuğundaki kalem simgesine uzun basabilirsiniz.",
+                text = "Çalışma Ekranı",
+                style = MaterialTheme.typography.labelMedium,
+                color = primaryColor
+            )
+
+            // 5. Not & PDF Canlı Odak Sayacı
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(modifier = Modifier.padding(14.dp)) {
+                    NoteFeatureSwitchHeader(
+                        icon = Icons.Default.Timer,
+                        title = "Odak Sayacı Göstergesi",
+                        subtitle = "Notlar ve PDF üzerinde çalışan odak sayacını taşınabilir pencere olarak gösterir.",
+                        checked = showFloatingTimer,
+                        onCheckedChange = { enabled ->
+                            NoteDrawingPreferences.setShowFloatingFocusTimer(context, enabled)
+                        }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            Text(
+                text = "Tüm ayarlar Notlar ve PDF ekranlarında anlık senkronize çalışır.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colorScheme.onSurfaceVariant,
                 lineHeight = 18.sp

@@ -15,13 +15,17 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -68,6 +72,7 @@ import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -109,9 +114,17 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -119,6 +132,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.sharkmentor.core.ai.AiProviderChoice
@@ -139,6 +153,7 @@ import com.example.sharkmentor.core.util.PdfLibraryManager
 import com.example.sharkmentor.data.local.SharkMentorDatabase
 import com.example.sharkmentor.data.local.entity.NoteEntity
 import com.example.sharkmentor.data.repository.NoteRepositoryImpl
+import com.example.sharkmentor.ui.components.FloatingFocusTimerOverlay
 import com.example.sharkmentor.ui.components.RichSolutionContent
 import com.example.sharkmentor.ui.components.formatMathAsPlainText
 import com.example.sharkmentor.ui.screens.notes.NoteDetailScreen
@@ -149,6 +164,7 @@ import com.example.sharkmentor.ui.screens.notes.drawing.DrawingSerializer
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingStudioBar
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingTool
 import com.example.sharkmentor.ui.screens.notes.drawing.LassoAiSolveSheet
+import com.example.sharkmentor.ui.screens.notes.drawing.NoteDrawingPreferences
 import com.example.sharkmentor.ui.theme.SharkMentorTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -786,18 +802,23 @@ fun PdfReaderScreen(
     var isExportingPdf by remember(pdfIdentifier) { mutableStateOf(false) }
     var lastSavedTimestamp by remember(pdfIdentifier) { mutableStateOf(System.currentTimeMillis()) }
 
-    // Shared active tool state synchronized across pages so switching page keeps the selected pen/highlighter
-    var showStudioToolbar by remember { mutableStateOf(true) }
-    var isStudioBarCollapsed by remember { mutableStateOf(true) }
-    var studioBarOffset by remember { mutableStateOf(Offset(16f, 24f)) }
+    // Drawing panel open state + floating circular pen button position
+    var isDrawingPanelOpen by remember { mutableStateOf(false) }
+    var penButtonOffset by remember { mutableStateOf(Offset.Unspecified) }
     var globalActiveTool by remember { mutableStateOf(DrawingTool.NONE) }
     var globalPenColor by remember { mutableStateOf(Color(0xFF1E88E5)) }
     var globalStrokeWidth by remember { mutableFloatStateOf(4.5f) }
     var globalAlpha by remember { mutableFloatStateOf(1.0f) }
 
+    LaunchedEffect(context) {
+        NoteDrawingPreferences.ensureLoaded(context)
+    }
+    val showFloatingFocusTimer by NoteDrawingPreferences.showFloatingFocusTimer.collectAsStateWithLifecycle()
+
     fun getOrCreatePageController(pageIdx: Int): DrawingController {
         return pageControllers.getOrPut(pageIdx) {
             val loadedStrokes = DrawingSerializer.loadPdfPageAnnotations(context, pdfIdentifier, pageIdx)
+            val loadedTextBoxes = DrawingSerializer.loadPdfPageTextBoxes(context, pdfIdentifier, pageIdx)
             DrawingController(
                 maxHistorySteps = 60,
                 onStrokesChanged = { updatedStrokes ->
@@ -818,11 +839,31 @@ fun PdfReaderScreen(
                             annotatedPageCount = annotatedCount
                         )
                     }
+                },
+                onTextBoxesChanged = { updatedBoxes ->
+                    val appCtx = context.applicationContext
+                    val snapshot = updatedBoxes.toList()
+                    pdfNotesPersistenceScope.launch {
+                        DrawingSerializer.savePdfPageTextBoxes(
+                            context = appCtx,
+                            pdfIdentifier = pdfIdentifier,
+                            pageIndex = pageIdx,
+                            textBoxes = snapshot
+                        )
+                        val annotatedCount = DrawingSerializer.getPdfAnnotatedPageCount(appCtx, pdfIdentifier)
+                        PdfLibraryManager.updateProgressAndAnnotations(
+                            context = appCtx,
+                            pdfFilePath = pdfIdentifier,
+                            lastReadPage = currentPageIndex,
+                            annotatedPageCount = annotatedCount
+                        )
+                    }
                 }
             ).apply {
                 bindPreferencesContext(context)
                 setInitialStrokes(loadedStrokes)
-                selectTool(globalActiveTool)
+                setInitialTextBoxes(loadedTextBoxes)
+                selectTool(if (isDrawingPanelOpen) globalActiveTool else DrawingTool.NONE)
                 if (!globalActiveTool.isPenTool) {
                     penColor = globalPenColor
                     strokeWidth = globalStrokeWidth
@@ -834,29 +875,33 @@ fun PdfReaderScreen(
 
     val activePageController = getOrCreatePageController(currentPageIndex)
 
-    // Keep global tool synced when user interacts with DrawingStudioBar
+    // Keep global tool, pen package, eraser package, and preferences synchronized across all PDF pages
     LaunchedEffect(
+        isDrawingPanelOpen,
         activePageController.activeTool,
+        activePageController.lastSelectedPenTool,
+        activePageController.lastSelectedEraserTool,
         activePageController.penColor,
         activePageController.strokeWidth,
         activePageController.alpha,
-        activePageController.stylusOnlyMode,
         currentPageIndex
     ) {
-        globalActiveTool = activePageController.activeTool
+        val effectiveTool = if (isDrawingPanelOpen) activePageController.activeTool else DrawingTool.NONE
+        globalActiveTool = effectiveTool
         globalPenColor = activePageController.penColor
         globalStrokeWidth = activePageController.strokeWidth
         globalAlpha = activePageController.alpha
 
         pageControllers.values.forEach { ctrl ->
             if (ctrl !== activePageController) {
-                if (ctrl.activeTool != globalActiveTool) {
-                    ctrl.selectTool(globalActiveTool)
+                ctrl.updateLastSelectedPenTool(activePageController.lastSelectedPenTool)
+                ctrl.updateLastSelectedEraserTool(activePageController.lastSelectedEraserTool, context)
+                if (ctrl.activeTool != effectiveTool) {
+                    ctrl.selectTool(effectiveTool)
                 }
                 ctrl.penColor = globalPenColor
                 ctrl.strokeWidth = globalStrokeWidth
                 ctrl.alpha = globalAlpha
-                ctrl.updateStylusOnlyMode(activePageController.stylusOnlyMode)
                 ctrl.syncFromNotePreferences()
             }
         }
@@ -893,16 +938,25 @@ fun PdfReaderScreen(
         if (isFlushingDrawings && showToast) return
         if (showToast) isFlushingDrawings = true
         val appCtx = context.applicationContext
-        val snapshots = pageControllers.entries.associate { (idx, ctrl) -> idx to ctrl.strokes.toList() }
+        val strokeSnapshots = pageControllers.entries.associate { (idx, ctrl) -> idx to ctrl.strokes.toList() }
+        val boxSnapshots = pageControllers.entries.associate { (idx, ctrl) -> idx to ctrl.textBoxes.toList() }
         val pageSnap = currentPageIndex
         pdfNotesPersistenceScope.launch {
             runCatching {
-                snapshots.forEach { (idx, strokes) ->
+                strokeSnapshots.forEach { (idx, strokes) ->
                     DrawingSerializer.savePdfPageAnnotations(
                         context = appCtx,
                         pdfIdentifier = pdfIdentifier,
                         pageIndex = idx,
                         strokes = strokes
+                    )
+                }
+                boxSnapshots.forEach { (idx, boxes) ->
+                    DrawingSerializer.savePdfPageTextBoxes(
+                        context = appCtx,
+                        pdfIdentifier = pdfIdentifier,
+                        pageIndex = idx,
+                        textBoxes = boxes
                     )
                 }
                 DrawingSerializer.savePdfLastReadPage(appCtx, pdfIdentifier, pageSnap)
@@ -1432,9 +1486,10 @@ fun PdfReaderScreen(
     }
 
     BackHandler {
-        if (activePageController.activeTool != DrawingTool.NONE || !isStudioBarCollapsed) {
+        if (isDrawingPanelOpen || activePageController.activeTool != DrawingTool.NONE) {
+            isDrawingPanelOpen = false
             activePageController.selectTool(DrawingTool.NONE)
-            isStudioBarCollapsed = true
+            pageControllers.values.forEach { it.selectTool(DrawingTool.NONE) }
         } else if (zoomScale > 1.05f) {
             zoomScale = 1f
             panOffset = Offset.Zero
@@ -1449,6 +1504,14 @@ fun PdfReaderScreen(
             .fillMaxSize()
             .background(Color(0xFF1E293B))
             .navigationBarsPadding()
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.isCtrlPressed && keyEvent.key == Key.S) {
+                    flushAllPageAnnotationsToLibrary(showToast = true)
+                    true
+                } else {
+                    false
+                }
+            }
     ) {
         // Top App Bar
         TopAppBar(
@@ -1624,6 +1687,25 @@ fun PdfReaderScreen(
                         DropdownMenuItem(
                             text = {
                                 Text(
+                                    if (showFloatingFocusTimer) "Odak Sayacını Gizle" else "Odak Sayacını Göster"
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Timer,
+                                    contentDescription = null,
+                                    tint = if (showFloatingFocusTimer) primaryColor else onSurfaceColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                NoteDrawingPreferences.setShowFloatingFocusTimer(context, !showFloatingFocusTimer)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
                                     if (isExportingPdf) "PDF Hazırlanıyor..."
                                     else "Çizimli PDF Paylaş"
                                 )
@@ -1643,17 +1725,34 @@ fun PdfReaderScreen(
             colors = TopAppBarDefaults.topAppBarColors(containerColor = surfaceColor)
         )
 
-        // Main PDF Viewport with Pinch-to-Zoom & Pan + Lazy On-Demand Page Rendering + Draggable Studio Bar
+        // Top-Docked Drawing Panel (1:1 identical to Notes Drawing Panel) flush directly below TopAppBar
+        AnimatedVisibility(
+            visible = isDrawingPanelOpen,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            DrawingStudioBar(
+                controller = activePageController,
+                isCompactMode = true,
+                showNavigationButton = false,
+                shape = RoundedCornerShape(0.dp),
+                onCloseStudio = null,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        // Main PDF Viewport with Pinch-to-Zoom & Pan + Lazy On-Demand Page Rendering + Floating Circular Pen Button
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .background(Color(0xFF0F172A))
         ) {
+            val density = LocalDensity.current
             val viewportWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
             val viewportHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
 
-            val zoomGestureModifier = if (activePageController.activeTool == DrawingTool.NONE) {
+            val zoomGestureModifier = if (!isDrawingPanelOpen && activePageController.activeTool == DrawingTool.NONE) {
                 Modifier
                     .pointerInput(Unit) {
                         detectTapGestures(
@@ -1694,7 +1793,7 @@ fun PdfReaderScreen(
 
             LazyColumn(
                 state = listState,
-                userScrollEnabled = activePageController.activeTool == DrawingTool.NONE && zoomScale <= 1.05f,
+                userScrollEnabled = !isDrawingPanelOpen && activePageController.activeTool == DrawingTool.NONE && zoomScale <= 1.05f,
                 contentPadding = PaddingValues(
                     horizontal = 10.dp,
                     vertical = 12.dp
@@ -1740,154 +1839,96 @@ fun PdfReaderScreen(
                 }
             }
 
-            // Draggable & Collapsible Floating Studio Toolbar (clamped within viewport bounds)
-            if (showStudioToolbar) {
-                val maxDragX = (viewportWidthPx - 180f).coerceAtLeast(0f)
-                val maxDragY = (viewportHeightPx - 96f).coerceAtLeast(0f)
-                val clampedX = studioBarOffset.x.coerceIn(0f, maxDragX)
-                val clampedY = studioBarOffset.y.coerceIn(0f, maxDragY)
+            // Draggable Floating Circular Pen Button (remains visible while top-docked panel is open;
+            // single tap toggles drawing panel open/closed, locking annotations read-only on close)
+            val penBtnSizeDp = 48.dp
+            val penBtnSizePx = with(density) { penBtnSizeDp.toPx() }
+            val btnMarginPx = with(density) { 14.dp.toPx() }
+            val maxBtnX = (viewportWidthPx - penBtnSizePx - btnMarginPx).coerceAtLeast(btnMarginPx)
+            val maxBtnY = (viewportHeightPx - penBtnSizePx - with(density) { 64.dp.toPx() }).coerceAtLeast(btnMarginPx)
+            val resolvedBtnOffset = if (penButtonOffset == Offset.Unspecified) {
+                Offset(maxBtnX, maxBtnY)
+            } else {
+                Offset(
+                    x = penButtonOffset.x.coerceIn(btnMarginPx, maxBtnX),
+                    y = penButtonOffset.y.coerceIn(btnMarginPx, maxBtnY)
+                )
+            }
 
-                if (isStudioBarCollapsed) {
-                    Surface(
-                        shape = RoundedCornerShape(24.dp),
-                        color = surfaceColor.copy(alpha = 0.96f),
-                        tonalElevation = 8.dp,
-                        shadowElevation = 10.dp,
-                        border = BorderStroke(1.2.dp, primaryColor.copy(alpha = 0.65f)),
-                        modifier = Modifier
-                            .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
-                            .pointerInput(viewportWidthPx, viewportHeightPx) {
-                                detectDragGestures { change, dragAmount ->
+            Surface(
+                shape = CircleShape,
+                color = if (isDrawingPanelOpen) primaryColor else surfaceColor.copy(alpha = 0.96f),
+                tonalElevation = 8.dp,
+                shadowElevation = 10.dp,
+                border = BorderStroke(
+                    width = 1.5.dp,
+                    color = if (isDrawingPanelOpen) colorScheme.onPrimary.copy(alpha = 0.35f) else primaryColor.copy(alpha = 0.7f)
+                ),
+                modifier = Modifier
+                    .zIndex(20f)
+                    .size(penBtnSizeDp)
+                    .offset { IntOffset(resolvedBtnOffset.x.roundToInt(), resolvedBtnOffset.y.roundToInt()) }
+                    .pointerInput(viewportWidthPx, viewportHeightPx, isDrawingPanelOpen, currentPageIndex) {
+                        val touchSlop = viewConfiguration.touchSlop
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
+                            val startOffset = if (penButtonOffset == Offset.Unspecified) {
+                                Offset(maxBtnX, maxBtnY)
+                            } else {
+                                penButtonOffset
+                            }
+                            var totalMoved = 0f
+                            var dragged = false
+                            var currentOffset = startOffset
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                if (change == null || !change.pressed) break
+                                val delta = change.positionChange()
+                                totalMoved += delta.getDistance()
+                                if (!dragged && totalMoved > touchSlop) {
+                                    dragged = true
+                                }
+                                if (dragged) {
                                     change.consume()
-                                    studioBarOffset = Offset(
-                                        x = (studioBarOffset.x + dragAmount.x).coerceIn(0f, maxDragX),
-                                        y = (studioBarOffset.y + dragAmount.y).coerceIn(0f, maxDragY)
+                                    currentOffset = Offset(
+                                        x = (currentOffset.x + delta.x).coerceIn(btnMarginPx, maxBtnX),
+                                        y = (currentOffset.y + delta.y).coerceIn(btnMarginPx, maxBtnY)
                                     )
+                                    penButtonOffset = currentOffset
                                 }
-                            }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            val isDrawingNow = activePageController.activeTool != DrawingTool.NONE
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = if (isDrawingNow) primaryColor.copy(alpha = 0.18f) else onSurfaceColor.copy(alpha = 0.1f),
-                                modifier = Modifier.clickable {
-                                    if (isDrawingNow) {
-                                        activePageController.selectTool(DrawingTool.NONE)
-                                    } else {
-                                        activePageController.selectActiveOrLastPen()
-                                    }
-                                }
-                            ) {
-                                Text(
-                                    text = if (isDrawingNow) "Çizim Aktif" else "Gezinme (Kaydır)",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isDrawingNow) primaryColor else onSurfaceColor,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
                             }
 
-                            TextButton(
-                                onClick = { isStudioBarCollapsed = false },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                                modifier = Modifier.height(26.dp)
-                            ) {
-                                Text("Aç", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            if (!dragged) {
+                                if (isDrawingPanelOpen) {
+                                    isDrawingPanelOpen = false
+                                    activePageController.selectTool(DrawingTool.NONE)
+                                    pageControllers.values.forEach { it.selectTool(DrawingTool.NONE) }
+                                } else {
+                                    isDrawingPanelOpen = true
+                                    activePageController.selectActiveOrLastPen()
+                                }
                             }
                         }
                     }
-                } else {
-                    Column(
-                        modifier = Modifier
-                            .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
-                            .padding(horizontal = 8.dp)
-                            .widthIn(max = 680.dp)
-                            .fillMaxWidth(0.96f)
-                    ) {
-                        // Drag Handle + Mode Switch Bar (Gezinme vs Çizim + Küçült)
-                        Surface(
-                            shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
-                            color = surfaceColor.copy(alpha = 0.96f),
-                            tonalElevation = 6.dp,
-                            border = BorderStroke(0.8.dp, onSurfaceColor.copy(alpha = 0.14f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .pointerInput(viewportWidthPx, viewportHeightPx) {
-                                    detectDragGestures { change, dragAmount ->
-                                        change.consume()
-                                        studioBarOffset = Offset(
-                                            x = (studioBarOffset.x + dragAmount.x).coerceIn(0f, maxDragX),
-                                            y = (studioBarOffset.y + dragAmount.y).coerceIn(0f, maxDragY)
-                                        )
-                                    }
-                                }
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val isDrawingNow = activePageController.activeTool != DrawingTool.NONE
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Text(
-                                        text = "⋮⋮ Taşı",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = onSurfaceColor.copy(alpha = 0.55f)
-                                    )
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isDrawingNow) primaryColor.copy(alpha = 0.16f) else onSurfaceColor.copy(alpha = 0.08f),
-                                        modifier = Modifier.clickable {
-                                            if (isDrawingNow) {
-                                                activePageController.selectTool(DrawingTool.NONE)
-                                            } else {
-                                                activePageController.selectActiveOrLastPen()
-                                            }
-                                        }
-                                    ) {
-                                        Text(
-                                            text = if (isDrawingNow) "Çizim Modu (Kaydırma için dokun)" else "Gezinme / Kaydırma Modu",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (isDrawingNow) primaryColor else onSurfaceColor,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                        )
-                                    }
-                                }
-
-                                TextButton(
-                                    onClick = { isStudioBarCollapsed = true },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                    modifier = Modifier.height(24.dp)
-                                ) {
-                                    Text("Küçült", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-
-                        DrawingStudioBar(
-                            controller = activePageController,
-                            isCompactMode = true,
-                            onCloseStudio = {
-                                isStudioBarCollapsed = true
-                                activePageController.selectTool(DrawingTool.NONE)
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = if (isDrawingPanelOpen) "Çizim Panelini Kapat" else "Çizim Panelini Aç",
+                        tint = if (isDrawingPanelOpen) colorScheme.onPrimary else primaryColor,
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             }
+
+            // Live-synced Draggable / Resizable Floating Focus Timer Overlay
+            FloatingFocusTimerOverlay(
+                viewportWidthPx = viewportWidthPx,
+                viewportHeightPx = viewportHeightPx
+            )
 
             // Floating Zoom Controls (Top-Right)
             Surface(

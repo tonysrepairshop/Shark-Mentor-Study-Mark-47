@@ -34,7 +34,8 @@ data class WeatherSettings(
 data class HourlyForecastItem(
     val hourLabel: String,
     val tempCelsius: Double,
-    val weatherCode: Int
+    val weatherCode: Int,
+    val isoTime: String = ""
 )
 
 data class WeatherUiState(
@@ -141,7 +142,8 @@ class WeatherRepository private constructor(context: Context) {
                 HourlyForecastItem(
                     hourLabel = obj.optString("hourLabel", ""),
                     tempCelsius = obj.optDouble("tempCelsius", 0.0),
-                    weatherCode = obj.optInt("weatherCode", 0)
+                    weatherCode = obj.optInt("weatherCode", 0),
+                    isoTime = obj.optString("isoTime", "")
                 )
             }
         } catch (_: Exception) {
@@ -156,6 +158,7 @@ class WeatherRepository private constructor(context: Context) {
             obj.put("hourLabel", item.hourLabel)
             obj.put("tempCelsius", item.tempCelsius)
             obj.put("weatherCode", item.weatherCode)
+            if (item.isoTime.isNotBlank()) obj.put("isoTime", item.isoTime)
             hourlyArray.put(obj)
         }
         prefs.edit().apply {
@@ -236,7 +239,7 @@ class WeatherRepository private constructor(context: Context) {
                 }
 
                 val forecastUrl =
-                    "https://" + "api." + "open-meteo.com" + "/v1/forecast?latitude=$targetLat&longitude=$targetLon&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&timezone=auto&forecast_days=1"
+                    "https://" + "api." + "open-meteo.com" + "/v1/forecast?latitude=$targetLat&longitude=$targetLon&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&timezone=auto&past_days=1&forecast_days=2"
                 val responseText = httpGet(forecastUrl)
                 val root = JSONObject(responseText)
 
@@ -263,7 +266,8 @@ class WeatherRepository private constructor(context: Context) {
                                 HourlyForecastItem(
                                     hourLabel = hourLabel,
                                     tempCelsius = temps.optDouble(i, currentTemp),
-                                    weatherCode = codes.optInt(i, currentCode)
+                                    weatherCode = codes.optInt(i, currentCode),
+                                    isoTime = rawTime
                                 )
                             )
                         }

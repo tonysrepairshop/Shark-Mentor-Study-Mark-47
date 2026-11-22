@@ -111,6 +111,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onGuestContinue = {
                                 userPrefs.completeOnboardingAsIndividual("Misafir Öğrenci")
+                                com.example.sharkmentor.ui.components.FirstTimeTutorialPrefs.markEligibleForNewUserOrGuest(this@MainActivity)
                                 isLoggedIn = true
                             }
                         )

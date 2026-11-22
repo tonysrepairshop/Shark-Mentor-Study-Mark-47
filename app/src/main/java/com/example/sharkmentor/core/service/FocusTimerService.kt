@@ -53,6 +53,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.example.sharkmentor.core.util.SessionManager
+import com.example.sharkmentor.data.topbar.FocusSessionState
 
 /**
  * Foreground service driving the SharkMentor timer engine.
@@ -76,24 +77,42 @@ class FocusTimerService : Service() {
 
     // ── WakeLock ─────────────────────────────────────────────────────────────
     private var wakeLock: PowerManager.WakeLock? = null
+    private var lastWakeLockAcquireElapsedMs: Long = 0L
 
-    private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
+    private fun acquireWakeLock(forceRenew: Boolean = false) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (!forceRenew && wakeLock?.isHeld == true && (nowElapsed - lastWakeLockAcquireElapsedMs) < WAKE_LOCK_RENEW_INTERVAL_MS) {
+            return
+        }
         val pm = getSystemService(PowerManager::class.java)
+        val existing = wakeLock
+        if (existing != null) {
+            runCatching {
+                if (existing.isHeld) existing.release()
+                existing.acquire(WAKE_LOCK_TIMEOUT_MS)
+                lastWakeLockAcquireElapsedMs = nowElapsed
+                return
+            }
+        }
         wakeLock = pm.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "SharkMentor::FocusTimerWakeLock"
-        ).also { it.acquire(4 * 60 * 60 * 1_000L) }
+        ).also {
+            it.acquire(WAKE_LOCK_TIMEOUT_MS)
+            lastWakeLockAcquireElapsedMs = nowElapsed
+        }
     }
 
     private fun releaseWakeLock() {
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) { }
         wakeLock = null
+        lastWakeLockAcquireElapsedMs = 0L
     }
 
     // ── Screen tracking ──────────────────────────────────────────────────────
     private var totalScreenOnMillis: Long = 0L
     private var lastScreenOnTimestamp: Long = 0L
+    private var isScreenReceiverRegistered: Boolean = false
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -106,6 +125,38 @@ class FocusTimerService : Service() {
                     }
                 }
             }
+        }
+    }
+
+    private fun registerScreenReceiverSafe() {
+        if (isScreenReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(screenStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(screenStateReceiver, filter)
+            }
+            isScreenReceiverRegistered = true
+        }
+    }
+
+    private fun unregisterScreenReceiverSafe() {
+        if (!isScreenReceiverRegistered) return
+        runCatching { unregisterReceiver(screenStateReceiver) }
+        isScreenReceiverRegistered = false
+    }
+
+    private fun computeAccurateElapsedMillis(state: TimerState): Long {
+        return if (state.timerPhase == TimerPhase.FOCUSING && state.startTimestampElapsed > 0L) {
+            val delta = (SystemClock.elapsedRealtime() - state.startTimestampElapsed).coerceAtLeast(0L)
+            maxOf(state.timeElapsedMillis, state.pausedAccumulatedMillis + delta)
+        } else {
+            maxOf(state.timeElapsedMillis, state.pausedAccumulatedMillis)
         }
     }
 
@@ -144,6 +195,7 @@ class FocusTimerService : Service() {
             _timerStateFlow.collect { state ->
                 val isFocusing = state.timerPhase == TimerPhase.FOCUSING
                 val wasFocusing = previousPhase == TimerPhase.FOCUSING
+                FocusSessionState.setRunning(isFocusing || state.timerPhase == TimerPhase.MANDATORY_BREAK)
 
                 if (isFocusing && !wasFocusing && state.currentMode == TimerMode.BLOCK_90) {
                     dndManager.enableDeepFocusDnd()
@@ -192,9 +244,10 @@ class FocusTimerService : Service() {
     override fun onDestroy() {
         val current = _timerStateFlow.value
         if (current.timerPhase != TimerPhase.IDLE && current.currentMode != TimerMode.BREAK) {
+            val accurateElapsed = computeAccurateElapsedMillis(current)
             FocusSessionRecorder.finalizeSession(
                 context = applicationContext,
-                elapsedMillis = current.timeElapsedMillis,
+                elapsedMillis = accurateElapsed,
                 modeName = current.currentMode.displayName,
                 subjectName = activeSubjectName,
                 phoneLiftCount = current.phoneLiftCount,
@@ -203,6 +256,7 @@ class FocusTimerService : Service() {
         }
         updatePresenceInFirestore(false)
         SessionManager.setTimerRunning(false) // Service killed — always clear the flag
+        FocusSessionState.setRunning(false)
         tickerJob?.cancel()
         tickerJob = null
         afkJob?.cancel()
@@ -212,7 +266,7 @@ class FocusTimerService : Service() {
         afkSensor.stop()
         dndManager.disableDnd()
         releaseWakeLock()
-        try { unregisterReceiver(screenStateReceiver) } catch (_: Exception) { }
+        unregisterScreenReceiverSafe()
         dismissAllNotifications()
         serviceScope.cancel()
         super.onDestroy()
@@ -274,16 +328,7 @@ class FocusTimerService : Service() {
         lastScreenOnTimestamp = if (getSystemService(PowerManager::class.java).isInteractive)
             System.currentTimeMillis() else 0L
 
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_SCREEN_ON)
-            addAction(Intent.ACTION_SCREEN_OFF)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(screenStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(screenStateReceiver, filter)
-        }
+        registerScreenReceiverSafe()
 
         val pomodoroMin = intentPomodoro?.coerceIn(30, 300) ?: current.customPomodoroDurationMinutes
         val breakMin    = intentBreak?.coerceIn(5, 20)     ?: current.breakDurationMinutes
@@ -402,6 +447,7 @@ class FocusTimerService : Service() {
     private fun handleStop() {
         updatePresenceInFirestore(false)
         SessionManager.setTimerRunning(false) // Session stopped
+        FocusSessionState.setRunning(false)
         tickerJob?.cancel()
         tickerJob = null
         afkJob?.cancel()
@@ -410,25 +456,35 @@ class FocusTimerService : Service() {
         watchdogJob = null
         afkSensor.stop()
         releaseWakeLock()
-        try { unregisterReceiver(screenStateReceiver) } catch (_: Exception) { }
+        unregisterScreenReceiverSafe()
 
         val current = _timerStateFlow.value
+        val accurateElapsed = computeAccurateElapsedMillis(current)
         if (lastScreenOnTimestamp > 0) {
             totalScreenOnMillis += System.currentTimeMillis() - lastScreenOnTimestamp
             lastScreenOnTimestamp = 0L
         }
-        if (current.currentMode != TimerMode.BREAK) {
-            saveSessionToRoom(current.currentMode.displayName, current.timeElapsedMillis, current.phoneLiftCount, totalScreenOnMillis, onComplete = { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() })
-        }
+        val shouldPersistSession = current.timerPhase != TimerPhase.IDLE && current.currentMode != TimerMode.BREAK
+        val capturedScreenOn = totalScreenOnMillis
         _timerStateFlow.value = TimerState(
             timerPhase                    = TimerPhase.IDLE,
             customPomodoroDurationMinutes = current.customPomodoroDurationMinutes,
             breakDurationMinutes          = current.breakDurationMinutes,
             completedConsecutiveSessions  = current.completedConsecutiveSessions,
         )
-        dismissAllNotifications()
-        if (current.currentMode == TimerMode.BREAK) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
+        if (shouldPersistSession) {
+            saveSessionToRoom(
+                modeName = current.currentMode.displayName,
+                durationMillis = accurateElapsed,
+                phoneLiftCount = current.phoneLiftCount,
+                screenOnMillis = capturedScreenOn,
+                onComplete = {
+                    dismissAllNotifications()
+                    stopSelf()
+                }
+            )
+        } else {
+            dismissAllNotifications()
             stopSelf()
         }
     }
@@ -436,6 +492,7 @@ class FocusTimerService : Service() {
     private fun handleReset() {
         updatePresenceInFirestore(false)
         SessionManager.setTimerRunning(false) // Session reset
+        FocusSessionState.setRunning(false)
         tickerJob?.cancel()
         tickerJob = null
         afkJob?.cancel()
@@ -444,16 +501,16 @@ class FocusTimerService : Service() {
         watchdogJob = null
         afkSensor.stop()
         releaseWakeLock()
-        try { unregisterReceiver(screenStateReceiver) } catch (_: Exception) { }
+        unregisterScreenReceiverSafe()
 
         val current = _timerStateFlow.value
+        val accurateElapsed = computeAccurateElapsedMillis(current)
         if (lastScreenOnTimestamp > 0) {
             totalScreenOnMillis += System.currentTimeMillis() - lastScreenOnTimestamp
             lastScreenOnTimestamp = 0L
         }
-        if (current.currentMode != TimerMode.BREAK) {
-            saveSessionToRoom(current.currentMode.displayName, current.timeElapsedMillis, current.phoneLiftCount, totalScreenOnMillis, onComplete = { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() })
-        }
+        val shouldPersistSession = current.timerPhase != TimerPhase.IDLE && current.currentMode != TimerMode.BREAK
+        val capturedScreenOn = totalScreenOnMillis
         val mode = current.currentMode
         _timerStateFlow.value = TimerState(
             timerPhase                    = TimerPhase.IDLE,
@@ -467,9 +524,19 @@ class FocusTimerService : Service() {
             breakDurationMinutes          = current.breakDurationMinutes,
             completedConsecutiveSessions  = current.completedConsecutiveSessions,
         )
-        dismissAllNotifications()
-        if (current.currentMode == TimerMode.BREAK) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
+        if (shouldPersistSession) {
+            saveSessionToRoom(
+                modeName = current.currentMode.displayName,
+                durationMillis = accurateElapsed,
+                phoneLiftCount = current.phoneLiftCount,
+                screenOnMillis = capturedScreenOn,
+                onComplete = {
+                    dismissAllNotifications()
+                    stopSelf()
+                }
+            )
+        } else {
+            dismissAllNotifications()
             stopSelf()
         }
     }
@@ -534,6 +601,10 @@ class FocusTimerService : Service() {
     private fun onTick() {
         val current = _timerStateFlow.value
         if (!current.isTicking) return
+
+        if (current.timerPhase == TimerPhase.FOCUSING) {
+            acquireWakeLock()
+        }
 
         val nowElapsed = SystemClock.elapsedRealtime()
         val newElapsed = when {
@@ -629,13 +700,14 @@ class FocusTimerService : Service() {
             totalScreenOnMillis += System.currentTimeMillis() - lastScreenOnTimestamp
             lastScreenOnTimestamp = 0L
         }
-        saveSessionToRoom(current.currentMode.displayName, current.totalDurationMillis, current.phoneLiftCount, totalScreenOnMillis)
+        val capturedScreenOn = totalScreenOnMillis
         totalScreenOnMillis = 0L
         afkSensor.stop()
         afkJob?.cancel()
-        try { unregisterReceiver(screenStateReceiver) } catch (_: Exception) { }
+        unregisterScreenReceiverSafe()
 
         return if (newSessions >= MANDATORY_BREAK_AFTER_SESSIONS) {
+            saveSessionToRoom(current.currentMode.displayName, current.totalDurationMillis, current.phoneLiftCount, capturedScreenOn)
             val breakMs = current.breakDurationMinutes * 60_000L
             val now     = SystemClock.elapsedRealtime()
             val breakState = current.copy(
@@ -659,6 +731,7 @@ class FocusTimerService : Service() {
             afkSensor.stop()
             releaseWakeLock()
             SessionManager.setTimerRunning(false) // Focus session naturally completed
+            FocusSessionState.setRunning(false)
             val done = current.copy(
                 timeElapsedMillis            = current.totalDurationMillis,
                 timerPhase                   = TimerPhase.IDLE,
@@ -668,9 +741,16 @@ class FocusTimerService : Service() {
             _timerStateFlow.value = done
             tickerJob?.cancel()
             watchdogJob?.cancel()
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            notificationManager.cancel(NOTIFICATION_ID)
-            stopSelf()
+            saveSessionToRoom(
+                modeName = current.currentMode.displayName,
+                durationMillis = current.totalDurationMillis,
+                phoneLiftCount = current.phoneLiftCount,
+                screenOnMillis = capturedScreenOn,
+                onComplete = {
+                    dismissAllNotifications()
+                    stopSelf()
+                }
+            )
             null
         }
     }
@@ -959,6 +1039,8 @@ class FocusTimerService : Service() {
         private const val PRESENCE_CHECK_INTERVAL_MS = 90L * 60L * 1_000L
         private val ACTIVE_PRESENCE_INTERVAL_MS = PRESENCE_CHECK_INTERVAL_MS
         private const val PRESENCE_GRACE_MS = 10L * 60L * 1_000L
+        private const val WAKE_LOCK_TIMEOUT_MS = 4L * 60L * 60L * 1_000L
+        private const val WAKE_LOCK_RENEW_INTERVAL_MS = 30L * 60L * 1_000L
 
         /** 3-minute cooldown between lift nudge notifications during BLOCK_90. */
         private const val NUDGE_COOLDOWN_MS = 3L * 60L * 1_000L

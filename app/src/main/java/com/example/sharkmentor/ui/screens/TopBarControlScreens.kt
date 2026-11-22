@@ -99,7 +99,7 @@ fun TopBarControlHubContent(
         SectionContainer(title = "Görünüm Kontrolleri") {
             SwitchSettingRow(
                 title = "Baloncukları Kapat",
-                subtitle = "Üst bardaki bilgi baloncuklarını gizler",
+                subtitle = "Hava durumu, motivasyon ve DM dış çerçevelerini kaldırır",
                 checked = settings.hideBubbles,
                 onCheckedChange = onToggleHideBubbles
             )

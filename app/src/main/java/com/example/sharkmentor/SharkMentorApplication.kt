@@ -81,7 +81,19 @@ class SharkMentorApplication : Application() {
                 Log.w("SharkMentorApp", "Firebase init bypassed: ${e.message}")
             }
 
-            // 3. Enqueue periodic cloud sync (quota-safe 6-hour cadence) & Duolingo Water Streak worker (2-hour widget/notification cadence)
+            // 3. Recover any orphaned focus session from an unexpected kill/crash before periodic sync runs
+            try {
+                val isTimerActive = com.example.sharkmentor.core.service.FocusTimerService.timerStateFlow.value.timerPhase !=
+                    com.example.sharkmentor.core.timer.TimerPhase.IDLE
+                com.example.sharkmentor.core.timer.FocusSessionRecorder.recoverOrphanedSessionIfNeeded(
+                    context = applicationContext,
+                    isTimerCurrentlyActive = isTimerActive
+                )
+            } catch (e: Throwable) {
+                Log.w("SharkMentorApp", "Orphaned focus session recovery bypassed: ${e.message}")
+            }
+
+            // 4. Enqueue periodic cloud sync (quota-safe 6-hour cadence) & Duolingo Water Streak worker (2-hour widget/notification cadence)
             try {
                 SyncWorker.enqueuePeriodicSync(applicationContext)
             } catch (e: Throwable) {

@@ -67,7 +67,11 @@ class ToggleTimerActionCallback : ActionCallback {
                 }.isSuccess
 
                 if (started) {
-                    val durationMin = if (modeToStart == TimerMode.BLOCK_90) 90 else currentState.customPomodoroDurationMinutes
+                    val durationMin = when (modeToStart) {
+                        TimerMode.STOPWATCH -> 24 * 60
+                        TimerMode.BLOCK_90 -> 90
+                        else -> currentState.customPomodoroDurationMinutes
+                    }
                     sessionManager.startSession(durationMinutes = durationMin, subject = "Genel Odak")
                     withTimeoutOrNull(800L) {
                         FocusTimerService.timerStateFlow.first { it.timerPhase == TimerPhase.FOCUSING }

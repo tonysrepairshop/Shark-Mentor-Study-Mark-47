@@ -31,10 +31,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.BorderColor
+import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FormatBold
+import androidx.compose.material.icons.filled.FormatItalic
+import androidx.compose.material.icons.filled.FormatListNumbered
+import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Tune
@@ -67,6 +74,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -76,10 +84,13 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.sharkmentor.ui.screens.notes.NoteFontOption
+import com.example.sharkmentor.ui.screens.notes.NoteRichTextHelper
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -102,15 +113,19 @@ val STUDIO_COLOR_PALETTE = listOf(
 )
 
 /**
- * Full-featured modular Drawing & Annotation Studio Toolbar.
- * Supports 5 Pen Packages via long-press (Fountain, Ballpoint, Pencil, Brush, Highlighter),
- * Stroke/Area Erasers, 5 Geometric Shapes, Lasso, and 60-step Undo/Redo.
+ * Unified modular Drawing & Annotation Studio Toolbar shared 1:1 between Notes and PDF Reader.
+ * - Pen Packages via long-press (dynamic icon, no redundant text label)
+ * - Unified Eraser Packages via long-press (dynamic icon, no redundant text label, persisted selection)
+ * - 5 Geometric Shapes, Lasso, Rich-Text Box (1:1 parity with Notes), Color/Thickness, Undo/Redo
+ * - Stylus-Only mode is managed centrally from Settings -> "Not Özellikleri".
  */
 @Composable
 fun DrawingStudioBar(
     controller: DrawingController,
     modifier: Modifier = Modifier,
     isCompactMode: Boolean = false,
+    showNavigationButton: Boolean = true,
+    shape: Shape = RoundedCornerShape(16.dp),
     onCloseStudio: (() -> Unit)? = null
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -122,100 +137,54 @@ fun DrawingStudioBar(
     var showStrokeSettings by remember { mutableStateOf(false) }
     var showShapesRow by remember { mutableStateOf(false) }
     var showPenPackages by remember { mutableStateOf(false) }
+    var showEraserPackages by remember { mutableStateOf(false) }
 
     val activeTool = controller.activeTool
     val currentPenTool = if (activeTool.isPenTool) activeTool else controller.lastSelectedPenTool
+    val currentEraserTool = if (activeTool.isEraserTool) activeTool else controller.lastSelectedEraserTool
 
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = shape,
         color = surfaceColor,
         tonalElevation = 6.dp,
         shadowElevation = 8.dp,
         border = BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.12f))
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // 0. Expandable Pen Packages Picker Row (opened via long-press on Pen)
-            AnimatedVisibility(
-                visible = showPenPackages,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    PenPackagePickerPanel(
-                        controller = controller,
-                        onDismiss = { showPenPackages = false }
-                    )
-                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
-                }
-            }
-
-            // 1. Expandable Shape Picker Row
-            AnimatedVisibility(
-                visible = showShapesRow || activeTool.isShapeTool,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    PenShapePickerPanel(controller = controller)
-                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
-                }
-            }
-
-            // 2. Expandable Lasso Controls Row
-            AnimatedVisibility(
-                visible = activeTool == DrawingTool.LASSO,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    PenLassoActionsPanel(controller = controller)
-                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
-                }
-            }
-
-            // 3. Expandable Color, Thickness & (Highlighter-only) Opacity Panel
-            AnimatedVisibility(
-                visible = showStrokeSettings,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    PenStrokeSettingsPanel(controller = controller)
-                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
-                }
-            }
-
-            // 4. Main Horizontal Studio Strip
+            // 0. Main Horizontal Studio Strip (always cleanly visible at top when top-docked)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                // Navigation / Text mode
-                StudioToolButton(
-                    label = if (isCompactMode) "Gezin" else "Metin",
-                    isSelected = activeTool == DrawingTool.NONE,
-                    accentColor = primaryColor,
-                    onClick = {
-                        showShapesRow = false
-                        showPenPackages = false
-                        controller.selectTool(DrawingTool.NONE)
+                if (showNavigationButton) {
+                    StudioToolButton(
+                        label = if (isCompactMode) "Gezin" else "Metin",
+                        isSelected = activeTool == DrawingTool.NONE,
+                        accentColor = primaryColor,
+                        onClick = {
+                            showShapesRow = false
+                            showPenPackages = false
+                            showEraserPackages = false
+                            controller.selectTool(DrawingTool.NONE)
+                        }
+                    ) { tint ->
+                        PenToolGlyph(tool = DrawingTool.NONE, tint = tint)
                     }
-                ) { tint ->
-                    PenToolGlyph(tool = DrawingTool.NONE, tint = tint)
                 }
 
-                // Unified Pen Tool Button (Tap: select pen or toggle packages if already active; Long-press: Pen Packages)
+                // Unified Pen Tool Button (Icon-only dynamic glyph; Long-press: Pen Packages)
                 StudioToolButton(
-                    label = currentPenTool.shortLabel,
+                    label = null,
                     isSelected = activeTool.isPenTool || showPenPackages,
                     accentColor = if (currentPenTool == DrawingTool.HIGHLIGHTER) Color(0xFFFBC02D) else controller.penColor,
                     onClick = {
                         showShapesRow = false
+                        showEraserPackages = false
                         if (activeTool.isPenTool) {
                             showPenPackages = !showPenPackages
                         } else {
@@ -226,6 +195,7 @@ fun DrawingStudioBar(
                     onLongClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         showShapesRow = false
+                        showEraserPackages = false
                         controller.selectActiveOrLastPen()
                         showPenPackages = !showPenPackages
                     }
@@ -233,32 +203,30 @@ fun DrawingStudioBar(
                     PenToolGlyph(tool = currentPenTool, tint = tint)
                 }
 
-                // Stroke Eraser
+                // Unified Eraser Tool Button (Icon-only dynamic glyph; Long-press: Stroke/Area Eraser)
                 StudioToolButton(
-                    label = "Çizgi Sil",
-                    isSelected = activeTool == DrawingTool.STROKE_ERASER,
+                    label = null,
+                    isSelected = activeTool.isEraserTool || showEraserPackages,
                     accentColor = Color(0xFFEF4444),
                     onClick = {
                         showShapesRow = false
                         showPenPackages = false
-                        controller.selectTool(DrawingTool.STROKE_ERASER)
-                    }
-                ) { tint ->
-                    PenToolGlyph(tool = DrawingTool.STROKE_ERASER, tint = tint)
-                }
-
-                // Area / Point Eraser
-                StudioToolButton(
-                    label = "Alan Sil",
-                    isSelected = activeTool == DrawingTool.AREA_ERASER,
-                    accentColor = Color(0xFFEF4444),
-                    onClick = {
+                        if (activeTool.isEraserTool) {
+                            showEraserPackages = !showEraserPackages
+                        } else {
+                            showEraserPackages = false
+                            controller.selectActiveOrLastEraser()
+                        }
+                    },
+                    onLongClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         showShapesRow = false
                         showPenPackages = false
-                        controller.selectTool(DrawingTool.AREA_ERASER)
+                        controller.selectActiveOrLastEraser()
+                        showEraserPackages = !showEraserPackages
                     }
                 ) { tint ->
-                    PenToolGlyph(tool = DrawingTool.AREA_ERASER, tint = tint)
+                    PenToolGlyph(tool = currentEraserTool, tint = tint)
                 }
 
                 // Shapes Menu Toggle
@@ -268,6 +236,7 @@ fun DrawingStudioBar(
                     accentColor = primaryColor,
                     onClick = {
                         showPenPackages = false
+                        showEraserPackages = false
                         showShapesRow = !showShapesRow
                         if (!activeTool.isShapeTool && showShapesRow) {
                             controller.selectTool(DrawingTool.SHAPE_RECTANGLE)
@@ -285,20 +254,31 @@ fun DrawingStudioBar(
                     onClick = {
                         showShapesRow = false
                         showPenPackages = false
+                        showEraserPackages = false
                         controller.selectTool(DrawingTool.LASSO)
                     }
                 ) { tint ->
                     PenToolGlyph(tool = DrawingTool.LASSO, tint = tint)
                 }
 
-                // Stylus-Only / Palm Rejection Toggle
+                // Text Box Tool (Rich-text box overlay with 1:1 Notes features)
                 StudioToolButton(
-                    label = "Yalnızca Kalem",
-                    isSelected = controller.stylusOnlyMode,
-                    accentColor = Color(0xFF10B981),
-                    onClick = { controller.toggleStylusOnlyMode() }
+                    label = null,
+                    isSelected = activeTool == DrawingTool.TEXT_BOX,
+                    accentColor = primaryColor,
+                    onClick = {
+                        showShapesRow = false
+                        showPenPackages = false
+                        showEraserPackages = false
+                        showStrokeSettings = false
+                        if (activeTool == DrawingTool.TEXT_BOX) {
+                            controller.addTextBox()
+                        } else {
+                            controller.selectTool(DrawingTool.TEXT_BOX)
+                        }
+                    }
                 ) { tint ->
-                    PenPalmRejectionGlyph(tint = tint)
+                    PenToolGlyph(tool = DrawingTool.TEXT_BOX, tint = tint)
                 }
 
                 VerticalDivider(
@@ -352,7 +332,7 @@ fun DrawingStudioBar(
                 }
 
                 // Clear All
-                if (controller.strokes.isNotEmpty()) {
+                if (controller.hasAnyAnnotations) {
                     IconButton(
                         onClick = { controller.clearAll() },
                         modifier = Modifier.size(32.dp)
@@ -380,6 +360,637 @@ fun DrawingStudioBar(
                     }
                 }
             }
+
+            // 1. Expandable Pen Packages Picker Row (opened via long-press on Pen)
+            AnimatedVisibility(
+                visible = showPenPackages,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                    PenPackagePickerPanel(
+                        controller = controller,
+                        onDismiss = { showPenPackages = false }
+                    )
+                }
+            }
+
+            // 2. Expandable Eraser Packages Picker Row (exact visual twin of PenPackagePickerPanel)
+            AnimatedVisibility(
+                visible = showEraserPackages,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                    EraserPackagePickerPanel(
+                        controller = controller,
+                        onDismiss = { showEraserPackages = false }
+                    )
+                }
+            }
+
+            // 3. Expandable Shape Picker Row
+            AnimatedVisibility(
+                visible = showShapesRow || activeTool.isShapeTool,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                    PenShapePickerPanel(controller = controller)
+                }
+            }
+
+            // 4. Expandable Lasso Controls Row
+            AnimatedVisibility(
+                visible = activeTool == DrawingTool.LASSO,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                    PenLassoActionsPanel(controller = controller)
+                }
+            }
+
+            // 5. Expandable Rich-Text Box Formatting Panel (1:1 parity with Notes text toolbar)
+            AnimatedVisibility(
+                visible = activeTool == DrawingTool.TEXT_BOX,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                    DrawingTextBoxFormattingPanel(controller = controller)
+                }
+            }
+
+            // 6. Expandable Color, Thickness & (Highlighter-only) Opacity Panel
+            AnimatedVisibility(
+                visible = showStrokeSettings,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(color = onSurfaceColor.copy(alpha = 0.10f))
+                    PenStrokeSettingsPanel(controller = controller)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EraserPackagePickerPanel(
+    controller: DrawingController,
+    modifier: Modifier = Modifier,
+    onDismiss: (() -> Unit)? = null
+) {
+    val context = LocalContext.current
+    val colorScheme = MaterialTheme.colorScheme
+    val onSurfaceColor = colorScheme.onSurface
+    val activeTool = controller.activeTool
+    val currentEraser = if (activeTool.isEraserTool) activeTool else controller.lastSelectedEraserTool
+    val isZenMonochrome = colorScheme.primary == Color.White && colorScheme.background == Color.Black
+    val accent = if (isZenMonochrome) colorScheme.primary else Color(0xFFEF4444)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Silgi Türleri",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = onSurfaceColor
+            )
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Kapat",
+                        tint = onSurfaceColor.copy(alpha = 0.6f),
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            DrawingTool.ERASER_PACKAGES.forEach { pkg ->
+                val isSelected = currentEraser == pkg && activeTool.isEraserTool
+                Surface(
+                    onClick = {
+                        controller.updateLastSelectedEraserTool(pkg, context)
+                        controller.selectTool(pkg)
+                        onDismiss?.invoke()
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSelected) accent.copy(alpha = 0.16f) else onSurfaceColor.copy(alpha = 0.04f),
+                    border = BorderStroke(
+                        width = if (isSelected) 1.5.dp else 1.dp,
+                        color = if (isSelected) accent else onSurfaceColor.copy(alpha = 0.14f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        PenToolGlyph(
+                            tool = pkg,
+                            tint = if (isSelected) accent else onSurfaceColor.copy(alpha = 0.85f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Column {
+                            Text(
+                                text = pkg.displayName,
+                                fontSize = 11.5.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                color = if (isSelected) accent else onSurfaceColor
+                            )
+                            Text(
+                                text = pkg.packageDescription,
+                                fontSize = 9.5.sp,
+                                color = onSurfaceColor.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum class TextBoxSubPanel { NONE, TEXT_COLOR, HIGHLIGHT, FONT, FONT_SIZE }
+
+@Composable
+fun DrawingTextBoxFormattingPanel(
+    controller: DrawingController,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val onSurfaceColor = colorScheme.onSurface
+    val primaryColor = colorScheme.primary
+
+    var activeSubPanel by remember { mutableStateOf(TextBoxSubPanel.NONE) }
+    var showCustomColorDialog by remember { mutableStateOf(false) }
+    var customColorIsHighlight by remember { mutableStateOf(false) }
+
+    if (showCustomColorDialog) {
+        PenCustomColorDialog(
+            initialColor = if (customColorIsHighlight) {
+                controller.textBoxHighlightColor ?: Color(0xFFFFEB3B)
+            } else {
+                controller.textBoxTextColor ?: primaryColor
+            },
+            title = if (customColorIsHighlight) "Vurgu Rengi Seç" else "Yazı Rengi Seç",
+            confirmLabel = "Uygula",
+            isHighlightMode = customColorIsHighlight,
+            highlightIntensity = controller.textBoxHighlightIntensity,
+            onDismiss = { showCustomColorDialog = false },
+            onColorSelected = { chosen ->
+                if (customColorIsHighlight) {
+                    controller.applyTextBoxHighlight(chosen)
+                } else {
+                    controller.applyTextBoxColor(chosen)
+                }
+                showCustomColorDialog = false
+            }
+        )
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // Main formatting strip matching Notes text tab 1:1
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            // Add new Text Box button
+            Surface(
+                onClick = { controller.addTextBox() },
+                shape = RoundedCornerShape(8.dp),
+                color = primaryColor.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.45f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Metin Kutusu Ekle",
+                        tint = primaryColor,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Kutu",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryColor
+                    )
+                }
+            }
+
+            VerticalDivider(modifier = Modifier.height(20.dp), color = onSurfaceColor.copy(alpha = 0.15f))
+
+            // Universal "T" Text Color button (no "Yazı" text, no color circle — T itself takes the color)
+            val textTColor = controller.textBoxTextColor ?: onSurfaceColor
+            Surface(
+                onClick = {
+                    activeSubPanel = if (activeSubPanel == TextBoxSubPanel.TEXT_COLOR) TextBoxSubPanel.NONE else TextBoxSubPanel.TEXT_COLOR
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = if (activeSubPanel == TextBoxSubPanel.TEXT_COLOR) primaryColor.copy(alpha = 0.14f) else Color.Transparent,
+                border = BorderStroke(
+                    1.dp,
+                    if (activeSubPanel == TextBoxSubPanel.TEXT_COLOR) primaryColor else onSurfaceColor.copy(alpha = 0.14f)
+                )
+            ) {
+                Box(
+                    modifier = Modifier.size(width = 30.dp, height = 28.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "T",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontFamily = FontFamily.Serif,
+                        color = textTColor
+                    )
+                }
+            }
+
+            // Highlight button (icon untouched, no "Vurgu" text, synced tint)
+            val highlightTint = controller.textBoxHighlightColor?.copy(alpha = 1f) ?: onSurfaceColor.copy(alpha = 0.8f)
+            Surface(
+                onClick = {
+                    activeSubPanel = if (activeSubPanel == TextBoxSubPanel.HIGHLIGHT) TextBoxSubPanel.NONE else TextBoxSubPanel.HIGHLIGHT
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = if (activeSubPanel == TextBoxSubPanel.HIGHLIGHT || controller.textBoxHighlightColor != null) {
+                    (controller.textBoxHighlightColor ?: primaryColor).copy(alpha = 0.18f)
+                } else {
+                    Color.Transparent
+                },
+                border = BorderStroke(
+                    1.dp,
+                    if (activeSubPanel == TextBoxSubPanel.HIGHLIGHT) primaryColor else onSurfaceColor.copy(alpha = 0.14f)
+                )
+            ) {
+                Box(
+                    modifier = Modifier.size(width = 30.dp, height = 28.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.BorderColor,
+                        contentDescription = "Vurgu",
+                        tint = highlightTint,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            // Font selector button
+            Surface(
+                onClick = {
+                    activeSubPanel = if (activeSubPanel == TextBoxSubPanel.FONT) TextBoxSubPanel.NONE else TextBoxSubPanel.FONT
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = if (activeSubPanel == TextBoxSubPanel.FONT) primaryColor.copy(alpha = 0.14f) else Color.Transparent,
+                border = BorderStroke(
+                    1.dp,
+                    if (activeSubPanel == TextBoxSubPanel.FONT) primaryColor else onSurfaceColor.copy(alpha = 0.14f)
+                )
+            ) {
+                Text(
+                    text = controller.textBoxFontOption.shortLabel,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = controller.textBoxFontOption.resolveFontFamily(),
+                    color = if (activeSubPanel == TextBoxSubPanel.FONT) primaryColor else onSurfaceColor,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp)
+                )
+            }
+
+            // Punto / Font size button
+            Surface(
+                onClick = {
+                    activeSubPanel = if (activeSubPanel == TextBoxSubPanel.FONT_SIZE) TextBoxSubPanel.NONE else TextBoxSubPanel.FONT_SIZE
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = if (activeSubPanel == TextBoxSubPanel.FONT_SIZE) primaryColor.copy(alpha = 0.14f) else Color.Transparent,
+                border = BorderStroke(
+                    1.dp,
+                    if (activeSubPanel == TextBoxSubPanel.FONT_SIZE) primaryColor else onSurfaceColor.copy(alpha = 0.14f)
+                )
+            ) {
+                Text(
+                    text = "${controller.textBoxFontSizeSp.roundToInt()}pt",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (activeSubPanel == TextBoxSubPanel.FONT_SIZE) primaryColor else onSurfaceColor,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp)
+                )
+            }
+
+            VerticalDivider(modifier = Modifier.height(20.dp), color = onSurfaceColor.copy(alpha = 0.15f))
+
+            // Bold / Italic / Underline
+            IconButton(
+                onClick = { controller.toggleTextBoxStyle(NoteRichTextHelper.StyleType.BOLD) },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FormatBold,
+                    contentDescription = "Kalın",
+                    tint = if (controller.textBoxBold) primaryColor else onSurfaceColor.copy(alpha = 0.8f),
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+            IconButton(
+                onClick = { controller.toggleTextBoxStyle(NoteRichTextHelper.StyleType.ITALIC) },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FormatItalic,
+                    contentDescription = "İtalik",
+                    tint = if (controller.textBoxItalic) primaryColor else onSurfaceColor.copy(alpha = 0.8f),
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+            IconButton(
+                onClick = { controller.toggleTextBoxStyle(NoteRichTextHelper.StyleType.UNDERLINE) },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FormatUnderlined,
+                    contentDescription = "Altı Çizili",
+                    tint = if (controller.textBoxUnderline) primaryColor else onSurfaceColor.copy(alpha = 0.8f),
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+
+            VerticalDivider(modifier = Modifier.height(20.dp), color = onSurfaceColor.copy(alpha = 0.15f))
+
+            // Lists (Bullet, Numbered, Checkbox)
+            IconButton(
+                onClick = { controller.toggleTextBoxListPrefix("• ") },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.FormatListBulleted,
+                    contentDescription = "Madde İşareti",
+                    tint = onSurfaceColor.copy(alpha = 0.8f),
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+            IconButton(
+                onClick = { controller.toggleTextBoxListPrefix("1. ") },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FormatListNumbered,
+                    contentDescription = "Numaralı Liste",
+                    tint = onSurfaceColor.copy(alpha = 0.8f),
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+            IconButton(
+                onClick = { controller.toggleTextBoxCheckbox() },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CheckBox,
+                    contentDescription = "Onay Kutusu",
+                    tint = onSurfaceColor.copy(alpha = 0.8f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+
+        // Expandable Sub-panels (Text Color / Highlight / Font / Punto)
+        when (activeSubPanel) {
+            TextBoxSubPanel.TEXT_COLOR -> {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Surface(
+                        onClick = { controller.applyTextBoxColor(null) },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (controller.textBoxTextColor == null) primaryColor.copy(alpha = 0.15f) else Color.Transparent,
+                        border = BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.25f))
+                    ) {
+                        Text(
+                            text = "Oto",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = onSurfaceColor,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    NoteRichTextHelper.TextColorPalette.forEach { (_, swatch) ->
+                        val isSel = controller.textBoxTextColor?.toArgb() == swatch.toArgb()
+                        Box(
+                            modifier = Modifier
+                                .size(if (isSel) 26.dp else 22.dp)
+                                .clip(CircleShape)
+                                .background(swatch)
+                                .border(
+                                    width = if (isSel) 2.2.dp else 1.dp,
+                                    color = if (isSel) primaryColor else onSurfaceColor.copy(alpha = 0.28f),
+                                    shape = CircleShape
+                                )
+                                .clickable { controller.applyTextBoxColor(swatch) }
+                        )
+                    }
+                    Surface(
+                        onClick = {
+                            customColorIsHighlight = false
+                            showCustomColorDialog = true
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        color = primaryColor.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.4f))
+                    ) {
+                        Text(
+                            text = "+ Renk",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = primaryColor,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+            TextBoxSubPanel.HIGHLIGHT -> {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        Surface(
+                            onClick = { controller.applyTextBoxHighlight(null) },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (controller.textBoxHighlightColor == null) primaryColor.copy(alpha = 0.15f) else Color.Transparent,
+                            border = BorderStroke(1.dp, onSurfaceColor.copy(alpha = 0.25f))
+                        ) {
+                            Text(
+                                text = "Yok",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = onSurfaceColor,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                        NoteRichTextHelper.HighlightPalette.forEach { opt ->
+                            val isSel = controller.textBoxHighlightColor?.copy(alpha = 1f)?.toArgb() == opt.color.toArgb()
+                            Box(
+                                modifier = Modifier
+                                    .size(if (isSel) 26.dp else 22.dp)
+                                    .clip(CircleShape)
+                                    .background(opt.color.copy(alpha = controller.textBoxHighlightIntensity))
+                                    .border(
+                                        width = if (isSel) 2.2.dp else 1.dp,
+                                        color = if (isSel) primaryColor else onSurfaceColor.copy(alpha = 0.28f),
+                                        shape = CircleShape
+                                    )
+                                    .clickable { controller.applyTextBoxHighlight(opt.color) }
+                            )
+                        }
+                        Surface(
+                            onClick = {
+                                customColorIsHighlight = true
+                                showCustomColorDialog = true
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = primaryColor.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.4f))
+                        ) {
+                            Text(
+                                text = "+ Renk",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = primaryColor,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Yoğunluk",
+                            fontSize = 10.5.sp,
+                            color = onSurfaceColor.copy(alpha = 0.7f)
+                        )
+                        Slider(
+                            value = controller.textBoxHighlightIntensity,
+                            onValueChange = { controller.textBoxHighlightIntensity = it },
+                            valueRange = 0.20f..0.85f,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(24.dp),
+                            colors = SliderDefaults.colors(thumbColor = primaryColor, activeTrackColor = primaryColor)
+                        )
+                        Text(
+                            text = "%${(controller.textBoxHighlightIntensity * 100).roundToInt()}",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = onSurfaceColor
+                        )
+                    }
+                }
+            }
+            TextBoxSubPanel.FONT -> {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    NoteFontOption.entries.forEach { fontOpt ->
+                        val isSel = controller.textBoxFontOption == fontOpt
+                        Surface(
+                            onClick = { controller.applyTextBoxFont(fontOpt) },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSel) primaryColor.copy(alpha = 0.16f) else onSurfaceColor.copy(alpha = 0.04f),
+                            border = BorderStroke(1.dp, if (isSel) primaryColor else onSurfaceColor.copy(alpha = 0.16f))
+                        ) {
+                            Text(
+                                text = fontOpt.displayName,
+                                fontSize = 11.5.sp,
+                                fontFamily = fontOpt.resolveFontFamily(),
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSel) primaryColor else onSurfaceColor,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            TextBoxSubPanel.FONT_SIZE -> {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    NoteRichTextHelper.FontSizePresets.forEach { pt ->
+                        val isSel = controller.textBoxFontSizeSp.roundToInt() == pt
+                        Surface(
+                            onClick = { controller.applyTextBoxFontSize(pt.toFloat()) },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSel) primaryColor.copy(alpha = 0.16f) else onSurfaceColor.copy(alpha = 0.04f),
+                            border = BorderStroke(1.dp, if (isSel) primaryColor else onSurfaceColor.copy(alpha = 0.16f))
+                        ) {
+                            Text(
+                                text = "$pt",
+                                fontSize = 11.5.sp,
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSel) primaryColor else onSurfaceColor,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            TextBoxSubPanel.NONE -> {}
         }
     }
 }
@@ -1383,6 +1994,36 @@ fun PenToolGlyph(
                 )
             }
         }
+        tool == DrawingTool.TEXT_BOX -> {
+            Canvas(modifier = modifier) {
+                // Dashed text box frame
+                drawRect(
+                    color = tint.copy(alpha = 0.78f),
+                    topLeft = Offset(size.width * 0.10f, size.height * 0.12f),
+                    size = Size(size.width * 0.80f, size.height * 0.76f),
+                    style = Stroke(
+                        width = 1.3.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 3f), 0f)
+                    )
+                )
+                // Crisp universal "T" inside
+                val strokeW = 1.8.dp.toPx()
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.30f, size.height * 0.32f),
+                    end = Offset(size.width * 0.70f, size.height * 0.32f),
+                    strokeWidth = strokeW,
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(size.width * 0.50f, size.height * 0.32f),
+                    end = Offset(size.width * 0.50f, size.height * 0.72f),
+                    strokeWidth = strokeW,
+                    cap = StrokeCap.Round
+                )
+            }
+        }
     }
 }
 
@@ -1464,7 +2105,7 @@ fun PenRedoGlyph(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun StudioToolButton(
-    label: String,
+    label: String? = null,
     isSelected: Boolean,
     accentColor: Color,
     onClick: () -> Unit,
@@ -1495,23 +2136,28 @@ fun StudioToolButton(
             )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            modifier = Modifier.padding(
+                horizontal = if (label.isNullOrBlank()) 7.dp else 8.dp,
+                vertical = 6.dp
+            ),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(if (label.isNullOrBlank()) 2.dp else 4.dp)
         ) {
             iconContent(contentTint)
-            Text(
-                text = label,
-                fontSize = 11.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                color = contentTint
-            )
+            if (!label.isNullOrBlank()) {
+                Text(
+                    text = label,
+                    fontSize = 11.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = contentTint
+                )
+            }
             if (onLongClick != null) {
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Kalem Paketleri için uzun basın",
+                    contentDescription = "Seçenekler için uzun basın",
                     tint = contentTint.copy(alpha = 0.72f),
-                    modifier = Modifier.size(13.dp)
+                    modifier = Modifier.size(12.dp)
                 )
             }
         }

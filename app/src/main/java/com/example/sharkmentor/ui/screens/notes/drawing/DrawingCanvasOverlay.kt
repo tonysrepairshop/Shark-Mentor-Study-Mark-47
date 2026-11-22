@@ -19,8 +19,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +32,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -42,9 +45,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Share
@@ -73,12 +78,15 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
@@ -101,6 +109,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -108,6 +117,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.sharkmentor.ui.screens.notes.NoteFontOption
+import com.example.sharkmentor.ui.screens.notes.NoteRichTextHelper
 import com.example.sharkmentor.ui.screens.notes.drawing.DrawingScreenshotHelper.findActivity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -147,7 +158,8 @@ fun DrawingCanvasOverlay(
     modifier: Modifier = Modifier,
     onTwoFingerScroll: ((deltaY: Float, deltaX: Float) -> Unit)? = null,
     onLassoAskAi: ((Bitmap) -> Unit)? = null,
-    directContentBitmapProvider: (() -> Bitmap?)? = null
+    directContentBitmapProvider: (() -> Bitmap?)? = null,
+    defaultTextBoxColor: Color = Color(0xFF0F172A)
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -352,12 +364,22 @@ fun DrawingCanvasOverlay(
     val prefPressureStrength by NoteDrawingPreferences.pressureSensitivityStrength.collectAsStateWithLifecycle()
     val prefScribbleToErase by NoteDrawingPreferences.scribbleToEraseEnabled.collectAsStateWithLifecycle()
     val prefAutoShape by NoteDrawingPreferences.autoShapeRecognitionEnabled.collectAsStateWithLifecycle()
+    val prefStylusOnly by NoteDrawingPreferences.stylusOnlyModeEnabled.collectAsStateWithLifecycle()
+    val prefLastEraser by NoteDrawingPreferences.lastSelectedEraserTool.collectAsStateWithLifecycle()
 
     LaunchedEffect(controller, context) {
         controller.bindPreferencesContext(context)
     }
 
-    LaunchedEffect(controller, prefPressureEnabled, prefPressureStrength, prefScribbleToErase, prefAutoShape) {
+    LaunchedEffect(
+        controller,
+        prefPressureEnabled,
+        prefPressureStrength,
+        prefScribbleToErase,
+        prefAutoShape,
+        prefStylusOnly,
+        prefLastEraser
+    ) {
         controller.syncFromNotePreferences()
     }
 
@@ -400,7 +422,7 @@ fun DrawingCanvasOverlay(
     val currentOnTwoFingerScroll by rememberUpdatedState(onTwoFingerScroll)
 
     val activeTool = controller.activeTool
-    val stylusTrackerModifier = if (activeTool == DrawingTool.NONE) {
+    val stylusTrackerModifier = if (activeTool == DrawingTool.NONE || activeTool == DrawingTool.TEXT_BOX) {
         Modifier
     } else {
         Modifier.pointerInput(activeTool) {
@@ -420,6 +442,45 @@ fun DrawingCanvasOverlay(
 
     val pointerModifier = if (activeTool == DrawingTool.NONE) {
         Modifier
+    } else if (activeTool == DrawingTool.TEXT_BOX) {
+        Modifier.pointerInput(activeTool, canvasSize, onTwoFingerScroll != null) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val startPos = down.position
+                var movedTooFar = false
+                var multiTouchScroll = false
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val pressed = event.changes.filter { it.pressed }
+                    if (pressed.size >= 2) {
+                        multiTouchScroll = true
+                        val scrollCb = currentOnTwoFingerScroll
+                        if (scrollCb != null) {
+                            runTwoFingerScrollLoop(event, scrollCb)
+                        }
+                        break
+                    }
+                    val change = event.changes.firstOrNull { it.id == down.id }
+                    if (change == null || !change.pressed) break
+                    if ((change.position - startPos).getDistance() > 24f) {
+                        movedTooFar = true
+                    }
+                }
+                if (!multiTouchScroll && !movedTooFar && canvasSize.width > 10 && canvasSize.height > 10) {
+                    if (controller.activeTextBoxId != null) {
+                        controller.selectTextBox(null)
+                    } else {
+                        val xf = (startPos.x / canvasSize.width.toFloat()).coerceIn(0.03f, 0.56f)
+                        val yf = (startPos.y / canvasSize.height.toFloat()).coerceIn(0.03f, 0.84f)
+                        controller.addTextBox(
+                            xFraction = xf,
+                            yFraction = yf,
+                            defaultColorArgb = defaultTextBoxColor.toArgb()
+                        )
+                    }
+                }
+            }
+        }
     } else {
         Modifier.pointerInput(
             activeTool,
@@ -887,6 +948,211 @@ fun DrawingCanvasOverlay(
                     center = cursor,
                     style = Stroke(width = 1.5.dp.toPx())
                 )
+            }
+        }
+
+        // 5. Rich-Text Boxes Layer (editable in TEXT_BOX tool mode; visible read-only pass-through otherwise)
+        if (controller.textBoxes.isNotEmpty() && canvasSize.width > 0 && canvasSize.height > 0) {
+            val isTextBoxToolActive = activeTool == DrawingTool.TEXT_BOX && !isCapturingScreenshot
+            val colorScheme = MaterialTheme.colorScheme
+            val primaryColor = colorScheme.primary
+            val surfaceColor = colorScheme.surface
+            val canvasW = canvasSize.width.toFloat().coerceAtLeast(1f)
+            val canvasH = canvasSize.height.toFloat().coerceAtLeast(1f)
+
+            controller.textBoxes.forEach { box ->
+                val isSelected = isTextBoxToolActive && controller.activeTextBoxId == box.id
+                if (!isSelected && box.taggedContent.isBlank() && !isTextBoxToolActive) {
+                    return@forEach
+                }
+
+                val offsetX = (box.xFraction * canvasW).roundToInt()
+                val offsetY = (box.yFraction * canvasH).roundToInt()
+                val boxWidthDp = with(density) { (box.widthFraction * canvasW).toDp().coerceAtLeast(96.dp) }
+                val baseFont = NoteFontOption.fromName(box.baseFontName).resolveFontFamily()
+                val baseSizeSp = box.baseFontSizeSp.coerceIn(
+                    NoteRichTextHelper.MIN_FONT_SIZE_SP,
+                    NoteRichTextHelper.MAX_FONT_SIZE_SP
+                ).sp
+                val baseTextColor = box.baseTextColorArgb?.let { Color(it) } ?: defaultTextBoxColor
+
+                if (isSelected) {
+                    val focusRequester = remember(box.id) { FocusRequester() }
+                    LaunchedEffect(box.id) {
+                        runCatching { focusRequester.requestFocus() }
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .zIndex(12f)
+                            .offset { IntOffset(offsetX, offsetY) }
+                            .width(boxWidthDp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = surfaceColor.copy(alpha = 0.92f),
+                        shadowElevation = 6.dp,
+                        border = BorderStroke(1.5.dp, primaryColor)
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            // Drag handle + Done + Delete header
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(primaryColor.copy(alpha = 0.12f))
+                                    .pointerInput(box.id, canvasW, canvasH) {
+                                        detectDragGestures { change, dragAmount ->
+                                            change.consume()
+                                            val current = controller.textBoxes.firstOrNull { it.id == box.id } ?: return@detectDragGestures
+                                            controller.moveTextBox(
+                                                id = box.id,
+                                                xFraction = current.xFraction + (dragAmount.x / canvasW),
+                                                yFraction = current.yFraction + (dragAmount.y / canvasH)
+                                            )
+                                        }
+                                    }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DragIndicator,
+                                    contentDescription = "Taşı",
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { controller.selectTextBox(null) },
+                                        modifier = Modifier.size(22.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = "Tamam",
+                                            tint = primaryColor,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { controller.deleteTextBox(box.id) },
+                                        modifier = Modifier.size(22.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Metin kutusunu sil",
+                                            tint = colorScheme.error,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                BasicTextField(
+                                    value = controller.activeTextBoxFieldValue,
+                                    onValueChange = { controller.onActiveTextBoxValueChange(it) },
+                                    textStyle = TextStyle(
+                                        color = baseTextColor,
+                                        fontSize = baseSizeSp,
+                                        fontFamily = baseFont,
+                                        lineHeight = (box.baseFontSizeSp * 1.35f).sp
+                                    ),
+                                    cursorBrush = SolidColor(primaryColor),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .focusRequester(focusRequester),
+                                    decorationBox = { innerTextField ->
+                                        Box(modifier = Modifier.fillMaxWidth()) {
+                                            if (controller.activeTextBoxFieldValue.text.isEmpty()) {
+                                                Text(
+                                                    text = "Metin yazın...",
+                                                    color = baseTextColor.copy(alpha = 0.4f),
+                                                    fontSize = baseSizeSp,
+                                                    fontFamily = baseFont
+                                                )
+                                            }
+                                            innerTextField()
+                                        }
+                                    }
+                                )
+                            }
+
+                            // Bottom-right horizontal width resize handle
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(end = 4.dp, bottom = 3.dp),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = 22.dp, height = 10.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(primaryColor.copy(alpha = 0.25f))
+                                        .pointerInput(box.id, canvasW) {
+                                            detectDragGestures { change, dragAmount ->
+                                                change.consume()
+                                                val current = controller.textBoxes.firstOrNull { it.id == box.id } ?: return@detectDragGestures
+                                                controller.resizeTextBox(
+                                                    id = box.id,
+                                                    widthFraction = current.widthFraction + (dragAmount.x / canvasW)
+                                                )
+                                            }
+                                        }
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    val parsed = remember(box.taggedContent) {
+                        NoteRichTextHelper.parseTaggedText(box.taggedContent)
+                    }
+                    val boxModifier = Modifier
+                        .zIndex(if (isTextBoxToolActive) 6f else 2f)
+                        .offset { IntOffset(offsetX, offsetY) }
+                        .width(boxWidthDp)
+                        .then(
+                            if (isTextBoxToolActive) {
+                                Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(surfaceColor.copy(alpha = 0.55f))
+                                    .border(
+                                        1.dp,
+                                        primaryColor.copy(alpha = 0.45f),
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { controller.selectTextBox(box.id) }
+                                    .padding(horizontal = 8.dp, vertical = 5.dp)
+                            } else {
+                                Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            }
+                        )
+
+                    Box(modifier = boxModifier) {
+                        if (parsed.text.isEmpty() && isTextBoxToolActive) {
+                            Text(
+                                text = "Metin kutusu",
+                                color = baseTextColor.copy(alpha = 0.45f),
+                                fontSize = baseSizeSp,
+                                fontFamily = baseFont
+                            )
+                        } else if (parsed.text.isNotEmpty()) {
+                            Text(
+                                text = parsed,
+                                style = TextStyle(
+                                    color = baseTextColor,
+                                    fontSize = baseSizeSp,
+                                    fontFamily = baseFont,
+                                    lineHeight = (box.baseFontSizeSp * 1.35f).sp
+                                )
+                            )
+                        }
+                    }
+                }
             }
         }
 

@@ -82,8 +82,12 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 if (!wasActiveSession && isActiveSession && state.currentMode != TimerMode.BREAK) {
-                    val remainingMinutes = (state.displayMillis / 60000L).coerceAtLeast(1L).toInt()
-                    startFocusSession(remainingMinutes, "Genel")
+                    val sessionDurationMinutes = if (state.currentMode == TimerMode.STOPWATCH) {
+                        24 * 60
+                    } else {
+                        (state.displayMillis / 60000L).coerceAtLeast(1L).toInt()
+                    }
+                    startFocusSession(sessionDurationMinutes, "Genel")
                 } else if (wasActiveSession && !isActiveSession) {
                     stopOrCancelFocusSession()
                 }
@@ -270,7 +274,8 @@ class TimerViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        if (FocusTimerService.timerStateFlow.value.timerPhase != TimerPhase.RUNNING) {
+        val phase = FocusTimerService.timerStateFlow.value.timerPhase
+        if (phase != TimerPhase.FOCUSING && phase != TimerPhase.MANDATORY_BREAK) {
             FocusSessionState.setRunning(false)
         }
     }

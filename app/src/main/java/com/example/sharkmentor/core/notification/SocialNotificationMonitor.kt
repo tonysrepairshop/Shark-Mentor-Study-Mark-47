@@ -10,6 +10,9 @@ import com.example.sharkmentor.services.SharkMessagingService
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -25,7 +28,18 @@ object SocialNotificationMonitor {
     private const val PREFS_GROUP_CACHE = "social_notif_group_cache"
     private const val GROUP_NAME_TTL_MS = 24L * 60L * 60L * 1000L
     private const val PREFS_PENDING_REQUESTS = "social_notif_pending_requests"
-    
+
+    private val _hasUnreadDmFlow = MutableStateFlow(false)
+    val hasUnreadDmFlow: StateFlow<Boolean> = _hasUnreadDmFlow.asStateFlow()
+
+    fun clearUnreadDmIndicator() {
+        _hasUnreadDmFlow.value = false
+    }
+
+    internal fun markUnreadDmIndicator() {
+        _hasUnreadDmFlow.value = true
+    }
+
     @Volatile
     private var activeUid: String? = null
 
@@ -109,17 +123,43 @@ object SocialNotificationMonitor {
                 .addSnapshotListener { snap, error ->
                     if (error != null || snap == null) return@addSnapshotListener
                     val blockedIds = SharkBadgeCatalog.getBlockedUserIds(appCtx)
+                    val hasPendingIncoming = snap.documents.any { doc ->
+                        doc.getString("status") == "PENDING" &&
+                            doc.getString("recipientId").orEmpty().trim() == uid &&
+                            doc.getString("requesterId").orEmpty().trim().let { req ->
+                                req.isNotBlank() && req != uid && req !in blockedIds
+                            }
+                    }
+                    if (hasPendingIncoming) {
+                        _hasUnreadDmFlow.value = true
+                    }
                     snap.documentChanges.forEach { change ->
                         val doc = change.document
                         val status = doc.getString("status").orEmpty()
-                       if (status == "PENDING") {
-                           val recipientId = doc.getString("recipientId").orEmpty().trim()
-                           val requesterId = doc.getString("requesterId").orEmpty().trim()
-                           if (recipientId == uid && requesterId.isNotBlank() && requesterId != uid && requesterId !in blockedIds && !seenPendingRequestIds.contains(doc.id)) {
-                               val prefs = appCtx.getSharedPreferences(PREFS_PENDING_REQUESTS, Context.MODE_PRIVATE)
-                               val prefKey = "pending_${uid}_${doc.id}"; val alreadyNotified = prefs.getBoolean(prefKey, false)
-                               val createdOrUpdatedAt = maxOf(doc.getLong("updatedAtMillis") ?: 0L, doc.getLong("createdAtMillis") ?: 0L); if (createdOrUpdatedAt >= monitorStartMillis - 60_000L || !alreadyNotified) {
-                          seenPendingRequestIds.add(doc.id); if (!alreadyNotified) prefs.edit().putBoolean(prefKey, true).apply(); val requesterName = SyncWorker.sanitizeTurkishText(doc.getString("requesterName").orEmpty()).trim().ifBlank { "Bir kullanıcı" }; SharkMessagingService.showChatMessageNotification(context = appCtx, senderName = "Yeni Sohbet İsteği", messageText = "$requesterName sana sohbet isteği gönderdi.", messageId = "dm_req_${doc.id}", isDm = true); }; }; return@forEach; }
+                        if (status == "PENDING") {
+                            val recipientId = doc.getString("recipientId").orEmpty().trim()
+                            val requesterId = doc.getString("requesterId").orEmpty().trim()
+                            if (recipientId == uid && requesterId.isNotBlank() && requesterId != uid && requesterId !in blockedIds && !seenPendingRequestIds.contains(doc.id)) {
+                                val prefs = appCtx.getSharedPreferences(PREFS_PENDING_REQUESTS, Context.MODE_PRIVATE)
+                                val prefKey = "pending_${uid}_${doc.id}"
+                                val alreadyNotified = prefs.getBoolean(prefKey, false)
+                                val createdOrUpdatedAt = maxOf(doc.getLong("updatedAtMillis") ?: 0L, doc.getLong("createdAtMillis") ?: 0L)
+                                if (createdOrUpdatedAt >= monitorStartMillis - 60_000L || !alreadyNotified) {
+                                    seenPendingRequestIds.add(doc.id)
+                                    _hasUnreadDmFlow.value = true
+                                    if (!alreadyNotified) prefs.edit().putBoolean(prefKey, true).apply()
+                                    val requesterName = SyncWorker.sanitizeTurkishText(doc.getString("requesterName").orEmpty()).trim().ifBlank { "Bir kullanıcı" }
+                                    SharkMessagingService.showChatMessageNotification(
+                                        context = appCtx,
+                                        senderName = "Yeni Sohbet İsteği",
+                                        messageText = "$requesterName sana sohbet isteği gönderdi.",
+                                        messageId = "dm_req_${doc.id}",
+                                        isDm = true
+                                    )
+                                }
+                            }
+                            return@forEach
+                        }
                         if (status != "ACCEPTED") return@forEach
 
                         val updatedAtMillis = doc.getLong("updatedAtMillis") ?: 0L
@@ -142,8 +182,9 @@ object SocialNotificationMonitor {
 
                         val previousSeen = seenDmMessageIds[doc.id]
                         if (previousSeen == lastMessageId) return@forEach
-                        if (ActiveChatTracker.isViewingChannel(doc.id)) return@forEach  
+                        if (ActiveChatTracker.isViewingChannel(doc.id)) return@forEach
                         seenDmMessageIds[doc.id] = lastMessageId
+                        _hasUnreadDmFlow.value = true
 
                         @Suppress("UNCHECKED_CAST")
                         val participantNames = doc.get("participantNames") as? Map<String, Any?>

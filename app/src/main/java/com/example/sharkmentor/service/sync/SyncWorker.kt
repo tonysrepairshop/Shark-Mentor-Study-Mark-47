@@ -1098,11 +1098,15 @@ class SyncWorker(
         uid: String
     ): Int {
         var count = 0
+        val activeSessionUuid = com.example.sharkmentor.core.timer.FocusSessionRecorder.getActiveSessionId()
         val pendingSessions = db.syncDao().getUnsyncedSessions()
         if (pendingSessions.isEmpty()) return 0
 
         var touchedParent = false
         for (session in pendingSessions) {
+            if (!activeSessionUuid.isNullOrBlank() && session.cloudId == activeSessionUuid) {
+                continue
+            }
             try {
                 val instId = session.institutionId?.takeIf { it.isNotBlank() } ?: defaultInstitution
                 val docId = session.cloudId?.takeIf { it.isNotBlank() } ?: session.id.toString()
@@ -1123,6 +1127,7 @@ class SyncWorker(
                     "institutionId" to instId,
                     "isIndividual" to (instId == "INDIVIDUAL"),
                     "timestamp" to session.completedAt,
+                    "isFinalized" to true,
                     "isDeleted" to false,
                     "syncedAt" to System.currentTimeMillis()
                 )
